@@ -1,0 +1,12 @@
+[project]
+name = "onebot-bridge"
+version = "0.1.0"
+description = "OneBot v11 bridge for Hermes Agent — connect QQ bots without modifying Hermes source code"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.13.3",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+onebot-bridge = "onebot_bridge:main"
