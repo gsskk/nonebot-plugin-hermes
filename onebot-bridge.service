@@ -1,0 +1,24 @@
+[Unit]
+Description=OneBot Bridge for Hermes Agent
+Documentation=https://github.com/NousResearch/hermes-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/data/server/hermes-agent/onebot-bridge
+ExecStart=/home/ubuntu/.local/bin/uv run python onebot_bridge.py
+Restart=on-failure
+RestartSec=5
+
+# 环境变量（也可以通过 config.yaml 配置，二选一）
+# Environment=ONEBOT_BRIDGE_CONFIG=/data/server/hermes-agent/onebot-bridge/config.yaml
+
+# 日志输出到 journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=onebot-bridge
+
+[Install]
+WantedBy=multi-user.target
