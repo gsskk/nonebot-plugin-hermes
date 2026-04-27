@@ -1,12 +1,89 @@
-__pycache__/
-*.pyc
+# ========================
+# Editor & IDE
+# ========================
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ========================
+# Environment
+# ========================
+.env
+.env.*
 .venv/
 venv/
-.env
-.env.prod
-*.log
-uv.lock
+env/
+ENV/
+
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
 *.egg-info/
-dist/
+
+# ========================
+# Build & Distribution
+# ========================
 build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+
+# ========================
+# Testing & Coverage
+# ========================
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# ========================
+# Linting & Typing
+# ========================
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ========================
+# Package Managers
+# ========================
+uv.lock
+
+# ========================
+# Logging & Data (Nonebot)
+# ========================
+*.log
+logs/
+data/
+
+# ========================
+# Project Specific
+# ========================
 config.yaml
+reference/
