@@ -51,8 +51,20 @@ platforms:
     enabled: true
     extra:
       port: 8642
-      # key: "your-api-key"  # 可选
 ```
+
+设置 API Key（**必须**，用于会话保持）：
+
+```bash
+# 生成密钥
+python -c "import secrets; print(secrets.token_hex(32))"
+# 或 openssl rand -hex 32
+
+# 写入 Hermes 环境配置
+echo 'API_SERVER_KEY=your-generated-key' >> ~/.hermes/.env
+```
+
+> **Note**: 不设置 `API_SERVER_KEY` 会导致 Session 续接被拒绝，每次对话无法保持上下文。
 
 启动 Hermes Gateway：
 
@@ -128,6 +140,34 @@ nb run
 | 代码执行与委托 | `execute_code`, `delegate_task` |
 | 定时任务 | `cronjob` |
 | 智能家居 | `ha_list_entities`, `ha_get_state` 等 |
+
+### 🔒 安全最佳实践：限制 API Server 工具集
+
+默认的 `hermes-api-server` 工具集包含 `terminal`、`execute_code` 等可执行服务器命令的工具。**对于面向外部用户的部署，强烈建议限制工具集**。
+
+在 `~/.hermes/config.yaml` 中配置 `platform_toolsets`：
+
+```yaml
+platform_toolsets:
+  # 其他平台保持默认
+  cli: [hermes-cli]
+  telegram: [hermes-telegram]
+
+  # API Server 使用受限工具集（按需选择）
+  api_server: [web, file, vision, image_gen, skills, todo, memory, session_search]
+```
+
+可选的安全级别：
+
+| 级别 | 配置 | 说明 |
+|------|------|------|
+| 🔴 最小权限 | `[safe]` | 仅 web + vision + image_gen，无文件/终端 |
+| 🟡 推荐 | `[web, file, vision, image_gen, skills, todo, memory, session_search]` | 有文件读写但无命令执行 |
+| 🟢 完全信任 | `[hermes-api-server]`（默认） | 包含终端、代码执行等全部工具 |
+
+> **Tip**: 运行 `hermes chat --list-toolsets` 查看所有可用工具集。
+
+
 
 ## 命令
 
