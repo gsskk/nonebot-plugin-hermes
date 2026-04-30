@@ -151,7 +151,7 @@ nb run
 
 ### 🔒 安全最佳实践：限制 API Server 工具集
 
-默认的 `hermes-api-server` 工具集包含 `terminal`、`execute_code` 等可执行服务器命令的工具。**对于面向外部用户的部署，强烈建议限制工具集**。
+默认的 `hermes-api-server` 工具集包含 `terminal`、`execute_code` 等危险工具。**针对不同的部署环境，强烈建议配置不同的受限工具集，特别是在公共群聊中，必须禁止文件读写（`file` 工具）以防敏感信息泄露或被植入后门。**
 
 在 `~/.hermes/config.yaml` 中配置 `platform_toolsets`：
 
@@ -161,21 +161,23 @@ platform_toolsets:
   cli: [hermes-cli]
   telegram: [hermes-telegram]
 
-  # API Server 使用受限工具集（按需选择）
-  api_server: [web, file, vision, image_gen, skills, todo, memory, session_search]
+  # API Server 根据部署场景选择工具集 (见下方推荐)
+  api_server: [web]
 ```
 
-可选的安全级别：
+推荐的部署安全级别：
 
-| 级别 | 配置 | 说明 |
-|------|------|------|
-| 🔴 最小权限 | `[safe]` | 仅 web + vision + image_gen，无文件/终端 |
-| 🟡 推荐 | `[web, file, vision, image_gen, skills, todo, memory, session_search]` | 有文件读写但无命令执行 |
-| 🟢 完全信任 | `[hermes-api-server]`（默认） | 包含终端、代码执行等全部工具 |
+| 部署场景 | 推荐配置 | 包含的工具集 | 说明 |
+| :--- | :--- | :--- | :--- |
+| **🔴 公共群聊 (极简防刷)** | `[web]` | 仅 `web` (联网搜索) | **对外公开机器人的最稳妥配置。** 杜绝文件操作，同时避免画图/识图带来的高昂 API 费用和合规封号风险。 |
+| **🟠 公共群聊 (含多媒体)** | `[safe]` | 搜索 + 识图 + 画图 | 等同于 `[web, vision, image_gen]`。增加了视觉能力，但需注意防范 API 被刷或恶意图片封号的风险。 |
+| **🟡 内部/信任群聊 (受限读写)** | `[web, vision, image_gen, memory, session_search]` | 搜索 + 多媒体 + 记忆 | 适合公司内部群或好友群。允许发图画图、保留跨会话记忆，但依然严格禁止文件读写。 |
+| **🟢 站长私聊 (高级管理)** | `[web, file, vision, image_gen, skills, todo, memory, session_search]` | 包含文件读写、技能管理等 | 适合机器人主人的私聊。有文件读写能力，可通过群白名单机制将其他群屏蔽。 |
+| **💀 危险/开发环境 (完全信任)** | `[hermes-api-server]` | 包含终端、代码执行等全部工具 | （默认）仅限开发者自己在安全的隔离环境使用。 |
 
-> **Tip**: 运行 `hermes chat --list-toolsets` 查看所有可用工具集。
-
-
+> [!WARNING]
+> **关于 `memory` 和 `session_search` 的跨群隐私泄露风险：**
+> Hermes Agent 的底层数据库是全局共享的（无平台/群组隔离）。如果在多群共用的 Agent 上开启这两个工具，**A群的成员可以搜到B群的聊天记录，甚至你的私人终端/私聊记录**。若看重隐私隔离，多群共用时请勿包含 `memory` 和 `session_search`。普通的上下文多轮对话由临时 Session 维护，不受关闭这两个工具的影响。
 
 ## 命令
 

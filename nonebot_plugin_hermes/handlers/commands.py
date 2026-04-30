@@ -12,11 +12,7 @@ from nonebot.adapters import Bot, Event
 
 from ..core.hermes_client import hermes_client
 from ..core.session import session_manager
-
-
-def _get_adapter_name(target: alconna.Target) -> str:
-    adapter = getattr(target, "adapter", "") or ""
-    return adapter.lower().replace(" ", "").replace(".", "") or "unknown"
+from ..utils import get_adapter_name, check_isolation
 
 
 # --- /clear ---
@@ -27,7 +23,10 @@ clear_command = on_command("clear", force_whitespace=True, priority=90, block=Tr
 async def handle_clear(bot: Bot, event: Event):
     """重置当前会话"""
     target = alconna.get_target()
-    adapter_name = _get_adapter_name(target)
+    if not check_isolation(event, target):
+        return
+
+    adapter_name = get_adapter_name(target)
     user_id = event.get_user_id() or "user"
     group_id = None if target.private else target.id
 
@@ -53,6 +52,8 @@ ping_command = on_command("ping", force_whitespace=True, priority=90, block=True
 async def handle_ping(bot: Bot, event: Event):
     """检查 Hermes 连接状态"""
     target = alconna.get_target()
+    if not check_isolation(event, target):
+        return
 
     healthy = await hermes_client.health_check()
     if healthy:
@@ -71,6 +72,8 @@ help_command = on_command("help", aliases={"帮助"}, force_whitespace=True, pri
 async def handle_help(bot: Bot, event: Event):
     """显示帮助信息"""
     target = alconna.get_target()
+    if not check_isolation(event, target):
+        return
 
     if target.private:
         help_text = (

@@ -16,15 +16,7 @@ from nonebot.rule import Rule
 from ..config import plugin_config
 from ..core.hermes_client import hermes_client
 from ..core.session import session_manager
-
-
-def _get_adapter_name(target: alconna.Target) -> str:
-    """从 Target 中提取适配器名称"""
-    # alconna Target 的 adapter 字段包含适配器类名
-    # 例如 "OneBot V11", "QQ", "Kook" 等
-    adapter = getattr(target, "adapter", "") or ""
-    # 简化名称用于 session key
-    return adapter.lower().replace(" ", "").replace(".", "") or "unknown"
+from ..utils import get_adapter_name, check_isolation
 
 
 async def _ignore_rule(event: Event) -> bool:
@@ -61,7 +53,7 @@ async def handle_message(bot: Bot, event: Event):
     except Exception:
         return
 
-    adapter_name = _get_adapter_name(target)
+    adapter_name = get_adapter_name(target)
     user_id = event.get_user_id() or "user"
 
     # 忽略来自自身的消息
@@ -90,21 +82,12 @@ async def handle_message(bot: Bot, event: Event):
         return
 
     # --- 触发判断 ---
-    if target.private:
-        # 私聊触发
-        if plugin_config.hermes_private_trigger == "allowlist":
-            if user_id not in plugin_config.hermes_allow_users:
-                return
-        # "all" 模式：始终响应
+    if not check_isolation(event, target):
+        return
 
-    else:
-        # 群聊触发
-        group_id = target.id
+    group_id = None if target.private else target.id
 
-        # 群组白名单
-        if plugin_config.hermes_allow_groups and group_id not in plugin_config.hermes_allow_groups:
-            return
-
+    if not target.private:
         is_mentioned = event.is_tome()
 
         # 检测消息中是否有显式 @bot
@@ -123,7 +106,7 @@ async def handle_message(bot: Bot, event: Event):
             matched_kw = False
             for kw in plugin_config.hermes_keywords:
                 if msg_text.startswith(kw):
-                    msg_text = msg_text[len(kw):].strip()
+                    msg_text = msg_text[len(kw) :].strip()
                     matched_kw = True
                     break
             if not matched_kw and not is_mentioned:

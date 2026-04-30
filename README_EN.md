@@ -149,31 +149,35 @@ This plugin communicates via the Hermes `api_server` platform, which uses the `h
 | Cron Jobs | `cronjob` |
 | Smart Home (HA) | `ha_list_entities`, `ha_get_state`, etc. |
 
-### 🔒 Security Best Practices: Restrict API Server Toolset
+### 🔒 Security Best Practice: Restricting API Server Toolsets
 
-The default `hermes-api-server` toolset includes tools like `terminal` and `execute_code` that can execute server commands. **For deployments facing external users, it is strongly recommended to restrict the toolset**.
+The default `hermes-api-server` toolset includes powerful tools like `terminal` and `execute_code`. **For deployments facing external users, especially in public group chats, it is strictly required to restrict the toolsets and disable file access (`file` tool) to prevent sensitive data leaks or backdoor injections.**
 
 Configure `platform_toolsets` in `~/.hermes/config.yaml`:
 
 ```yaml
 platform_toolsets:
-  # Keep other platforms default
+  # Keep defaults for other platforms
   cli: [hermes-cli]
   telegram: [hermes-telegram]
 
-  # API Server uses restricted toolset (choose as needed)
-  api_server: [web, file, vision, image_gen, skills, todo, memory, session_search]
+  # API Server toolset based on deployment scenario (see recommendations below)
+  api_server: [web]
 ```
 
-Optional security levels:
+Recommended deployment security levels:
 
-| Level | Config | Description |
-|------|------|------|
-| 🔴 Least Privilege | `[safe]` | Only web + vision + image_gen, no file/terminal |
-| 🟡 Recommended | `[web, file, vision, image_gen, skills, todo, memory, session_search]` | Has file read/write but no command execution |
-| 🟢 Fully Trusted | `[hermes-api-server]` (Default) | Includes all tools like terminal, code execution, etc. |
+| Deployment Scenario | Configuration | Toolsets Included | Description |
+| :--- | :--- | :--- | :--- |
+| **🔴 Public Groups (Minimal)** | `[web]` | Only Web Search | **The safest configuration for public bots.** Prevents file access, while avoiding high API costs and account ban risks from image generation. |
+| **🟠 Public Groups (Media)** | `[safe]` | Web + Vision + Image Gen | Built-in alias for `[web, vision, image_gen]`. Adds visual capabilities, but beware of API cost abuse or policy violations. |
+| **🟡 Internal/Trusted Groups** | `[web, vision, image_gen, memory, session_search]` | Web + Media + Memory | Suitable for private internal or friend groups. Enables image features and cross-session memory but still blocks file operations. |
+| **🟢 Admin Direct Message** | `[web, file, vision, image_gen, skills, todo, memory, session_search]` | Includes File I/O, Skills Management, etc. | Suitable for personal use by the bot owner. Allows file read/write. Use blocklists to disable it in other groups. |
+| **💀 Dev Environment (Full Trust)** | `[hermes-api-server]` | All tools including Terminal and Code Execution | (Default) Only for developers operating in isolated and secure environments. |
 
-> **Tip**: Run `hermes chat --list-toolsets` to see all available toolsets.
+> [!WARNING]
+> **Privacy Risk Warning for `memory` and `session_search`:**
+> Hermes Agent uses a unified, global database for all memories and sessions (there is no tenant isolation). If you enable these tools on a bot shared across multiple groups, **users in Group A can search for and read conversation histories from Group B, or even your private direct messages**. If cross-group privacy is a concern, do not include `memory` or `session_search`. Standard multi-turn conversation context is maintained by temporary sessions and is unaffected by disabling these tools.
 
 ## Commands
 
