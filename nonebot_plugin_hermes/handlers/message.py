@@ -132,11 +132,6 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
         f"{f' [+{len(image_urls)} 图片]' if image_urls else ''}"
     )
 
-    # --- 抢占标记 ---
-    # 如果走到这里，说明 Hermes 决定处理该消息。
-    # 设置 _dify_intercepted=True，即使后续抛出异常，Dify 看到该标记也会跳过，避免冲突。
-    setattr(event, "_dify_intercepted", True)
-
     # --- 调用 Hermes API ---
     reply_text, media_urls = await hermes_client.chat(
         text=msg_text or " ",  # 有图无字时发空格确保 API 正常
