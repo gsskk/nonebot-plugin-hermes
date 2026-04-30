@@ -1,14 +1,14 @@
 """
 会话管理
 
-使用 TTLCache 维护 session key 映射，支持会话过期自动重置。
+维护 session key 映射，会话生命周期由 Hermes Agent 的 reset policy 管理。
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from cachetools import TTLCache
+
 from nonebot import logger
 
 from ..config import plugin_config
@@ -17,9 +17,9 @@ from ..config import plugin_config
 class SessionManager:
     """管理 Hermes session key 的生成和过期"""
 
-    def __init__(self, ttl: int = 3600, maxsize: int = 4096):
-        # key: internal_session_id -> value: hermes session key (带时间戳后缀)
-        self._cache: TTLCache[str, str] = TTLCache(maxsize=maxsize, ttl=ttl)
+    def __init__(self):
+        # key: internal_session_id -> value: hermes session key
+        self._cache: dict[str, str] = {}
         # 跟踪每个 session 的生成时间戳，用于 /clear 重置
         self._generation: dict[str, int] = {}
 
@@ -54,8 +54,6 @@ class SessionManager:
 
         cached = self._cache.get(internal_id)
         if cached is not None:
-            # 刷新 TTL
-            self._cache[internal_id] = cached
             return cached
 
         # 生成新的 session key
@@ -94,4 +92,4 @@ class SessionManager:
 
 
 # 全局会话管理器
-session_manager = SessionManager(ttl=plugin_config.hermes_session_expire)
+session_manager = SessionManager()

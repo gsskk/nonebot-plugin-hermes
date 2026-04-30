@@ -32,7 +32,7 @@
 - ✅ 群聊 @触发 / 关键词触发 / 全部触发
 - ✅ 图片接收（通过 vision 发给 AI）
 - ✅ 图片发送（解析 AI 回复中的 markdown 图片）
-- ✅ 会话超时自动重置
+- ✅ 会话生命周期由 Hermes Agent 管理
 - ✅ 白名单（群/用户级别）
 - ✅ 内置命令（`/clear` `/ping` `/help`）
 
@@ -197,7 +197,6 @@ platform_toolsets:
 | `HERMES_API_KEY` | (空) | API 密钥 |
 | `HERMES_GROUP_TRIGGER` | `at` | 群聊触发: at / all / keyword |
 | `HERMES_PRIVATE_TRIGGER` | `all` | 私聊触发: all / allowlist |
-| `HERMES_SESSION_EXPIRE` | `3600` | 会话超时（秒） |
 | `HERMES_SESSION_SHARE_GROUP` | `false` | 群内共享 session |
 
 ## 限制

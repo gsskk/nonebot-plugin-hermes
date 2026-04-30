@@ -37,9 +37,6 @@ class Config(BaseModel):
     """允许响应的群组 ID（空 = 全部允许）"""
 
     # --- 会话 ---
-    hermes_session_expire: int = 3600
-    """会话过期时间（秒），过期后自动开始新会话"""
-
     hermes_session_share_group: bool = False
     """群内是否共享同一个 session（False = 每人独立）"""
 

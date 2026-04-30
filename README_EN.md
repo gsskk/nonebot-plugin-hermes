@@ -32,7 +32,7 @@ User Message → NoneBot Adapter → nonebot-plugin-hermes
 - ✅ Group chat trigger modes: @mention / keyword / all
 - ✅ Image reception (sent to AI via vision)
 - ✅ Image sending (parses markdown images in AI replies)
-- ✅ Automatic session timeout reset
+- ✅ Session lifecycle managed by Hermes Agent
 - ✅ Allowlist (Group/User level)
 - ✅ Built-in commands (`/clear`, `/ping`, `/help`)
 
@@ -197,7 +197,6 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_API_KEY` | (Empty) | API Key |
 | `HERMES_GROUP_TRIGGER` | `at` | Group chat trigger: at / all / keyword |
 | `HERMES_PRIVATE_TRIGGER` | `all` | Private chat trigger: all / allowlist |
-| `HERMES_SESSION_EXPIRE` | `3600` | Session timeout (seconds) |
 | `HERMES_SESSION_SHARE_GROUP` | `false` | Share session within group |
 
 ## Limitations
