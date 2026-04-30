@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import nonebot_plugin_alconna as alconna
-from nonebot import on_command, logger
+from nonebot import on_command
 from nonebot.adapters import Bot, Event
 
 from ..core.hermes_client import hermes_client

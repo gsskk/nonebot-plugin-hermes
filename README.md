@@ -1,5 +1,7 @@
 # nonebot-plugin-hermes
 
+中文文档 | [English](README_EN.md)
+
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的 NoneBot2 插件，通过 Hermes API Server 实现多平台 AI 聊天机器人。
 
 ## 支持的平台

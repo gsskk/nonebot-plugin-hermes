@@ -14,13 +14,17 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/NousResearch/hermes-agent"
+"Homepage" = "https://github.com/gsskk/nonebot-plugin-hermes"
 
 [tool.nonebot]
 plugins = ["nonebot_plugin_hermes"]
 
 [tool.ruff]
 line-length = 120
+exclude = ["references"]
+
+[tool.ruff.lint]
+ignore = ["E402"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

@@ -31,7 +31,7 @@ __plugin_meta__ = PluginMetadata(
     config=Config,
     supported_adapters=inherit_supported_adapters("nonebot_plugin_alconna"),
     extra={
-        "author": "NousResearch",
+        "author": "gsskk",
         "version": __version__,
     },
 )
