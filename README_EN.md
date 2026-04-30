@@ -45,14 +45,14 @@ User Message → NoneBot Adapter → nonebot-plugin-hermes
 
 ### 2. Enable Hermes API Server
 
-In `~/.hermes/config.yaml`:
+In `~/.hermes/.env`:
 
-```yaml
-platforms:
-  api_server:
-    enabled: true
-    extra:
-      port: 8642
+```bash
+# Enable API Server and specify port
+API_SERVER_ENABLED=true
+API_SERVER_PORT=8642
+# If NoneBot and Hermes are on different machines, listen on all interfaces:
+# API_SERVER_HOST=0.0.0.0
 ```
 
 Set the API Key (**Required**, for session persistence):

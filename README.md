@@ -45,14 +45,14 @@
 
 ### 2. 启用 Hermes API Server
 
-在 `~/.hermes/config.yaml` 中：
+在 `~/.hermes/.env` 中添加配置：
 
-```yaml
-platforms:
-  api_server:
-    enabled: true
-    extra:
-      port: 8642
+```bash
+# 启用 API Server 并指定端口
+API_SERVER_ENABLED=true
+API_SERVER_PORT=8642
+# 如果 NoneBot 和 Hermes 不在同一台机器上，需要监听所有 IP：
+# API_SERVER_HOST=0.0.0.0
 ```
 
 设置 API Key（**必须**，用于会话保持）：
