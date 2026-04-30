@@ -73,9 +73,7 @@ class HermesClient:
         if image_urls:
             content = [{"type": "text", "text": text}]
             for img_url in image_urls:
-                content.append(
-                    {"type": "image_url", "image_url": {"url": img_url}}
-                )
+                content.append({"type": "image_url", "image_url": {"url": img_url}})
         else:
             content = text
 
@@ -128,8 +126,11 @@ class HermesClient:
     async def health_check(self) -> bool:
         """检查 Hermes API 是否可用"""
         try:
+            headers = {}
+            if self._api_key:
+                headers["Authorization"] = f"Bearer {self._api_key}"
             async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(f"{self._api_url}/v1/models")
+                resp = await client.get(f"{self._api_url}/v1/models", headers=headers)
                 return resp.status_code == 200
         except Exception:
             return False
