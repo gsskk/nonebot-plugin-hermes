@@ -5,20 +5,20 @@ NoneBot Plugin Hermes
 支持所有 NoneBot adapter（OneBot v11/v12、QQ Official、Kook 等）。
 """
 
-from nonebot import require, logger
+from nonebot import require
 from nonebot.plugin import PluginMetadata, inherit_supported_adapters
 
 # 确保依赖的插件已加载
 require("nonebot_plugin_alconna")
 
-from .config import Config, plugin_config  # noqa: E402
+from .config import Config  # noqa: E402
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __plugin_meta__ = PluginMetadata(
     name="Hermes Agent",
     description="通过 Hermes Agent API Server 实现多平台 AI 聊天机器人",
-    homepage="https://github.com/NousResearch/hermes-agent",
+    homepage="https://github.com/gsskk/nonebot-plugin-hermes",
     usage=(
         "在群聊中 @机器人 发送消息即可与 Hermes Agent 对话。\n"
         "私聊直接发送消息即可。\n\n"
@@ -36,7 +36,11 @@ __plugin_meta__ = PluginMetadata(
     },
 )
 
-logger.info(f"Hermes Plugin loaded — API: {plugin_config.hermes_api_url}")
-
-# 导入 handlers 以注册事件处理器
+# 导入 handlers 以注册事件处理器（必须在 PluginMetadata 之后）
 from . import handlers  # noqa: F401, E402
+
+# 延迟到 handlers 加载完成后再打印配置信息
+from nonebot import logger  # noqa: E402
+from .config import plugin_config  # noqa: E402
+
+logger.info(f"Hermes Plugin loaded — API: {plugin_config.hermes_api_url}")

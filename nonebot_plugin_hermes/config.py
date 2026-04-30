@@ -6,7 +6,6 @@
 
 from typing import Set
 
-from nonebot import get_plugin_config
 from pydantic import BaseModel
 
 
@@ -52,4 +51,25 @@ class Config(BaseModel):
     """以这些字符开头的消息不触发回复"""
 
 
-plugin_config = get_plugin_config(Config)
+_plugin_config: Config | None = None
+
+
+def get_config() -> Config:
+    """延迟加载配置，避免循环导入"""
+    global _plugin_config
+    if _plugin_config is None:
+        from nonebot import get_plugin_config
+
+        _plugin_config = get_plugin_config(Config)
+    return _plugin_config
+
+
+# 兼容旧的直接引用方式
+class _LazyConfig:
+    """延迟代理，使 plugin_config.xxx 的写法仍然生效"""
+
+    def __getattr__(self, name: str):
+        return getattr(get_config(), name)
+
+
+plugin_config: Config = _LazyConfig()  # type: ignore[assignment]
