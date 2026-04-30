@@ -76,27 +76,33 @@ hermes gateway
 
 ### 3. Install Plugin
 
-**Option A: Existing NoneBot Project**
+**Option A: Using nb-cli (Recommended)**
 
 ```bash
-pip install -e /path/to/nonebot-plugin-hermes
-# Or uv add /path/to/nonebot-plugin-hermes
+nb plugin install nonebot-plugin-hermes
 ```
 
-Add the plugin to `pyproject.toml`:
+**Option B: Using pip / uv**
+
+```bash
+pip install nonebot-plugin-hermes
+# Or uv add nonebot-plugin-hermes
+```
+
+Add the plugin to `pyproject.toml` (done automatically if using nb-cli):
 
 ```toml
 [tool.nonebot]
 plugins = ["nonebot_plugin_hermes"]
 ```
 
-**Option B: New NoneBot Project**
+**Full setup for a new NoneBot Project**:
 
 ```bash
 pip install nb-cli
 nb create          # Create project, choose fastapi driver
-nb plugin install nonebot-adapter-onebot  # Install OneBot adapter
-pip install -e /path/to/nonebot-plugin-hermes
+nb plugin install nonebot-adapter-onebot  # Install platform adapter, e.g., OneBot
+nb plugin install nonebot-plugin-hermes   # Install Hermes plugin
 ```
 
 ### 4. Configuration

@@ -76,27 +76,33 @@ hermes gateway
 
 ### 3. 安装插件
 
-**方式 A：已有 NoneBot 项目**
+**方式 A：使用 nb-cli 安装（推荐）**
 
 ```bash
-pip install -e /path/to/nonebot-plugin-hermes
-# 或 uv add /path/to/nonebot-plugin-hermes
+nb plugin install nonebot-plugin-hermes
 ```
 
-在 `pyproject.toml` 中添加插件：
+**方式 B：使用 pip / uv 安装**
+
+```bash
+pip install nonebot-plugin-hermes
+# 或 uv add nonebot-plugin-hermes
+```
+
+在 `pyproject.toml` 中添加插件（如果是 nb-cli 安装会自动添加）：
 
 ```toml
 [tool.nonebot]
 plugins = ["nonebot_plugin_hermes"]
 ```
 
-**方式 B：新建 NoneBot 项目**
+**新建 NoneBot 项目的完整步骤**：
 
 ```bash
 pip install nb-cli
 nb create          # 创建项目，选择 fastapi 驱动器
-nb plugin install nonebot-adapter-onebot  # 安装 OneBot 适配器
-pip install -e /path/to/nonebot-plugin-hermes
+nb plugin install nonebot-adapter-onebot  # 安装对应平台的适配器，例如 OneBot
+nb plugin install nonebot-plugin-hermes   # 安装 Hermes 插件
 ```
 
 ### 4. 配置
