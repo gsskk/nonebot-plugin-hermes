@@ -12,6 +12,7 @@ import nonebot_plugin_alconna as alconna
 from nonebot import on_message, logger
 from nonebot.adapters import Bot, Event
 from nonebot.rule import Rule
+from nonebot.matcher import Matcher
 
 from ..config import plugin_config
 from ..core.hermes_client import hermes_client
@@ -37,34 +38,34 @@ async def _ignore_rule(event: Event) -> bool:
     return True
 
 
-# 监听普通消息，低优先级，不阻断其他插件
+# 监听普通消息，设置优先级 98 (比默认 99 高)，在真正响应时阻断 Dify
 receive_message = on_message(
     rule=Rule(_ignore_rule),
-    priority=99,
-    block=False,
+    priority=98,
+    block=True,
 )
 
 
 @receive_message.handle()
-async def handle_message(bot: Bot, event: Event):
+async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     """处理接收到的消息"""
     try:
         target = alconna.get_target()
     except Exception:
-        return
+        matcher.skip()
 
     adapter_name = get_adapter_name(target)
     user_id = event.get_user_id() or "user"
 
     # 忽略来自自身的消息
     if user_id == str(bot.self_id):
-        return
+        matcher.skip()
 
     # 生成统一消息对象
     try:
         uni_msg = alconna.UniMessage.generate_without_reply(event=event, bot=bot)
     except Exception:
-        return
+        matcher.skip()
 
     # 提取纯文本
     msg_text = uni_msg.extract_plain_text().strip()
@@ -79,11 +80,11 @@ async def handle_message(bot: Bot, event: Event):
 
     # 空消息且无图片则跳过
     if not msg_text and not image_urls:
-        return
+        matcher.skip()
 
     # --- 触发判断 ---
     if not check_isolation(event, target):
-        return
+        matcher.skip()
 
     group_id = None if target.private else target.id
 
@@ -101,7 +102,7 @@ async def handle_message(bot: Bot, event: Event):
 
         if trigger_mode == "at":
             if not is_mentioned:
-                return
+                matcher.skip()
         elif trigger_mode == "keyword":
             matched_kw = False
             for kw in plugin_config.hermes_keywords:
@@ -110,11 +111,11 @@ async def handle_message(bot: Bot, event: Event):
                     matched_kw = True
                     break
             if not matched_kw and not is_mentioned:
-                return
+                matcher.skip()
         # "all" 模式：始终响应
 
         if not msg_text and not image_urls:
-            return
+            matcher.skip()
 
     # --- 构建 session key ---
     group_id = None if target.private else target.id
@@ -130,6 +131,11 @@ async def handle_message(bot: Bot, event: Event):
         f"{user_id}: {msg_text[:80]}"
         f"{f' [+{len(image_urls)} 图片]' if image_urls else ''}"
     )
+
+    # --- 抢占标记 ---
+    # 如果走到这里，说明 Hermes 决定处理该消息。
+    # 设置 _dify_intercepted=True，即使后续抛出异常，Dify 看到该标记也会跳过，避免冲突。
+    setattr(event, "_dify_intercepted", True)
 
     # --- 调用 Hermes API ---
     reply_text, media_urls = await hermes_client.chat(

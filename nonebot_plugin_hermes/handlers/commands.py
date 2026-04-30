@@ -9,6 +9,7 @@ from __future__ import annotations
 import nonebot_plugin_alconna as alconna
 from nonebot import on_command
 from nonebot.adapters import Bot, Event
+from nonebot.matcher import Matcher
 
 from ..core.hermes_client import hermes_client
 from ..core.session import session_manager
@@ -16,15 +17,15 @@ from ..utils import get_adapter_name, check_isolation
 
 
 # --- /clear ---
-clear_command = on_command("clear", force_whitespace=True, priority=90, block=True)
+clear_command = on_command("clear", force_whitespace=True, priority=88, block=True)
 
 
 @clear_command.handle()
-async def handle_clear(bot: Bot, event: Event):
+async def handle_clear(bot: Bot, event: Event, matcher: Matcher):
     """重置当前会话"""
     target = alconna.get_target()
     if not check_isolation(event, target):
-        return
+        matcher.skip()
 
     adapter_name = get_adapter_name(target)
     user_id = event.get_user_id() or "user"
@@ -45,15 +46,15 @@ async def handle_clear(bot: Bot, event: Event):
 
 
 # --- /ping ---
-ping_command = on_command("ping", force_whitespace=True, priority=90, block=True)
+ping_command = on_command("ping", force_whitespace=True, priority=88, block=True)
 
 
 @ping_command.handle()
-async def handle_ping(bot: Bot, event: Event):
+async def handle_ping(bot: Bot, event: Event, matcher: Matcher):
     """检查 Hermes 连接状态"""
     target = alconna.get_target()
     if not check_isolation(event, target):
-        return
+        matcher.skip()
 
     healthy = await hermes_client.health_check()
     if healthy:
@@ -65,15 +66,15 @@ async def handle_ping(bot: Bot, event: Event):
 
 
 # --- /help ---
-help_command = on_command("help", aliases={"帮助"}, force_whitespace=True, priority=90, block=True)
+help_command = on_command("help", aliases={"帮助"}, force_whitespace=True, priority=88, block=True)
 
 
 @help_command.handle()
-async def handle_help(bot: Bot, event: Event):
+async def handle_help(bot: Bot, event: Event, matcher: Matcher):
     """显示帮助信息"""
     target = alconna.get_target()
     if not check_isolation(event, target):
-        return
+        matcher.skip()
 
     if target.private:
         help_text = (
