@@ -1,6 +1,6 @@
 # nonebot-plugin-hermes
 
-[中文文档](README.md) | English
+[中文文档](https://github.com/gsskk/nonebot-plugin-hermes/blob/main/README.md) | English
 
 A NoneBot2 plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent), enabling multi-platform AI chatbots via Hermes API Server.
 
