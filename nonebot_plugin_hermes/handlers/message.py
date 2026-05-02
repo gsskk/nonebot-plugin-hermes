@@ -38,12 +38,72 @@ async def _ignore_rule(event: Event) -> bool:
     return True
 
 
-# 监听普通消息，设置优先级 98 (比默认 99 高)，在真正响应时阻断 Dify
+# 监听普通消息，设置优先级 98 (比默认 99 高)，在真正响应时阻断后续处理
 receive_message = on_message(
     rule=Rule(_ignore_rule),
     priority=98,
     block=True,
 )
+
+
+# 被动感知：监听所有消息（非阻塞），仅用于记录上下文背景
+perception_message = on_message(priority=100, block=False)
+
+
+@perception_message.handle()
+async def handle_perception(bot: Bot, event: Event):
+    """静默记录消息到本地缓存，不触发 AI 回复"""
+    if not plugin_config.hermes_perception_enabled:
+        return
+
+    try:
+        target = alconna.get_target()
+        adapter_name = get_adapter_name(target)
+        user_id = event.get_user_id()
+    except Exception:
+        return
+
+    # 忽略来自自身的消息
+    if user_id == str(bot.self_id):
+        return
+
+    # 提取消息内容
+    image_urls: List[str] = []
+    try:
+        uni_msg = alconna.UniMessage.generate_without_reply(event=event, bot=bot)
+        msg_text = uni_msg.extract_plain_text().strip()
+
+        # 提取图片 URL
+        if uni_msg.has(alconna.Image):
+            for img in uni_msg[alconna.Image]:
+                url = getattr(img, "url", None)
+                if url:
+                    image_urls.append(url)
+
+        # 处理图片占位
+        if image_urls and plugin_config.hermes_perception_image_mode == "placeholder":
+            if msg_text:
+                msg_text += " [图片]"
+            else:
+                msg_text = "[图片]"
+    except Exception:
+        return
+
+    if not msg_text and not image_urls:
+        return
+
+    group_id = None if target.private else target.id
+
+    # 记录到会话历史
+    session_manager.record_history(
+        adapter_name=adapter_name,
+        is_private=target.private,
+        user_id=user_id,
+        group_id=group_id,
+        sender_name=user_id,
+        content=msg_text,
+        image_urls=image_urls,
+    )
 
 
 @receive_message.handle()
@@ -159,9 +219,24 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
         group_id=group_id,
     )
 
+    # --- 获取历史背景上下文 (Passive Perception) ---
+    history_text, history_images = session_manager.get_history_context(
+        adapter_name=adapter_name,
+        is_private=target.private,
+        user_id=user_id,
+        group_id=group_id,
+    )
+    if history_text:
+        msg_text = f"{history_text}\n\n{msg_text}"
+
+    # 合并历史图片（如 'last' 模式提取的图片）
+    for img_url in history_images:
+        if img_url not in image_urls:
+            image_urls.append(img_url)
+
     logger.info(
         f"[HERMES] [{adapter_name}] {'私聊' if target.private else f'群聊({group_id})'} "
-        f"{user_id}: {msg_text[:80]}"
+        f"{user_id}: {msg_text[:80].replace(chr(10), ' ')}"
         f"{f' [+{len(image_urls)} 图片]' if image_urls else ''}"
     )
 

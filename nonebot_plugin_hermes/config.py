@@ -48,5 +48,22 @@ class Config(BaseModel):
     hermes_ignore_prefix: Set[str] = {"."}
     """以这些字符开头的消息不触发回复"""
 
+    # --- 被动感知 (Chat Awareness) ---
+    hermes_perception_enabled: bool = False
+    """是否开启被动感知（监听但不回复非触发消息，为下次对话提供背景）"""
+
+    hermes_perception_buffer: int = 10
+    """被动感知缓存的历史消息数量"""
+
+    hermes_perception_text_length: int = 200
+    """被动感知单条历史消息最大长度（超出截断）"""
+
+    hermes_perception_image_mode: str = "placeholder"
+    """历史记录中的图片处理模式:
+    - placeholder: 仅记录 [图片] 占位符 (默认)
+    - last: 记录占位符，但在触发时包含最后一张真图
+    - none: 完全不记录图片
+    """
+
 
 plugin_config = get_plugin_config(Config)

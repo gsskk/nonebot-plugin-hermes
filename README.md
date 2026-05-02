@@ -30,6 +30,8 @@
 - ✅ 私聊 / 群聊对话
 - ✅ 多轮上下文记忆（基于 Hermes Session）
 - ✅ 群聊 @触发 / 关键词触发 / 全部触发
+- ✅ **引用消息提取**：自动提取被回复消息中的文本和图片作为 AI 上下文
+- ✅ **被动感知 (Chat Awareness)**：在群聊中默默记录最近对话，为下次触发提供完整背景
 - ✅ 图片接收（通过 vision 发给 AI）
 - ✅ 图片发送（解析 AI 回复中的 markdown 图片）
 - ✅ 会话生命周期由 Hermes Agent 管理
@@ -179,6 +181,17 @@ platform_toolsets:
 > **关于 `memory` 和 `session_search` 的跨群隐私泄露风险：**
 > Hermes Agent 的底层数据库是全局共享的（无平台/群组隔离）。如果在多群共用的 Agent 上开启这两个工具，**A群的成员可以搜到B群的聊天记录，甚至你的私人终端/私聊记录**。若看重隐私隔离，多群共用时请勿包含 `memory` 和 `session_search`。普通的上下文多轮对话由临时 Session 维护，不受关闭这两个工具的影响。
 
+### 🆔 用户身份与元数据注入
+
+本插件会自动向 Hermes API 注入以下元数据，使后端 LLM 具备环境感知能力：
+
+*   **用户标识** (`user_id`): 用户的平台 ID（如 QQ 号）。
+*   **群组标识** (`group_id`): 消息来源群号（私聊则为空）。
+*   **适配器名称** (`adapter_name`): 消息来源平台（如 `OneBot V11`, `Discord`, `Telegram` 等）。
+*   **私聊状态** (`is_private`): 当前是否为私聊环境。
+
+后端 Prompt 可以通过这些信息实现个性化称呼或针对特定平台的功能逻辑。
+
 ## 命令
 
 | 命令 | 说明 |
@@ -194,10 +207,20 @@ platform_toolsets:
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `HERMES_API_URL` | `http://127.0.0.1:8642` | Hermes API Server 地址 |
-| `HERMES_API_KEY` | (空) | API 密钥 |
-| `HERMES_GROUP_TRIGGER` | `at` | 群聊触发: at / all / keyword |
-| `HERMES_PRIVATE_TRIGGER` | `all` | 私聊触发: all / allowlist |
-| `HERMES_SESSION_SHARE_GROUP` | `false` | 群内共享 session |
+| `HERMES_API_KEY` | (空) | API 密钥（建议设置以启用会话持久化） |
+| `HERMES_API_TIMEOUT` | `300` | API 请求超时时间（秒） |
+| `HERMES_GROUP_TRIGGER` | `at` | 群聊触发方式: `at` / `all` / `keyword` |
+| `HERMES_KEYWORDS` | `["/ai"]` | `keyword` 模式下的触发关键词 |
+| `HERMES_PRIVATE_TRIGGER` | `all` | 私聊触发方式: `all` / `allowlist` |
+| `HERMES_ALLOW_USERS` | `[]` | 允许私聊的用户 ID 列表 (`allowlist` 模式) |
+| `HERMES_ALLOW_GROUPS` | `[]` | 允许响应的群组 ID 列表（空为全部允许） |
+| `HERMES_SESSION_SHARE_GROUP` | `false` | 群内是否共享同一个 session |
+| `HERMES_MAX_LENGTH` | `4000` | 单条回复最大长度（超出后截断） |
+| `HERMES_IGNORE_PREFIX` | `["."]` | 以这些字符开头的消息不触发回复 |
+| `HERMES_PERCEPTION_ENABLED` | `false` | 是否开启被动感知 |
+| `HERMES_PERCEPTION_BUFFER` | `10` | 被动感知缓存的历史消息数量 |
+| `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | 被动感知单条历史消息最大长度 |
+| `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | 历史图片模式: `placeholder` / `last` / `none` |
 
 ## 限制
 

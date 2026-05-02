@@ -30,6 +30,8 @@ User Message → NoneBot Adapter → nonebot-plugin-hermes
 - ✅ Private / Group chat conversations
 - ✅ Multi-turn context memory (Based on Hermes Session)
 - ✅ Group chat trigger modes: @mention / keyword / all
+- ✅ **Quoted content extraction**: Automatically extracts text and images from replied messages as AI context
+- ✅ **Passive Perception (Chat Awareness)**: Silently records recent group conversations to provide full context for the next trigger
 - ✅ Image reception (sent to AI via vision)
 - ✅ Image sending (parses markdown images in AI replies)
 - ✅ Session lifecycle managed by Hermes Agent
@@ -179,6 +181,17 @@ Recommended deployment security levels:
 > **Privacy Risk Warning for `memory` and `session_search`:**
 > Hermes Agent uses a unified, global database for all memories and sessions (there is no tenant isolation). If you enable these tools on a bot shared across multiple groups, **users in Group A can search for and read conversation histories from Group B, or even your private direct messages**. If cross-group privacy is a concern, do not include `memory` or `session_search`. Standard multi-turn conversation context is maintained by temporary sessions and is unaffected by disabling these tools.
 
+### 🆔 User Identity & Metadata Injection
+
+This plugin automatically injects the following metadata into the Hermes API, enabling environment awareness for the backend LLM:
+
+*   **User Identifier** (`user_id`): The user's platform ID (e.g., QQ number).
+*   **Group Identifier** (`group_id`): The source group ID (empty for private chats).
+*   **Adapter Name** (`adapter_name`): The source platform (e.g., `OneBot V11`, `Discord`, `Telegram`).
+*   **Private Chat Status** (`is_private`): Whether the current context is a private chat.
+
+Backend prompts can leverage this information for personalized greetings or platform-specific logic.
+
 ## Commands
 
 | Command | Description |
@@ -194,10 +207,20 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | Option | Default | Description |
 |--------|--------|------|
 | `HERMES_API_URL` | `http://127.0.0.1:8642` | Hermes API Server URL |
-| `HERMES_API_KEY` | (Empty) | API Key |
-| `HERMES_GROUP_TRIGGER` | `at` | Group chat trigger: at / all / keyword |
-| `HERMES_PRIVATE_TRIGGER` | `all` | Private chat trigger: all / allowlist |
+| `HERMES_API_KEY` | (Empty) | API Key (Recommended for session persistence) |
+| `HERMES_API_TIMEOUT` | `300` | API request timeout (seconds) |
+| `HERMES_GROUP_TRIGGER` | `at` | Group trigger mode: `at` / `all` / `keyword` |
+| `HERMES_KEYWORDS` | `["/ai"]` | Trigger keywords for `keyword` mode |
+| `HERMES_PRIVATE_TRIGGER` | `all` | Private trigger mode: `all` / `allowlist` |
+| `HERMES_ALLOW_USERS` | `[]` | Allowed user IDs for `allowlist` mode |
+| `HERMES_ALLOW_GROUPS` | `[]` | Allowed group IDs (empty for all) |
 | `HERMES_SESSION_SHARE_GROUP` | `false` | Share session within group |
+| `HERMES_MAX_LENGTH` | `4000` | Max reply length (truncated if exceeded) |
+| `HERMES_IGNORE_PREFIX` | `["."]` | Ignore messages starting with these chars |
+| `HERMES_PERCEPTION_ENABLED` | `false` | Enable passive perception |
+| `HERMES_PERCEPTION_BUFFER` | `10` | Number of messages to buffer for perception |
+| `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | Max text length per historical message |
+| `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | Image mode: `placeholder` / `last` / `none` |
 
 ## Limitations
 
