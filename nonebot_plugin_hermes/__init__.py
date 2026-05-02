@@ -5,7 +5,7 @@ NoneBot Plugin Hermes
 支持所有 NoneBot adapter（OneBot v11/v12、QQ Official、Kook 等）。
 """
 
-from nonebot import require
+from nonebot import require, logger
 from nonebot.plugin import PluginMetadata, inherit_supported_adapters
 
 # 确保依赖的插件已加载
@@ -37,9 +37,7 @@ __plugin_meta__ = PluginMetadata(
 )
 
 # 导入 handlers 以注册事件处理器（必须在 PluginMetadata 之后）
-from . import handlers  # noqa: F401, E402
+from .handlers import commands as _commands, message as _message  # noqa: F401
 
-# 延迟到 handlers 加载完成后再打印配置信息
-from nonebot import logger
-
+# 打印加载信息
 logger.info(f"Hermes Plugin loaded — API: {plugin_config.hermes_api_url}")

@@ -46,9 +46,36 @@ class HermesClient:
     """Hermes API Server 客户端"""
 
     def __init__(self):
-        self._api_url = plugin_config.hermes_api_url.rstrip("/")
-        self._api_key = plugin_config.hermes_api_key
-        self._timeout = plugin_config.hermes_api_timeout
+        self._api_url_cache: Optional[str] = None
+        self._api_key_cache: Optional[str] = None
+        self._timeout_cache: Optional[int] = None
+
+    @property
+    def api_url(self) -> str:
+        if self._api_url_cache is None:
+            self._api_url_cache = plugin_config.hermes_api_url.rstrip("/")
+        return self._api_url_cache
+
+    @property
+    def api_key(self) -> str:
+        if self._api_key_cache is None:
+            self._api_key_cache = plugin_config.hermes_api_key
+        return self._api_key_cache
+
+    @property
+    def timeout(self) -> int:
+        if self._timeout_cache is None:
+            self._timeout_cache = plugin_config.hermes_api_timeout
+        return self._timeout_cache
+
+    def get_headers(self, session_key: str = "") -> Dict[str, str]:
+        h = {
+            "Content-Type": "application/json",
+            "X-Hermes-Session-Id": session_key,
+        }
+        if self.api_key:
+            h["Authorization"] = f"Bearer {self.api_key}"
+        return h
 
     async def chat(
         self,
@@ -74,7 +101,7 @@ class HermesClient:
         Returns:
             (reply_text, media_urls)
         """
-        url = f"{self._api_url}/v1/chat/completions"
+        url = f"{self.api_url}/v1/chat/completions"
 
         # 构建消息内容：纯文本或多模态
         content: Any
@@ -109,15 +136,10 @@ class HermesClient:
             "stream": False,
         }
 
-        headers: Dict[str, str] = {
-            "Content-Type": "application/json",
-            "X-Hermes-Session-Id": session_key,
-        }
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+        headers = self.get_headers(session_key)
 
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(url, json=payload, headers=headers)
 
                 if resp.status_code != 200:
@@ -128,10 +150,10 @@ class HermesClient:
                 data = resp.json()
 
         except httpx.TimeoutException:
-            logger.error(f"[HERMES] API 请求超时 ({self._timeout}s)")
+            logger.error(f"[HERMES] API 请求超时 ({self.timeout}s)")
             return "⚠️ AI 服务响应超时，请稍后重试", []
         except httpx.ConnectError:
-            logger.error(f"[HERMES] 无法连接到 {self._api_url}")
+            logger.error(f"[HERMES] 无法连接到 {self.api_url}")
             return "⚠️ 无法连接到 AI 服务，请检查 Hermes Gateway 是否正在运行", []
         except Exception as exc:
             logger.error(f"[HERMES] API 请求异常: {exc}")
@@ -152,11 +174,9 @@ class HermesClient:
     async def health_check(self) -> bool:
         """检查 Hermes API 是否可用"""
         try:
-            headers = {}
-            if self._api_key:
-                headers["Authorization"] = f"Bearer {self._api_key}"
+            headers = self.get_headers()
             async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(f"{self._api_url}/v1/models", headers=headers)
+                resp = await client.get(f"{self.api_url}/v1/models", headers=headers)
                 return resp.status_code == 200
         except Exception:
             return False
