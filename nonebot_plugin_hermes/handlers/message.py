@@ -61,7 +61,30 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     if user_id == str(bot.self_id):
         matcher.skip()
 
-    # 生成统一消息对象
+    # 提取引用消息中的内容
+    replied_text = ""
+    replied_image_urls: List[str] = []
+    if hasattr(event, "reply") and event.reply:
+        try:
+            # 引用消息的生成通常是异步的 (针对 message 属性)
+            replied_message = await alconna.UniMessage.generate(message=event.reply.message, bot=bot)
+
+            # 提取引用文本
+            replied_text = replied_message.extract_plain_text().strip()
+
+            # 提取引用图片
+            if replied_message.has(alconna.Image):
+                for img in replied_message[alconna.Image]:
+                    url = getattr(img, "url", None)
+                    if url:
+                        replied_image_urls.append(url)
+                        logger.debug(f"[HERMES] 引用消息图片 URL: {url[:50]!r}")
+                if not replied_text:
+                    replied_text = "[图片]"
+        except Exception as e:
+            logger.warning(f"[HERMES] 提取引用消息失败: {e}")
+
+    # 生成当前消息对象
     try:
         uni_msg = alconna.UniMessage.generate_without_reply(event=event, bot=bot)
     except Exception:
@@ -70,6 +93,10 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     # 提取纯文本
     msg_text = uni_msg.extract_plain_text().strip()
 
+    # 如果有引用文本，合并到主消息中提供上下文
+    if replied_text:
+        msg_text = f"(引用: {replied_text}) {msg_text}".strip()
+
     # 提取图片 URL
     image_urls: List[str] = []
     if uni_msg.has(alconna.Image):
@@ -77,9 +104,12 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             url = getattr(img, "url", None)
             if url:
                 image_urls.append(url)
-                logger.debug(f"[HERMES] 图片 URL 样本 (前50字符): {url[:50]!r}")
+                logger.debug(f"[HERMES] 当前消息图片 URL: {url[:50]!r}")
             else:
                 logger.debug(f"[HERMES] 图片段无 url 属性, img={img!r}")
+
+    # 合并引用消息中的图片
+    image_urls.extend(replied_image_urls)
 
     # 空消息且无图片则跳过
     if not msg_text and not image_urls:
