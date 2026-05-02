@@ -13,7 +13,7 @@ require("nonebot_plugin_alconna")
 
 from .config import Config, plugin_config
 
-__version__ = "0.1.5"
+__version__ = "0.1.5.post1"
 
 __plugin_meta__ = PluginMetadata(
     name="Hermes Agent",
@@ -37,7 +37,7 @@ __plugin_meta__ = PluginMetadata(
 )
 
 # 导入 handlers 以注册事件处理器（必须在 PluginMetadata 之后）
-from .handlers import commands as _commands, message as _message  # noqa: F401
+from . import handlers  # noqa: F401, E402
 
 # 打印加载信息
 logger.info(f"Hermes Plugin loaded — API: {plugin_config.hermes_api_url}")

@@ -1,6 +1,6 @@
 [project]
 name = "nonebot-plugin-hermes"
-version = "0.1.5"
+version = "0.1.5.post1"
 description = "NoneBot plugin for Hermes Agent — multi-platform AI chatbot via Hermes API Server"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,5 +29,5 @@ ignore = ["E402"]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["nonebot_plugin_hermes"]
+[tool.setuptools.packages.find]
+include = ["nonebot_plugin_hermes*"]
