@@ -77,6 +77,9 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             url = getattr(img, "url", None)
             if url:
                 image_urls.append(url)
+                logger.debug(f"[HERMES] 图片 URL 样本 (前50字符): {url[:50]!r}")
+            else:
+                logger.debug(f"[HERMES] 图片段无 url 属性, img={img!r}")
 
     # 空消息且无图片则跳过
     if not msg_text and not image_urls:
@@ -137,6 +140,10 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
         text=msg_text or " ",  # 有图无字时发空格确保 API 正常
         image_urls=image_urls,
         session_key=session_key,
+        user_id=user_id,
+        group_id=group_id,
+        adapter_name=adapter_name,
+        is_private=target.private,
     )
 
     if not reply_text and not media_urls:

@@ -55,6 +55,10 @@ class HermesClient:
         text: str,
         image_urls: Optional[List[str]] = None,
         session_key: str = "",
+        user_id: str = "",
+        group_id: Optional[str] = None,
+        adapter_name: str = "",
+        is_private: bool = True,
     ) -> Tuple[str, List[str]]:
         """调用 Hermes API，返回 (回复文本, 媒体URL列表)。
 
@@ -62,6 +66,10 @@ class HermesClient:
             text: 用户消息文本
             image_urls: 图片 URL 列表（多模态）
             session_key: 会话标识（通过 X-Hermes-Session-Id 头传递）
+            user_id: 用户 ID
+            group_id: 群组 ID
+            adapter_name: 适配器名称 (如 qqbot, onebot)
+            is_private: 是否私聊
 
         Returns:
             (reply_text, media_urls)
@@ -77,9 +85,27 @@ class HermesClient:
         else:
             content = text
 
+        messages = []
+
+        # 构建上下文 System Prompt
+        context_parts = []
+        if adapter_name:
+            context_parts.append(f"Platform: {adapter_name}")
+        context_parts.append("Chat Type: " + ("Private" if is_private else "Group"))
+        if user_id:
+            context_parts.append(f"User ID: {user_id}")
+        if not is_private and group_id:
+            context_parts.append(f"Group ID: {group_id}")
+
+        if context_parts:
+            sys_msg = "Message Context:\n" + "\n".join(context_parts)
+            messages.append({"role": "system", "content": sys_msg})
+
+        messages.append({"role": "user", "content": content})
+
         payload: Dict[str, Any] = {
             "model": "hermes-agent",
-            "messages": [{"role": "user", "content": content}],
+            "messages": messages,
             "stream": False,
         }
 
