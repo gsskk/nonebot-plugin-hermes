@@ -11,7 +11,7 @@ from nonebot.plugin import PluginMetadata, inherit_supported_adapters
 # 确保依赖的插件已加载
 require("nonebot_plugin_alconna")
 
-from .config import Config  # noqa: E402
+from .config import Config, plugin_config
 
 __version__ = "0.1.3"
 
@@ -40,7 +40,6 @@ __plugin_meta__ = PluginMetadata(
 from . import handlers  # noqa: F401, E402
 
 # 延迟到 handlers 加载完成后再打印配置信息
-from nonebot import logger  # noqa: E402
-from .config import plugin_config  # noqa: E402
+from nonebot import logger
 
 logger.info(f"Hermes Plugin loaded — API: {plugin_config.hermes_api_url}")
