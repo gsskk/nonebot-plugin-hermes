@@ -47,7 +47,8 @@ receive_message = on_message(
 
 
 # 被动感知：监听所有消息（非阻塞），仅用于记录上下文背景
-perception_message = on_message(priority=100, block=False)
+# 优先级设为 1，确保在所有可能阻断事件的插件之前执行记录
+perception_message = on_message(priority=1, block=False)
 
 
 @perception_message.handle()
@@ -104,6 +105,7 @@ async def handle_perception(bot: Bot, event: Event):
         content=msg_text,
         image_urls=image_urls,
     )
+    logger.debug(f"[PERCEPTION] 已记录历史: {user_id}: {msg_text[:50]}...")
 
 
 @receive_message.handle()
@@ -228,6 +230,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     )
     if history_text:
         msg_text = f"{history_text}\n\n{msg_text}"
+        logger.debug(f"[PERCEPTION] 成功注入历史背景，包含 {len(history_images)} 张历史图片")
 
     # 合并历史图片（如 'last' 模式提取的图片）
     for img_url in history_images:
