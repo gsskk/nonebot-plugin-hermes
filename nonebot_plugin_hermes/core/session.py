@@ -120,6 +120,7 @@ class SessionManager:
         is_private: bool,
         user_id: str,
         group_id: Optional[str],
+        skip_last: bool = False,
     ) -> Tuple[str, List[str]]:
         """获取格式化后的历史背景文本以及需要包含的历史图片 URL"""
         if not plugin_config.hermes_perception_enabled or is_private:
@@ -137,7 +138,12 @@ class SessionManager:
         extra_images = []
         all_history_images = []
 
-        for sender, content, imgs in history:
+        # 转换为列表以支持切片
+        items = list(history)
+        if skip_last and items:
+            items = items[:-1]
+
+        for sender, content, imgs in items:
             lines.append(f"{sender}: {content}")
             all_history_images.extend(imgs)
 

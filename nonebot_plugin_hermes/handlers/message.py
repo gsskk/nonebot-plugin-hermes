@@ -232,6 +232,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             is_private=target.private,
             user_id=user_id,
             group_id=group_id,
+            skip_last=True,
         )
     if history_text:
         msg_text = f"{history_text}\n\n{msg_text}"
@@ -285,5 +286,17 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     try:
         await reply_msg.send(target=target, bot=bot)
         logger.debug(f"[HERMES] 回复已发送 ({len(reply_text)} 字, {len(media_urls)} 媒体)")
+
+        # 将 Bot 自身的回复记录到历史（被动感知上下文）
+        if plugin_config.hermes_perception_enabled and not target.private:
+            session_manager.record_history(
+                adapter_name=adapter_name,
+                is_private=target.private,
+                user_id=str(bot.self_id),
+                group_id=group_id,
+                sender_name="Bot",
+                content=reply_text,
+                image_urls=media_urls,
+            )
     except Exception as exc:
         logger.error(f"[HERMES] 发送回复失败: {exc}")
