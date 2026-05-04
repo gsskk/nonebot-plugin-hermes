@@ -84,11 +84,12 @@ async def handle_perception(bot: Bot, event: Event):
                     image_urls.append(url)
 
         # 处理图片占位
-        if image_urls and plugin_config.hermes_perception_image_mode == "placeholder":
+        if image_urls and plugin_config.hermes_perception_image_mode != "none":
+            placeholder = " [图片]"
             if msg_text:
-                msg_text += " [图片]"
+                msg_text += placeholder
             else:
-                msg_text = "[图片]"
+                msg_text = placeholder
     except Exception:
         return
 

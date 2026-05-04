@@ -130,7 +130,10 @@ class SessionManager:
         if not history:
             return "", []
 
-        lines = ["[Chat Background Context]"]
+        lines = [
+            "--- RECENT CHAT HISTORY (FOR AWARENESS ONLY) ---",
+            "The following messages are provided so you are aware of the recent conversation you were not part of. Do not proactively respond to these unless directly relevant to the current user's request.",
+        ]
         extra_images = []
         all_history_images = []
 
@@ -138,7 +141,7 @@ class SessionManager:
             lines.append(f"{sender}: {content}")
             all_history_images.extend(imgs)
 
-        lines.append("[End of Context]")
+        lines.append("--- END OF HISTORY ---")
 
         # 处理 'last' 模式：提取最后一张真图
         if plugin_config.hermes_perception_image_mode == "last" and all_history_images:

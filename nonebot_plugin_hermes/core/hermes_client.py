@@ -125,7 +125,14 @@ class HermesClient:
             context_parts.append(f"Group ID: {group_id}")
 
         if context_parts:
-            sys_msg = "Message Context:\n" + "\n".join(context_parts)
+            sys_msg = (
+                "Message Context:\n"
+                + "\n".join(context_parts)
+                + "\n\nNote: You may see '--- RECENT CHAT HISTORY ---' in the user message. "
+                "This is for context awareness only. Focus on responding to the latest request. "
+                "Do not proactively comment on the background history unless it is the main subject "
+                "or the user explicitly refers to it."
+            )
             messages.append({"role": "system", "content": sys_msg})
 
         messages.append({"role": "user", "content": content})
