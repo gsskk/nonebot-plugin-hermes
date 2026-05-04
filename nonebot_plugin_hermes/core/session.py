@@ -98,7 +98,7 @@ class SessionManager:
         image_urls: Optional[List[str]] = None,
     ) -> None:
         """记录一条历史消息到缓冲区"""
-        if not plugin_config.hermes_perception_enabled:
+        if not plugin_config.hermes_perception_enabled or is_private:
             return
 
         internal_id = self._get_internal_id(adapter_name, is_private, user_id, group_id)
@@ -122,9 +122,12 @@ class SessionManager:
         group_id: Optional[str],
     ) -> Tuple[str, List[str]]:
         """获取格式化后的历史背景文本以及需要包含的历史图片 URL"""
+        if not plugin_config.hermes_perception_enabled or is_private:
+            return "", []
+
         internal_id = self._get_internal_id(adapter_name, is_private, user_id, group_id)
         history = self._history.get(internal_id)
-        if not history or not plugin_config.hermes_perception_enabled:
+        if not history:
             return "", []
 
         lines = ["[Chat Background Context]"]

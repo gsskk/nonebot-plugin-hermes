@@ -59,6 +59,8 @@ async def handle_perception(bot: Bot, event: Event):
 
     try:
         target = alconna.get_target()
+        if target.private:
+            return
         adapter_name = get_adapter_name(target)
         user_id = event.get_user_id()
     except Exception:
@@ -222,12 +224,14 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     )
 
     # --- 获取历史背景上下文 (Passive Perception) ---
-    history_text, history_images = session_manager.get_history_context(
-        adapter_name=adapter_name,
-        is_private=target.private,
-        user_id=user_id,
-        group_id=group_id,
-    )
+    history_text, history_images = "", []
+    if not target.private:
+        history_text, history_images = session_manager.get_history_context(
+            adapter_name=adapter_name,
+            is_private=target.private,
+            user_id=user_id,
+            group_id=group_id,
+        )
     if history_text:
         msg_text = f"{history_text}\n\n{msg_text}"
         logger.debug(f"[PERCEPTION] 成功注入历史背景，包含 {len(history_images)} 张历史图片")
