@@ -1,6 +1,6 @@
 [project]
 name = "nonebot-plugin-hermes"
-version = "0.1.5.post1"
+version = "0.1.6"
 description = "NoneBot plugin for Hermes Agent — multi-platform AI chatbot via Hermes API Server"
 readme = "README.md"
 requires-python = ">=3.10"

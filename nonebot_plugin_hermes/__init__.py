@@ -13,7 +13,7 @@ require("nonebot_plugin_alconna")
 
 from .config import Config, plugin_config
 
-__version__ = "0.1.5.post1"
+__version__ = "0.1.6"
 
 __plugin_meta__ = PluginMetadata(
     name="Hermes Agent",
