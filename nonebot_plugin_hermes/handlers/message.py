@@ -235,18 +235,13 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             skip_last=True,
         )
     if history_text:
-        msg_text = f"{history_text}\n\n{msg_text}"
-        logger.debug(f"[PERCEPTION] 成功注入历史背景，包含 {len(history_images)} 张历史图片")
-
-    # 合并历史图片（如 'last' 模式提取的图片）
-    for img_url in history_images:
-        if img_url not in image_urls:
-            image_urls.append(img_url)
+        logger.debug(f"[PERCEPTION] 成功注入历史背景, history_image_count={len(history_images)}")
 
     logger.info(
         f"[HERMES] [{adapter_name}] {'私聊' if target.private else f'群聊({group_id})'} "
         f"{user_id}: {msg_text[:80].replace(chr(10), ' ')}"
-        f"{f' [+{len(image_urls)} 图片]' if image_urls else ''}"
+        f"{f' [+{len(image_urls)} 当前图]' if image_urls else ''}"
+        f"{f' [+{len(history_images)} 历史图]' if history_images else ''}"
     )
 
     # --- 调用 Hermes API ---
@@ -258,6 +253,8 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
         group_id=group_id,
         adapter_name=adapter_name,
         is_private=target.private,
+        historical_text=history_text,
+        historical_image_urls=history_images,
     )
 
     if not reply_text and not media_urls:

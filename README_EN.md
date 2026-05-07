@@ -220,7 +220,7 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_PERCEPTION_ENABLED` | `false` | Enable passive perception |
 | `HERMES_PERCEPTION_BUFFER` | `10` | Number of messages to buffer for perception |
 | `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | Max text length per historical message |
-| `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | Image mode: `placeholder` / `last` / `none` |
+| `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | Image mode: `placeholder` (text-only refs, recommended) / `inline_labeled` (sent in multimodal with strong labels, for cross-image questions) / `none` |
 
 ## Limitations
 

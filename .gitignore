@@ -88,3 +88,8 @@ data/
 config.yaml
 references/
 .agent/
+.codex/
+.claude/
+CLAUDE.md
+AGENTS.md
+docs/

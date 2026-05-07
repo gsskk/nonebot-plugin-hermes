@@ -60,9 +60,10 @@ class Config(BaseModel):
 
     hermes_perception_image_mode: str = "placeholder"
     """历史记录中的图片处理模式:
-    - placeholder: 仅记录 [图片] 占位符 (默认)
-    - last: 记录占位符，但在触发时包含最后一张真图
-    - none: 完全不记录图片
+    - placeholder: 历史里图只用 [图片] 占位 + URL 引用,多模态 content 只发当前图 (默认)
+    - inline_labeled: 历史最后一张图带 <<HISTORICAL IMAGES>> 标签放入多模态 content,与当前图清晰分隔
+    - none: 完全不提历史图
+    旧值 'last' 视为 'inline_labeled' 别名 (已废弃,启动时 WARN)
     """
 
 

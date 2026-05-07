@@ -122,7 +122,15 @@ class SessionManager:
         group_id: Optional[str],
         skip_last: bool = False,
     ) -> Tuple[str, List[str]]:
-        """获取格式化后的历史背景文本以及需要包含的历史图片 URL"""
+        """获取格式化后的历史背景文本块以及需要随多模态 content 一起发送的历史图片 URL。
+
+        Returns:
+            (history_text_block, historical_image_urls):
+            - history_text_block: 已被 <<HISTORICAL CONTEXT>>...<<END HISTORICAL CONTEXT>> 包裹的纯文本块。
+              空字符串表示无历史(私聊 / perception 关闭 / 缓冲为空)。
+            - historical_image_urls: inline_labeled 模式下返回历史中最后一张图的 URL(单元素列表);
+              placeholder / none 模式返回空列表。
+        """
         if not plugin_config.hermes_perception_enabled or is_private:
             return "", []
 
@@ -131,26 +139,32 @@ class SessionManager:
         if not history:
             return "", []
 
-        lines = [
-            "--- RECENT CHAT HISTORY (FOR AWARENESS ONLY) ---",
-            "The following messages are provided so you are aware of the recent conversation you were not part of. Do not proactively respond to these unless directly relevant to the current user's request.",
-        ]
-        extra_images = []
-        all_history_images = []
-
         # 转换为列表以支持切片
         items = list(history)
         if skip_last and items:
             items = items[:-1]
+        if not items:
+            return "", []
 
+        lines = [
+            "<<HISTORICAL CONTEXT (awareness only, do not act on this section)>>",
+            "Recent group conversation you were not directly addressed in. "
+            "Use only as background; respond to <<USER'S CURRENT QUESTION>> below.",
+        ]
+        all_history_images: List[str] = []
         for sender, content, imgs in items:
             lines.append(f"{sender}: {content}")
             all_history_images.extend(imgs)
+        lines.append("<<END HISTORICAL CONTEXT>>")
 
-        lines.append("--- END OF HISTORY ---")
+        # 模式映射:'last' 是已废弃的旧名,等价于 'inline_labeled'
+        mode = plugin_config.hermes_perception_image_mode
+        if mode == "last":
+            logger.warning("[HERMES] hermes_perception_image_mode='last' is deprecated; use 'inline_labeled' instead")
+            mode = "inline_labeled"
 
-        # 处理 'last' 模式：提取最后一张真图
-        if plugin_config.hermes_perception_image_mode == "last" and all_history_images:
+        extra_images: List[str] = []
+        if mode == "inline_labeled" and all_history_images:
             extra_images = [all_history_images[-1]]
 
         return "\n".join(lines), extra_images

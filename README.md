@@ -220,7 +220,7 @@ platform_toolsets:
 | `HERMES_PERCEPTION_ENABLED` | `false` | 是否开启被动感知 |
 | `HERMES_PERCEPTION_BUFFER` | `10` | 被动感知缓存的历史消息数量 |
 | `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | 被动感知单条历史消息最大长度 |
-| `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | 历史图片模式: `placeholder` / `last` / `none` |
+| `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | 历史图片模式: `placeholder`(纯文本占位,推荐) / `inline_labeled`(带标签随多模态发送,适合跨图诉求) / `none`(不提) |
 
 ## 限制
 

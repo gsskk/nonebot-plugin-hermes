@@ -86,31 +86,58 @@ class HermesClient:
         group_id: Optional[str] = None,
         adapter_name: str = "",
         is_private: bool = True,
+        historical_text: str = "",
+        historical_image_urls: Optional[List[str]] = None,
     ) -> Tuple[str, List[str]]:
-        """调用 Hermes API，返回 (回复文本, 媒体URL列表)。
+        """调用 Hermes API,返回 (回复文本, 媒体URL列表)。
 
         Args:
-            text: 用户消息文本
-            image_urls: 图片 URL 列表（多模态）
-            session_key: 会话标识（通过 X-Hermes-Session-Id 头传递）
+            text: 用户当前消息文本(不含历史块)
+            image_urls: 当前消息的图片 URL(包含引用消息中的图)
+            session_key: 会话标识(通过 X-Hermes-Session-Id 头传递)
             user_id: 用户 ID
             group_id: 群组 ID
             adapter_name: 适配器名称 (如 qqbot, onebot)
             is_private: 是否私聊
+            historical_text: 已被 <<HISTORICAL CONTEXT>> 包裹的历史块,空 = 无历史
+            historical_image_urls: 历史图(inline_labeled 模式下非空,通常 1 张)
 
         Returns:
             (reply_text, media_urls)
         """
         url = f"{self.api_url}/v1/chat/completions"
 
-        # 构建消息内容：纯文本或多模态
+        cur_imgs = image_urls or []
+        hist_imgs = historical_image_urls or []
+        question_text = f"<<USER'S CURRENT QUESTION:>>\n{text}" if historical_text else text
+
+        # A+B 混合 — 历史与当前清晰分隔
         content: Any
-        if image_urls:
-            content = [{"type": "text", "text": text}]
-            for img_url in image_urls:
-                content.append({"type": "image_url", "image_url": {"url": img_url}})
+        if not cur_imgs and not hist_imgs:
+            # 纯文本路径
+            content = f"{historical_text}\n\n{question_text}".strip() if historical_text else text
         else:
-            content = text
+            parts: List[Dict[str, Any]] = []
+            if historical_text and hist_imgs:
+                # 模式 A (inline_labeled):历史图带标签放进 content,当前图最后
+                parts.append(
+                    {
+                        "type": "text",
+                        "text": (f"{historical_text}\n<<HISTORICAL IMAGES (do not analyze unless explicitly asked):>>"),
+                    }
+                )
+                for u in hist_imgs:
+                    parts.append({"type": "image_url", "image_url": {"url": u}})
+                parts.append({"type": "text", "text": f"<<END HISTORICAL IMAGES>>\n\n{question_text}"})
+            elif historical_text:
+                # 模式 B (placeholder):历史纯文本,多模态只发当前图
+                parts.append({"type": "text", "text": f"{historical_text}\n\n{question_text}"})
+            else:
+                # 无历史
+                parts.append({"type": "text", "text": text})
+            for u in cur_imgs:
+                parts.append({"type": "image_url", "image_url": {"url": u}})
+            content = parts
 
         messages = []
 
@@ -128,10 +155,12 @@ class HermesClient:
             sys_msg = (
                 "Message Context:\n"
                 + "\n".join(context_parts)
-                + "\n\nNote: You may see '--- RECENT CHAT HISTORY ---' in the user message. "
-                "This is for context awareness only. Focus on responding to the latest request. "
-                "Do not proactively comment on the background history unless it is the main subject "
-                "or the user explicitly refers to it."
+                + "\n\nNote: The user message may contain a <<HISTORICAL CONTEXT>>...<<END>> block "
+                "followed by <<USER'S CURRENT QUESTION:>>. Only act on the current question. "
+                "Treat historical content (text and any images marked as historical) as "
+                "background awareness only — do not analyze, describe, or compare historical "
+                "images unless the current question explicitly references them. Images appearing "
+                "after <<USER'S CURRENT QUESTION:>> are what the user is asking about NOW."
             )
             messages.append({"role": "system", "content": sys_msg})
 
