@@ -6,24 +6,27 @@ Target 永远不序列化:重启即清,首次 perception 事件重新填表。
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
+
+ScopeT = Literal["private", "group"]
+"""push_message 路由表的 scope 维度。typo 会被 type checker 拦下,避免运行期静默 routing miss。"""
 
 
 @dataclass
 class BotEntry:
     bot_self_id: str
     target: Any  # nonebot_plugin_alconna.Target,只存内存
-    last_seen_at: int  # ms
+    last_seen_at: int  # ms;M1-mem 暂不读,M2 持久化判定时用
 
 
 class BotRegistry:
     def __init__(self) -> None:
-        self._entries: Dict[Tuple[str, str, str], BotEntry] = {}
+        self._entries: Dict[Tuple[str, ScopeT, str], BotEntry] = {}
 
     def upsert(
         self,
         adapter: str,
-        scope: str,  # "private" | "group"
+        scope: ScopeT,
         scope_id: str,
         bot_self_id: str,
         target: Any,
@@ -35,13 +38,13 @@ class BotRegistry:
             last_seen_at=ts,
         )
 
-    def get(self, adapter: str, scope: str, scope_id: str) -> Optional[BotEntry]:
+    def get(self, adapter: str, scope: ScopeT, scope_id: str) -> Optional[BotEntry]:
         return self._entries.get((adapter, scope, scope_id))
 
-    def remove(self, adapter: str, scope: str, scope_id: str) -> None:
+    def remove(self, adapter: str, scope: ScopeT, scope_id: str) -> None:
         self._entries.pop((adapter, scope, scope_id), None)
 
-    def known(self, adapter: Optional[str] = None) -> List[Tuple[str, str, str]]:
+    def known(self, adapter: Optional[str] = None) -> List[Tuple[str, ScopeT, str]]:
         if adapter is None:
             return list(self._entries.keys())
         return [k for k in self._entries.keys() if k[0] == adapter]

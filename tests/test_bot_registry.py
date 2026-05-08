@@ -58,3 +58,17 @@ def test_remove():
     reg.upsert("ob11", "group", "g1", "b", _FakeTarget("g1"), ts=1)
     reg.remove("ob11", "group", "g1")
     assert reg.get("ob11", "group", "g1") is None
+
+
+def test_remove_missing_is_silent_noop():
+    """remove() 不存在的 key 必须静默成功,不抛 KeyError。"""
+    reg = BotRegistry()
+    reg.remove("ob11", "group", "ghost")  # 不抛
+    assert reg.get("ob11", "group", "ghost") is None
+
+
+def test_known_on_empty_returns_empty_list():
+    """known() 空注册表返回空列表;known(adapter=...) 同理。"""
+    reg = BotRegistry()
+    assert reg.known() == []
+    assert reg.known(adapter="ob11") == []
