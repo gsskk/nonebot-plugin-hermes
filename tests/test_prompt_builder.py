@@ -41,6 +41,9 @@ def test_system_prompt_includes_runtime_state_and_decision_protocol():
 
 
 def test_system_prompt_omits_topic_when_none():
+    """topic_hint=None 时 runtime_state 不出现 topic_hint 行。decision_protocol
+    内的 'topic_hint (string)' 字段说明仍存在(模型必须知道字段名)——所以只检查
+    runtime_state 段。"""
     sp = build_reactive_system_prompt(
         adapter="ob11",
         group_id="g1",
@@ -48,7 +51,24 @@ def test_system_prompt_omits_topic_when_none():
         triggered_by_nickname=None,
         topic_hint=None,
     )
-    assert "topic_hint:" not in sp
+    runtime_state = sp.split("</runtime_state>")[0]
+    assert "topic_hint:" not in runtime_state
+
+
+def test_decision_protocol_uses_topic_hint_field_name():
+    """字段名必须是 topic_hint(对齐 hermes_client _DECISION_HINT 与
+    ActiveSessionManager.update_topic),不能是 topic_tag 等别名,否则模型
+    输出哪个字段都成,parse 出来 active session 拿不到 hint。"""
+    sp = build_reactive_system_prompt(
+        adapter="ob11",
+        group_id="g1",
+        triggered_by="u42",
+        triggered_by_nickname=None,
+        topic_hint=None,
+    )
+    decision = sp.split("<decision_protocol>")[1]
+    assert "topic_hint" in decision
+    assert "topic_tag" not in decision
 
 
 def test_user_content_text_only_when_no_images():

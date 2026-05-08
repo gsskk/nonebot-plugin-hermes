@@ -34,19 +34,23 @@ def build_reactive_system_prompt(
         runtime_lines.append(f"topic_hint: {topic_hint}")
     runtime_lines.append("</runtime_state>")
 
+    # 字段名与 hermes_client._DECISION_HINT 和 ActiveSessionManager.update_topic 对齐,
+    # 模型一次响应里只看到一个字段名 `topic_hint`,避免歧义。
+    # `submit_decision` 是契约标识符:M1 路径 B 不真发 tools(P0-spike Hermes 不透传),
+    # 但保留这个名字让模型识别"决策上下文",并与 Task 8B 的 structured_tool_name 入参对齐。
     decision_block = (
         "<decision_protocol>\n"
         "你处于群活跃态。每条新消息都需要决定是否要插话。\n"
-        "你的输出必须是对 submit_decision 工具的调用,字段:\n"
-        "  should_reply: bool — 是否要回复\n"
-        "  reply_text: str — should_reply=true 时必填,留空表示静默\n"
-        "  topic_tag: str — 简短话题标记(中文 OK),将作为 topic_hint 传入下一轮\n"
-        "  should_exit_active: bool — 话题已结束时设 true\n"
+        "把决策提交为名为 submit_decision 的 JSON 对象,字段:\n"
+        "  should_reply (boolean, required) — 是否要回复\n"
+        "  reply_text (string) — should_reply=true 时必填,留空表示静默\n"
+        "  topic_hint (string) — 简短话题标记(中文 OK),将带入下一轮 runtime_state\n"
+        "  should_exit_active (boolean) — 话题已结束时设 true\n"
         "插话原则:\n"
         "  - 与你之前的发言或被 @ 的话题强相关 → reply\n"
         "  - 群里在闲聊与你无关 → should_reply=false\n"
         "  - 有人明显在问你刚说的内容 → reply\n"
-        "不要在工具调用之外输出文本。\n"
+        "只输出 JSON 对象,不要在外面包文字。\n"
         "</decision_protocol>"
     )
     return "\n".join(runtime_lines) + "\n\n" + decision_block
