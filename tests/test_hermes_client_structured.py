@@ -101,6 +101,9 @@ async def test_path_b_no_json_block_marks_parse_failed(monkeypatch: MonkeyPatch)
         structured_tool_name="submit_decision",
     )
     assert r.parse_failed is True
+    # raw_text 必须保留,handler 据此降级展示 / 记日志
+    assert r.raw_text == "我无法生成 JSON。"
+    assert r.is_transport_error is False
 
 
 @pytest.mark.asyncio
@@ -159,3 +162,74 @@ async def test_path_b_appends_decision_hint_to_system_prompt(monkeypatch: Monkey
     sys_msg = payload["messages"][0]["content"]
     assert "STRUCTURED OUTPUT" in sys_msg
     assert "should_reply" in sys_msg
+
+
+@pytest.mark.asyncio
+async def test_http_error_marks_transport_and_parse_failed(monkeypatch: MonkeyPatch):
+    """HTTP 500 必须同时标 parse_failed=True 与 is_transport_error=True,
+    供 Task 15 handler 区分"重试 vs 降级"。"""
+    _patch_httpx(monkeypatch, _MockResponse(500, {"error": "server down"}))
+
+    client = HermesClient()
+    r = await client.chat(
+        text="hi",
+        session_key="s1",
+        user_id="u1",
+        group_id="g1",
+        adapter_name="ob11",
+        is_private=False,
+        mode="reactive",
+        expect_structured=True,
+        structured_tool_name="submit_decision",
+    )
+    assert r.parse_failed is True
+    assert r.is_transport_error is True
+    assert "500" in r.raw_text
+
+
+@pytest.mark.asyncio
+async def test_empty_choices_with_expect_structured_marks_parse_failed(monkeypatch: MonkeyPatch):
+    """期望结构化但 choices=[] 是结构性失败,而非"模型选择不回"。"""
+    _patch_httpx(monkeypatch, _MockResponse(200, {"choices": []}))
+
+    client = HermesClient()
+    r = await client.chat(
+        text="hi",
+        session_key="s1",
+        user_id="u1",
+        group_id="g1",
+        adapter_name="ob11",
+        is_private=False,
+        mode="reactive",
+        expect_structured=True,
+        structured_tool_name="submit_decision",
+    )
+    assert r.parse_failed is True
+    # 但不是 transport 错(HTTP 200,只是响应 body 为空 choices)
+    assert r.is_transport_error is False
+
+
+@pytest.mark.asyncio
+async def test_user_content_override_replaces_text_and_image_urls(monkeypatch: MonkeyPatch):
+    """prompt_builder 给 user_content_override 时,text/image_urls 应被忽略。"""
+    body = {"choices": [{"message": {"content": "ok"}}]}
+    mock = _patch_httpx(monkeypatch, _MockResponse(200, body))
+
+    custom_content = [
+        {"type": "text", "text": "<<HEAD>>"},
+        {"type": "image_url", "image_url": {"url": "http://x/a.jpg"}},
+    ]
+    client = HermesClient()
+    await client.chat(
+        text="ignored",
+        image_urls=["http://ignored.png"],
+        session_key="s1",
+        user_id="u1",
+        group_id="g1",
+        adapter_name="ob11",
+        is_private=False,
+        user_content_override=custom_content,
+    )
+    sent = mock.last_payload["messages"][1]["content"]
+    assert sent == custom_content
+    assert "ignored" not in str(sent)

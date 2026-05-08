@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import httpx
 import json5  # type: ignore[import-untyped]
@@ -17,10 +17,16 @@ from nonebot import logger
 
 from ..config import plugin_config
 
+# user_content_override 期望形态:纯文本 或 OpenAI 多模态 parts 列表
+UserContent = Union[str, List[Dict[str, Any]]]
+
 _MD_IMAGE_PATTERN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _MEDIA_TAG_PATTERN = re.compile(r"MEDIA:(\S+)")
 
-# 提取首个 {...} 块,容忍嵌套一层(M1 决策 schema 不深)
+# 提取首个 {...} 块。
+# 当前正则只支持嵌套一层(`\{[^{}]*\}` 出现在外层 `\{...\}` 中)。
+# M1 submit_decision schema 全平,够用。如未来 schema 加 nested object,
+# 需改用真正的平衡解析器(parser combinator 或 json5 边读边定位)。
 _FIRST_JSON_BLOCK = re.compile(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", re.DOTALL)
 
 _DECISION_HINT = (
@@ -70,6 +76,15 @@ class ChatResult:
     structured: Optional[Dict[str, Any]] = None
     media_urls: List[str] = field(default_factory=list)
     parse_failed: bool = False
+    """期望结构化输出但解析失败(JSON 提取不到 / json5 解析报错 / 非 dict 类型)。"""
+
+    is_transport_error: bool = False
+    """HTTP 失败(非 200 / timeout / connect error / 其他异常)。
+
+    handler 据此决定:transport_error → 可重试或对用户报错;parse_failed →
+    通常静默降级(模型回了不可解析的内容);两者**不互斥**(transport_error
+    场景下 parse_failed 也设 True 以阻止 caller 误把 raw_text 当模型有效输出)。
+    """
 
 
 class HermesClient:
@@ -116,16 +131,20 @@ class HermesClient:
         expect_structured: bool = False,
         structured_tool_name: Optional[str] = None,
         system_prompt: Optional[str] = None,
-        user_content_override: Optional[Any] = None,
+        user_content_override: Optional[UserContent] = None,
     ) -> ChatResult:
         """调用 Hermes,返回 ChatResult。
 
         - mode='passive': 普通文本回复(不强制结构化)
         - mode='reactive' + expect_structured=True + structured_tool_name='submit_decision':
           system prompt 追加 STRUCTURED OUTPUT 段,期望模型回复纯 JSON;解析失败 parse_failed=True
-        - system_prompt: 由 prompt_builder 注入;None 走默认 Message Context 拼装
+        - system_prompt: 由 prompt_builder 注入;None 走默认 Message Context 拼装。
+          **注意**:外部传入 system_prompt 时,Platform/User/Group 上下文须由调用方
+          自行包含,本方法不会再额外补。
         - user_content_override: 由 prompt_builder 直接给出 user message 的 content
-          (text + image_urls 参数将被忽略)
+          (str 或 OpenAI 多模态 parts 列表;text + image_urls 参数将被忽略)
+        - mode 字段当前为路由元数据,chat() 内部不分支判断;Task 15 handler 据此决定
+          如何呈现结果(reactive 走 structured 流,passive 走 raw_text)。
         """
         url = f"{self.api_url}/v1/chat/completions"
 
@@ -172,21 +191,38 @@ class HermesClient:
                 if resp.status_code != 200:
                     body = resp.text[:200]
                     logger.error(f"[HERMES] API 返回 {resp.status_code}: {body}")
-                    return ChatResult(raw_text=f"⚠️ AI 服务返回错误 ({resp.status_code})", parse_failed=True)
+                    return ChatResult(
+                        raw_text=f"⚠️ AI 服务返回错误 ({resp.status_code})",
+                        parse_failed=True,
+                        is_transport_error=True,
+                    )
                 data = resp.json()
         except httpx.TimeoutException:
             logger.error(f"[HERMES] API 请求超时 ({self.timeout}s)")
-            return ChatResult(raw_text="⚠️ AI 服务响应超时,请稍后重试", parse_failed=True)
+            return ChatResult(
+                raw_text="⚠️ AI 服务响应超时,请稍后重试",
+                parse_failed=True,
+                is_transport_error=True,
+            )
         except httpx.ConnectError:
             logger.error(f"[HERMES] 无法连接到 {self.api_url}")
-            return ChatResult(raw_text="⚠️ 无法连接到 AI 服务", parse_failed=True)
+            return ChatResult(
+                raw_text="⚠️ 无法连接到 AI 服务",
+                parse_failed=True,
+                is_transport_error=True,
+            )
         except Exception as exc:
             logger.error(f"[HERMES] API 请求异常: {exc}")
-            return ChatResult(raw_text=f"⚠️ AI 服务异常: {exc}", parse_failed=True)
+            return ChatResult(
+                raw_text=f"⚠️ AI 服务异常: {exc}",
+                parse_failed=True,
+                is_transport_error=True,
+            )
 
         choices = data.get("choices") or []
         if not choices:
-            return ChatResult(raw_text="")
+            # 期望结构化但响应空:这是结构性失败而非"模型选择不回复"
+            return ChatResult(raw_text="", parse_failed=expect_structured)
 
         msg = choices[0].get("message") or {}
         raw_text = msg.get("content") or ""
