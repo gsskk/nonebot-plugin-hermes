@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import asyncio
 
+import nonebot
 import pytest
+
+# 初始化 NoneBot,使插件模块可以被 import(get_plugin_config 需要 driver 存在)
+nonebot.init(driver="~none")
 
 
 @pytest.fixture(scope="session")
