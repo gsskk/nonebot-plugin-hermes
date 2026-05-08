@@ -233,3 +233,18 @@ async def test_user_content_override_replaces_text_and_image_urls(monkeypatch: M
     sent = mock.last_payload["messages"][1]["content"]
     assert sent == custom_content
     assert "ignored" not in str(sent)
+
+
+def test_decision_hint_field_names_are_canonical():
+    """_DECISION_HINT 必须用 canonical 字段名(should_reply/reply_text/topic_hint/
+    should_exit_active),与 prompt_builder 的 decision_protocol 同口径。任何字段
+    drift(如 topic_tag、shouldReply 驼峰)都应被这个测试拦下。"""
+    from nonebot_plugin_hermes.core.hermes_client import _DECISION_HINT
+
+    assert "should_reply" in _DECISION_HINT
+    assert "reply_text" in _DECISION_HINT
+    assert "topic_hint" in _DECISION_HINT
+    assert "should_exit_active" in _DECISION_HINT
+    # 反例:防 drift
+    assert "topic_tag" not in _DECISION_HINT
+    assert "shouldReply" not in _DECISION_HINT  # camelCase 漂移

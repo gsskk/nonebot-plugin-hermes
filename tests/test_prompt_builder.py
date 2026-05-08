@@ -41,9 +41,12 @@ def test_system_prompt_includes_runtime_state_and_decision_protocol():
 
 
 def test_system_prompt_omits_topic_when_none():
-    """topic_hint=None 时 runtime_state 不出现 topic_hint 行。decision_protocol
-    内的 'topic_hint (string)' 字段说明仍存在(模型必须知道字段名)——所以只检查
-    runtime_state 段。"""
+    """topic_hint=None 时 runtime_state 不出现 topic_hint 行。
+
+    注:本测试从 spec 故意偏离。spec 原 assertion `"topic_hint:" not in sp`
+    会误伤 decision_protocol 里 'topic_hint (string)' 这条字段说明
+    (模型必须知道字段名,不能删)。正确不变量是:topic_hint 不应出现在
+    runtime_state 段。原 spec 写得过宽,此处缩到正确范围。"""
     sp = build_reactive_system_prompt(
         adapter="ob11",
         group_id="g1",
@@ -101,6 +104,11 @@ def test_user_content_multimodal_when_images_present():
     types = [p.get("type") for p in content]
     assert "text" in types
     assert "image_url" in types
+    # 第一个 part 必须是 text,且包含 history + current_message 两个块
+    assert content[0]["type"] == "text"
+    assert "<recent_messages>" in content[0]["text"]
+    assert "<current_message>" in content[0]["text"]
+    assert "Charlie: see this" in content[0]["text"]
     # 当前图必须是最后一个 image_url(LLM 才知道用户问的是它)
     last_img = next((p for p in reversed(content) if p.get("type") == "image_url"), None)
     assert last_img is not None
@@ -118,3 +126,35 @@ def test_user_content_marks_bot_messages():
     )
     assert isinstance(content, str)
     assert "[bot] bot: hi alice" in content
+
+
+def test_user_content_empty_history_still_produces_block():
+    """recent_messages=[] 时 <recent_messages> 块仍存在(空但格式齐全),
+    避免下游 prompt 解析(如未来 prompt cache key 计算)误判。"""
+    content = build_reactive_user_content(
+        recent_messages=[],
+        current_user_id="alice",
+        current_nickname="Alice",
+        current_text="hi",
+        current_image_urls=[],
+    )
+    assert "<recent_messages>" in content
+    assert "</recent_messages>" in content
+    assert "Alice: hi" in content
+
+
+def test_user_content_empty_current_text_with_image_is_valid():
+    """图片消息无文字描述(用户只发图)是常见场景,空 current_text + 图片应正确产出
+    多模态 parts。"""
+    content = build_reactive_user_content(
+        recent_messages=[],
+        current_user_id="alice",
+        current_nickname="Alice",
+        current_text="",
+        current_image_urls=["http://x/photo.jpg"],
+    )
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert "Alice:" in content[0]["text"]  # speaker 仍存在,内容空
+    assert content[-1]["type"] == "image_url"
+    assert content[-1]["image_url"]["url"] == "http://x/photo.jpg"

@@ -7,11 +7,10 @@ reactive 模式:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence
 
+from .hermes_client import UserContent
 from .message_buffer import BufferedMessage
-
-UserContent = Union[str, List[Dict[str, Any]]]
 
 
 def build_reactive_system_prompt(
