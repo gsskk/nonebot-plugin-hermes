@@ -97,8 +97,10 @@ class Config(BaseModel):
     """get_recent_messages 工具单次返回上限"""
 
     # --- M1: 结构化输出路径(由 P0-spike 决定) ---
-    hermes_structured_path: Literal["tools", "prompt"] = "tools"
-    """tools = 路径 A(tools+tool_choice);prompt = 路径 B(JSON5)。Task 3 spike 后会更新默认值。"""
+    hermes_structured_path: Literal["tools", "prompt"] = "prompt"
+    """tools = 路径 A(tools+tool_choice);prompt = 路径 B(JSON5)。
+    Task 3 spike (2026-05-09) 结论:Hermes 不透传 tools/tool_choice 给底层 LLM,
+    必须用 prompt 强约束 + JSON5 容错解析。"""
 
 
 plugin_config = get_plugin_config(Config)
