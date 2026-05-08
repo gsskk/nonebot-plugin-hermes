@@ -83,3 +83,39 @@ def test_re_trigger_resets_started_at():
     assert s.triggered_by == "u2"
     assert s.started_at == 200_000
     assert s.expires_at == 200_000 + 60_000
+
+
+def test_ttl_boundary_now_eq_expires_treated_as_expired():
+    """TTL 边界一致性测试:三个方法在 now_ms == expires_at 处全部判定为过期。
+
+    防止未来重构(如 ms ↔ s 单位切换)悄悄改成 < 或 >=。
+    """
+    mgr = ActiveSessionManager(default_ttl_sec=60)
+    mgr.trigger("ob11", "g1", "u1", now_ms=0)
+    boundary = 60_000  # == expires_at
+
+    assert mgr.is_active("ob11", "g1", now_ms=boundary) is False
+    assert mgr.touch("ob11", "g1", now_ms=boundary) is None
+    assert mgr.get_if_active("ob11", "g1", now_ms=boundary) is None
+    expired = mgr.sweep_expired(now_ms=boundary)
+    assert {s.group_id for s in expired} == {"g1"}
+
+
+def test_get_if_active_filters_expired_silently():
+    """get_if_active 必须屏蔽已过期 session,而 get() 仍能看到(供调试)。"""
+    mgr = ActiveSessionManager(default_ttl_sec=60)
+    mgr.trigger("ob11", "g1", "u1", now_ms=0)
+    # 过期但还没 sweep
+    assert mgr.get("ob11", "g1") is not None
+    assert mgr.get_if_active("ob11", "g1", now_ms=999_999) is None
+    # 仍在窗口内
+    assert mgr.get_if_active("ob11", "g1", now_ms=30_000) is not None
+
+
+def test_update_topic_with_none_clears():
+    """update_topic(None) 显式清空 topic_hint(话题漂移收尾)。"""
+    mgr = ActiveSessionManager(default_ttl_sec=60)
+    mgr.trigger("ob11", "g1", "u1", now_ms=0, topic_hint="rust async")
+    assert mgr.get("ob11", "g1").topic_hint == "rust async"
+    mgr.update_topic("ob11", "g1", None)
+    assert mgr.get("ob11", "g1").topic_hint is None

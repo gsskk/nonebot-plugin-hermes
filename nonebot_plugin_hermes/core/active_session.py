@@ -22,6 +22,15 @@ class ActiveSession:
 
 
 class ActiveSessionManager:
+    """滑动 TTL 状态机,跟踪哪些 (adapter, group_id) 处于 reactive 监听窗口。
+
+    线程安全:**否**。预设单线程 asyncio 事件循环,不要从背景线程访问。
+    GC 策略:不在读路径自动剔除过期 session,由 Task 16 的 cron 调 sweep_expired()
+    定期清理。读 API 中:`is_active` / `touch` / `get_if_active` 是 TTL 感知的;
+    `get()` 是裸访问,**返回过期 session**——仅用于调试 / 日志,handler 应优先用
+    is_active / get_if_active。
+    """
+
     def __init__(self, default_ttl_sec: int = 300) -> None:
         self._ttl_ms = default_ttl_sec * 1000
         self._sessions: Dict[Tuple[str, str], ActiveSession] = {}
@@ -55,13 +64,30 @@ class ActiveSessionManager:
         return s
 
     def get(self, adapter: str, group_id: str) -> Optional[ActiveSession]:
+        """裸访问,**不检查 TTL**——可能返回已过期 session。
+
+        多数 handler 应改用 `get_if_active` 或先 `is_active` 校验。本方法保留是为了
+        调试 / 日志场景需要观测已过期但尚未被 sweep 的 session。
+        """
         return self._sessions.get((adapter, group_id))
+
+    def get_if_active(self, adapter: str, group_id: str, now_ms: int) -> Optional[ActiveSession]:
+        """TTL 感知的 get:只在 session 存在且未过期时返回。"""
+        s = self._sessions.get((adapter, group_id))
+        if s is None or s.expires_at <= now_ms:
+            return None
+        return s
 
     def is_active(self, adapter: str, group_id: str, now_ms: int) -> bool:
         s = self._sessions.get((adapter, group_id))
         return s is not None and s.expires_at > now_ms
 
     def update_topic(self, adapter: str, group_id: str, topic_hint: Optional[str]) -> None:
+        """更新或清空 topic_hint。
+
+        传 None 即清空(允许 Hermes 在话题漂移检测后主动收尾 topic)。
+        若 (adapter, group_id) 不存在则 no-op。
+        """
         s = self._sessions.get((adapter, group_id))
         if s is not None:
             s.topic_hint = topic_hint
