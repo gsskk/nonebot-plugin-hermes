@@ -7,9 +7,9 @@ import asyncio
 import pytest
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def event_loop_policy():
-    """让 pytest-asyncio 使用默认 policy。"""
+    """让 pytest-asyncio 使用默认 policy(session 作用域,兼容后续 session-scoped 异步 fixture)。"""
     return asyncio.DefaultEventLoopPolicy()
 
 
