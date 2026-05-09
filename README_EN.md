@@ -217,10 +217,20 @@ After restart the bot will:
 
 ### Tell Hermes Agent about the plugin
 
-The plugin ships a `SKILL.md` (reactive decision contract + reverse-channel usage). After install, run once:
+The plugin ships a `SKILL.md` (reactive decision contract + reverse-channel usage). From the bot project directory, run any of the following (all install SKILL.md into `~/.hermes/skills/nonebot-bridge/`):
 
 ```bash
-hermes-install-skill              # copies SKILL.md into ~/.hermes/skills/nonebot-bridge/
+# If you manage deps with uv
+uv run hermes-install-skill
+
+# Or with a plain venv
+.venv/bin/hermes-install-skill
+
+# Or with the venv already activated
+hermes-install-skill
+
+# Fallback module entry (any env that can import nonebot-plugin-hermes)
+python -m hermes_install_skill
 ```
 
 Then register the plugin's MCP server in `~/.hermes/config.yaml`, replacing `<HERMES_API_KEY>` with the same key you generated earlier (used for two-way auth):
@@ -232,7 +242,7 @@ mcp_servers:
     headers: { Authorization: "Bearer <HERMES_API_KEY>" }
 ```
 
-When the plugin's `SKILL.md` later changes, run `hermes-install-skill --force` to refresh.
+When the plugin's `SKILL.md` later changes, re-run with `--force` using any of the entries above, e.g. `uv run hermes-install-skill --force` or `.venv/bin/hermes-install-skill --force`.
 
 ## Commands
 

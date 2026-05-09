@@ -217,10 +217,20 @@ HERMES_MCP_ENABLED=true
 
 ### 把插件能力告诉 Hermes Agent
 
-插件自带一份 `SKILL.md`（reactive 决策契约 + 反向通道用法）。安装后跑一次：
+插件自带一份 `SKILL.md`（reactive 决策契约 + 反向通道用法）。在 bot 项目目录下任选一种执行（都是把 SKILL.md 装到 `~/.hermes/skills/nonebot-bridge/`）：
 
 ```bash
-hermes-install-skill              # 复制 SKILL.md 到 ~/.hermes/skills/nonebot-bridge/
+# 用 uv 管理依赖
+uv run hermes-install-skill
+
+# 或者 bot 项目用普通 venv
+.venv/bin/hermes-install-skill
+
+# 或者已激活虚拟环境
+hermes-install-skill
+
+# 备用入口（任何能 import nonebot-plugin-hermes 的环境）
+python -m hermes_install_skill
 ```
 
 然后在 `~/.hermes/config.yaml` 注册插件 MCP server，把 `<HERMES_API_KEY>` 替换为你前面生成的同一把密钥（用于双向鉴权）：
@@ -232,7 +242,7 @@ mcp_servers:
     headers: { Authorization: "Bearer <HERMES_API_KEY>" }
 ```
 
-后续插件 SKILL.md 升级时跑 `hermes-install-skill --force` 重装。
+后续插件 SKILL.md 升级时,用上面同样的入口加 `--force` 重装,例如 `uv run hermes-install-skill --force` 或 `.venv/bin/hermes-install-skill --force`。
 
 ## 命令
 
