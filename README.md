@@ -203,10 +203,11 @@ platform_toolsets:
 在 `.env` 中：
 
 ```env
-HERMES_PERCEPTION_ENABLED=true     # 活跃态依赖消息缓冲做上下文
 HERMES_ACTIVE_SESSION_ENABLED=true
 HERMES_MCP_ENABLED=true
 ```
+
+> 启用 `HERMES_ACTIVE_SESSION_ENABLED` 时被动感知会自动开启(消息缓冲是活跃态的依赖),无需再单独设置 `HERMES_PERCEPTION_ENABLED`。后者只在 active=false 的群聊里有意义——给 @bot 那一刻的 LLM 注入旁观历史。
 
 重启后 bot 会：
 
@@ -271,7 +272,7 @@ mcp_servers:
 | `HERMES_SESSION_SHARE_GROUP` | `false` | 群内是否共享同一个 session |
 | `HERMES_MAX_LENGTH` | `4000` | 单条回复最大长度（超出后截断） |
 | `HERMES_IGNORE_PREFIX` | `["."]` | 以这些字符开头的消息不触发回复 |
-| `HERMES_PERCEPTION_ENABLED` | `false` | 是否开启被动感知 |
+| `HERMES_PERCEPTION_ENABLED` | `false` | 群聊 + active_session=false 下,是否在 @bot 时给 LLM 注入旁观历史。**`HERMES_ACTIVE_SESSION_ENABLED=true` 时自动隐含为 on,本开关无效**。私聊永远不注入(Hermes session 已覆盖) |
 | `HERMES_PERCEPTION_BUFFER` | `10` | 被动感知缓存的历史消息数量 |
 | `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | 被动感知单条历史消息最大长度 |
 | `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | 历史图片模式: `placeholder`(纯文本占位,推荐) / `inline_labeled`(带标签随多模态发送,适合跨图诉求) / `none`(不提) |

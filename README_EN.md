@@ -203,10 +203,11 @@ When enabled, an @-mention puts the bot into a 5-minute "active window" — duri
 In `.env`:
 
 ```env
-HERMES_PERCEPTION_ENABLED=true     # active sessions need the message buffer for context
 HERMES_ACTIVE_SESSION_ENABLED=true
 HERMES_MCP_ENABLED=true
 ```
+
+> Enabling `HERMES_ACTIVE_SESSION_ENABLED` auto-implies passive perception (the message buffer is its dependency); you don't need to set `HERMES_PERCEPTION_ENABLED` separately. That flag only matters with active=false in groups — it lets the bot inject prior bystander chatter as context the moment it gets @-mentioned.
 
 After restart the bot will:
 
@@ -271,7 +272,7 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_SESSION_SHARE_GROUP` | `false` | Share session within group |
 | `HERMES_MAX_LENGTH` | `4000` | Max reply length (truncated if exceeded) |
 | `HERMES_IGNORE_PREFIX` | `["."]` | Ignore messages starting with these chars |
-| `HERMES_PERCEPTION_ENABLED` | `false` | Enable passive perception |
+| `HERMES_PERCEPTION_ENABLED` | `false` | In groups with active_session=false, inject bystander history into the LLM on @-mention. **Auto-implied when `HERMES_ACTIVE_SESSION_ENABLED=true`; this flag is then a no-op**. Never injected in private chats (Hermes session already covers it) |
 | `HERMES_PERCEPTION_BUFFER` | `10` | Number of messages to buffer for perception |
 | `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | Max text length per historical message |
 | `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | Image mode: `placeholder` (text-only refs, recommended) / `inline_labeled` (sent in multimodal with strong labels, for cross-image questions) / `none` |
