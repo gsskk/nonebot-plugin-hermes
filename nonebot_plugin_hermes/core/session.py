@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 from nonebot import logger
 
@@ -75,23 +75,6 @@ class SessionManager:
         gen = self._generation.get(internal_id, 0) + 1
         self._generation[internal_id] = gen
         logger.info(f"[SESSION] 会话已重置: {internal_id} (generation={gen})")
-
-    # === Task 15 之前的过渡桩 ===
-    # handlers/message.py 仍调用下面两个方法。Task 15 重写 handlers 后删除这一段。
-    # 桩返回安全的空值并 logger.warning,使中间状态可以 nb run 但 perception/历史功能失效可见。
-
-    def record_history(self, *args: Any, **kwargs: Any) -> None:
-        logger.warning(
-            "[SESSION] record_history called but moved to MessageBuffer; "
-            "Task 15 will rewire handlers/message.py — expect missing perception until then."
-        )
-
-    def get_history_context(self, *args: Any, **kwargs: Any) -> tuple[str, list[str]]:
-        logger.warning(
-            "[SESSION] get_history_context called but moved to MessageBuffer; "
-            "Task 15 will rewire handlers/message.py — expect missing history until then."
-        )
-        return "", []
 
 
 # 全局会话管理器

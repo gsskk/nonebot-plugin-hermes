@@ -1,8 +1,7 @@
 """SessionManager 单元测试。
 
 精简后的 SessionManager 只负责 session key 生成与 generation 递增。
-历史缓冲(record_history / get_history_context)已迁移 MessageBuffer——
-但保留 stub 用于 Task 15 集成期之前的过渡。
+历史缓冲(record_history / get_history_context)已迁移 MessageBuffer。
 """
 
 from __future__ import annotations
@@ -54,13 +53,3 @@ def test_clear_session_does_not_affect_other_keys():
     # u1 has new generation; u2 unchanged
     assert sm.get_session_key("ob11", False, "u1", "g1") == "hermes-ob11+group+g1+u1-g1"
     assert sm.get_session_key("ob11", False, "u2", "g1") == "hermes-ob11+group+g1+u2"
-
-
-def test_transition_stubs_dont_crash(caplog):
-    """Task 15 集成期之前,handlers/message.py 仍调 record_history / get_history_context。
-    stub 必须返回安全空值并发 warning,不可抛 AttributeError 让 handler 表面静默失败。"""
-    sm = SessionManager()
-    sm.record_history("ob11", False, "u1", "g1", "name", "content", [])  # 不抛
-    text, imgs = sm.get_history_context("ob11", False, "u1", "g1")
-    assert text == ""
-    assert imgs == []
