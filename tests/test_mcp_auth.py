@@ -99,3 +99,29 @@ def test_validate_push_context_expired_session_raises():
             bot_registry=br,
             now_ms=999_999,
         )
+
+
+def test_check_bearer_dev_mode_ignores_present_token():
+    """expected='' 时即使 header 带 token 也不应触碰 token——dev mode 全跳过。"""
+    check_bearer("Bearer some-leftover-token", expected="")  # 不抛
+
+
+def test_check_bearer_tolerates_trailing_whitespace_in_token():
+    r"""客户端偶尔在 token 尾追加空格(\r\n 或转义),应容忍而非 401。"""
+    check_bearer("Bearer secret-xyz ", expected="secret-xyz")  # 不抛
+    check_bearer("Bearer secret-xyz\t", expected="secret-xyz")  # tab 也容忍
+
+
+def test_validate_push_context_both_fail_reports_session_first():
+    """session + target 都缺时,session 错优先报(更常见,TTL 过期是日常)。"""
+    am = ActiveSessionManager(default_ttl_sec=60)
+    br = BotRegistry()
+    # 两边都空
+    with pytest.raises(PushContextError, match="no active reactive session"):
+        validate_push_context(
+            adapter="ob11",
+            group_id="g1",
+            active_sessions=am,
+            bot_registry=br,
+            now_ms=30_000,
+        )
