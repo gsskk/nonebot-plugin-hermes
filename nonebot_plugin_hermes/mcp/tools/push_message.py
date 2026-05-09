@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import time
-from typing import List, Optional
 
 from nonebot import get_bot, logger
 from pydantic import BaseModel, Field
@@ -22,14 +21,14 @@ class PushMessageInput(BaseModel):
     adapter: str = Field(..., description="Adapter name (lowercased), e.g. 'ob11'")
     group_id: str = Field(..., description="Group ID")
     text: str = Field(..., description="Reply text. Empty allowed only if image_urls non-empty.")
-    image_urls: List[str] = Field(default_factory=list, description="Image URLs")
-    reply_to_msg_id: Optional[str] = Field(default=None, description="(M1: 不使用,保留位)")
-    task_id: Optional[str] = Field(default=None, description="(M1: 不使用,M2 bg_tasks 接入)")
+    image_urls: list[str] = Field(default_factory=list, description="Image URLs")
+    reply_to_msg_id: str | None = Field(default=None, description="(M1: 不使用,保留位)")
+    task_id: str | None = Field(default=None, description="(M1: 不使用,M2 bg_tasks 接入)")
 
 
 class PushMessageResult(BaseModel):
     ok: bool
-    error: Optional[str] = None
+    error: str | None = None
 
 
 async def push_message_impl(
@@ -54,8 +53,18 @@ async def push_message_impl(
         logger.warning(f"[MCP push_message] context invalid: {exc}")
         return PushMessageResult(ok=False, error=str(exc))
 
+    # 防御:即使 validate 通过了,这里二次 get 之间存在理论 TOCTOU 窗口
+    # (registry 没 TTL,M1 内不会自动 evict,但 python -O 下 assert 会被剥除,
+    # 走 if 而非 assert 保 push_message 整体错误面收敛在 PushMessageResult 里)
     entry = bot_registry.get(inp.adapter, "group", inp.group_id)
-    assert entry is not None  # validated above
+    if entry is None:
+        logger.warning(
+            f"[MCP push_message] registry entry disappeared after context check: {inp.adapter}/{inp.group_id}"
+        )
+        return PushMessageResult(
+            ok=False,
+            error=f"bot registry entry not found: ({inp.adapter}, {inp.group_id})",
+        )
 
     try:
         bot = get_bot(entry.bot_self_id)
@@ -68,11 +77,13 @@ async def push_message_impl(
         target=entry.target,
         text=inp.text,
         media_urls=inp.image_urls,
-        at_user_id=None,
+        at_user_id=None,  # 主动 push 不 @ 任何用户(对话不针对特定个体)
     )
     if not success:
         return PushMessageResult(ok=False, error="send failed (see nonebot log)")
 
-    # 滑动续期
+    # 滑动续期。注:用 send 前的 now_ms 而非 send 后的 wall clock,
+    # 慢 send(图片上传等)情况下 TTL 续期会比 wall clock 略短(<10s 量级,
+    # 300s TTL 下可忽略)。如未来需要精确续期,在此重新读 time.time()。
     active_sessions.touch(inp.adapter, inp.group_id, now_ms=now_ms)
     return PushMessageResult(ok=True)

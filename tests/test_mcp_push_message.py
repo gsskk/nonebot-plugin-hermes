@@ -91,9 +91,14 @@ async def test_push_returns_error_when_target_unknown():
     am.trigger("ob11", "g1", "u1", now_ms=0)
 
     inp = _make_inp()
-    result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+    # Mock time so push_message_impl 看到的 now_ms 还在 300s TTL 内
+    with patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time:
+        mock_time.time.return_value = 1.0  # 1000 ms,well within TTL
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
     assert result.ok is False
-    assert result.error is not None
+    # 锁定具体错误形态:validate_push_context 在 session 通过、target 缺失时
+    # 抛 "unknown target",其他 error 形态(如 "send failed")会引人误判
+    assert "unknown target" in (result.error or "")
 
 
 # ---------------------------------------------------------------------------
@@ -129,14 +134,11 @@ async def test_push_success_touches_session():
     inp = _make_inp()
 
     fake_bot = MagicMock()
+    mock_send = AsyncMock(return_value=True)
 
     with (
         patch("nonebot_plugin_hermes.mcp.tools.push_message.get_bot", return_value=fake_bot),
-        patch(
-            "nonebot_plugin_hermes.mcp.tools.push_message.send_text_with_media",
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
+        patch("nonebot_plugin_hermes.mcp.tools.push_message.send_text_with_media", mock_send),
         patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
     ):
         # Fix time so now_ms used inside push_message_impl is within TTL
@@ -147,6 +149,15 @@ async def test_push_success_touches_session():
     assert result.error is None
     # Session should still be active (touch was called)
     assert am.is_active("ob11", "g1", now_ms=2_000)  # 2 s after trigger, still active
+
+    # 关键不变量:proactive push 必须 at_user_id=None(不 At 任何用户),
+    # 否则 outbound 会在群里 @ 一个莫名其妙的人。锁定契约。
+    mock_send.assert_called_once()
+    call_kwargs = mock_send.call_args.kwargs
+    assert call_kwargs["at_user_id"] is None
+    assert call_kwargs["bot"] is fake_bot
+    assert call_kwargs["text"] == inp.text
+    assert call_kwargs["media_urls"] == inp.image_urls
 
 
 # ---------------------------------------------------------------------------
