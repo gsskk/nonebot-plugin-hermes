@@ -61,11 +61,11 @@ Set the API Key (**Required**, for session persistence):
 
 ```bash
 # Generate a key
-python -c "import secrets; print(secrets.token_hex(32))"
+python3 -c "import secrets; print(secrets.token_hex(32))"
 # Or openssl rand -hex 32
 
 # Write to Hermes environment config
-echo 'API_SERVER_KEY=your-generated-key' >> ~/.hermes/.env
+echo 'API_SERVER_KEY=your-generated-key' | tee -a ~/.hermes/.env
 ```
 
 > **Note**: Failing to set `API_SERVER_KEY` will result in session continuation being rejected, meaning the context cannot be maintained across conversations.

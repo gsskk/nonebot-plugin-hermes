@@ -61,11 +61,11 @@ API_SERVER_PORT=8642
 
 ```bash
 # 生成密钥
-python -c "import secrets; print(secrets.token_hex(32))"
+python3 -c "import secrets; print(secrets.token_hex(32))"
 # 或 openssl rand -hex 32
 
 # 写入 Hermes 环境配置
-echo 'API_SERVER_KEY=your-generated-key' >> ~/.hermes/.env
+echo 'API_SERVER_KEY=your-generated-key' | tee -a ~/.hermes/.env
 ```
 
 > **Note**: 不设置 `API_SERVER_KEY` 会导致 Session 续接被拒绝，每次对话无法保持上下文。
