@@ -70,6 +70,29 @@ def _try_parse_first_json_block(text: str) -> Optional[Dict[str, Any]]:
     return parsed
 
 
+def maybe_extract_decision_reply_text(text: str) -> Optional[str]:
+    """passive 路径的防御:如果 raw_text 是 submit_decision 形 JSON,抠出 reply_text。
+
+    场景:同一 Hermes session 之前跑过 reactive 模式,LLM 上下文学到了
+    submit_decision 契约;之后切回 passive(active_session 关掉)时,session
+    依旧吐 JSON,导致整段 JSON 被当作回复发给用户。
+
+    返回值:
+      - 字符串:JSON 是 submit_decision 形且 should_reply=true,返回 reply_text
+      - 空串 "":JSON 是 submit_decision 形但 should_reply=false(显式静默)
+      - None:不是 submit_decision 形,调用方应继续用原始 raw_text
+    """
+    parsed = _try_parse_first_json_block(text)
+    if parsed is None or "should_reply" not in parsed:
+        return None
+    if not parsed.get("should_reply"):
+        return ""
+    rt = parsed.get("reply_text")
+    if isinstance(rt, str):
+        return rt
+    return None
+
+
 @dataclass
 class ChatResult:
     raw_text: str

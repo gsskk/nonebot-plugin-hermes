@@ -18,7 +18,7 @@ from nonebot.rule import Rule
 
 from .. import mcp as _mcp  # lazy access to runtime singletons
 from ..config import plugin_config
-from ..core.hermes_client import hermes_client
+from ..core.hermes_client import hermes_client, maybe_extract_decision_reply_text
 from ..core.message_buffer import BufferedMessage
 from ..core.outbound import send_text_with_media
 from ..core.prompt_builder import (
@@ -290,12 +290,24 @@ async def _handle_passive_path(
         mode="passive",
         expect_structured=False,
     )
-    if not result.raw_text and not result.media_urls:
+
+    # 防御:同一 Hermes session 之前跑过 reactive 时学到 submit_decision 契约,
+    # 切回 passive 后仍可能吐 JSON。检测并抠 reply_text;不命中则用原 raw_text。
+    reply_text = result.raw_text
+    extracted = maybe_extract_decision_reply_text(reply_text)
+    if extracted is not None:
+        if extracted == "":
+            logger.info(f"[HERMES passive] LLM 返回 should_reply=false 结构,静默(group={group_id})")
+            return
+        logger.warning(f"[HERMES passive] 检测到 submit_decision 形 JSON 残留,抠 reply_text 后发送(group={group_id})")
+        reply_text = extracted
+
+    if not reply_text and not result.media_urls:
         return
     await send_text_with_media(
         bot=bot,
         target=target,
-        text=result.raw_text,
+        text=reply_text,
         media_urls=result.media_urls,
         at_user_id=None if is_private else user_id,
     )

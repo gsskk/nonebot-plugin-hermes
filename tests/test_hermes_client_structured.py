@@ -248,3 +248,46 @@ def test_decision_hint_field_names_are_canonical():
     # 反例:防 drift
     assert "topic_tag" not in _DECISION_HINT
     assert "shouldReply" not in _DECISION_HINT  # camelCase 漂移
+
+
+# --- maybe_extract_decision_reply_text (passive defensive parse) ---
+
+
+def test_extract_decision_reply_text_basic():
+    from nonebot_plugin_hermes.core.hermes_client import maybe_extract_decision_reply_text
+
+    out = maybe_extract_decision_reply_text('{"should_reply": true, "reply_text": "嗯嗯,知道了"}')
+    assert out == "嗯嗯,知道了"
+
+
+def test_extract_decision_reply_text_silent():
+    from nonebot_plugin_hermes.core.hermes_client import maybe_extract_decision_reply_text
+
+    # should_reply=false → 显式静默,返回空串(让调用方走静默分支)
+    out = maybe_extract_decision_reply_text('{"should_reply": false, "topic_hint": "x"}')
+    assert out == ""
+
+
+def test_extract_decision_reply_text_not_decision():
+    from nonebot_plugin_hermes.core.hermes_client import maybe_extract_decision_reply_text
+
+    # 普通文字回复 → None,调用方继续用原文
+    assert maybe_extract_decision_reply_text("今天天气真好") is None
+    # 是 JSON 但不含 should_reply 字段 → 不算 submit_decision
+    assert maybe_extract_decision_reply_text('{"foo": 1, "bar": 2}') is None
+
+
+def test_extract_decision_reply_text_with_prefix():
+    """LLM 输出常见 'sure! {...}' 形式;前缀文字不应阻止抽取。"""
+    from nonebot_plugin_hermes.core.hermes_client import maybe_extract_decision_reply_text
+
+    out = maybe_extract_decision_reply_text('noise before {"should_reply": true, "reply_text": "ok"}')
+    assert out == "ok"
+
+
+def test_extract_decision_reply_text_should_reply_no_text():
+    """should_reply=true 但缺 reply_text → None(让调用方按未识别处理 / 走原文)。"""
+    from nonebot_plugin_hermes.core.hermes_client import maybe_extract_decision_reply_text
+
+    out = maybe_extract_decision_reply_text('{"should_reply": true}')
+    assert out is None
