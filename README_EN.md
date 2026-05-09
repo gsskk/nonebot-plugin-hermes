@@ -213,7 +213,7 @@ After restart the bot will:
 - Listen on `127.0.0.1:8643` exposing MCP tools: `push_message` / `list_active_sessions` / `get_recent_messages`
 - Enter reactive mode after each @-mention; for the next 5 minutes it makes a `should_reply` decision on every group message (the window slides on each reply)
 
-> ⚠️ The MCP server is loopback-only. **Do not** change `HERMES_MCP_HOST` to a public address — anyone reaching that port can push messages into your groups.
+> ⚠️ **Security note — `HERMES_MCP_HOST` defaults to `127.0.0.1` (loopback).** Binding to a public or LAN address technically works, but the security trade-off is real: the `push_message` tool lets the bot send arbitrary messages into your groups, and the only defense in front of it is the Bearer token (sent over plain HTTP, and shared with `HERMES_API_KEY`). Before exposing the port, put a reverse proxy with TLS in front and add source-IP ACLs — otherwise any process that can reach the port and obtains the token can impersonate the bot.
 
 ### Tell Hermes Agent about the plugin
 
@@ -280,7 +280,7 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_BUFFER_PER_GROUP_CAP` | `200` | MessageBuffer per-group recent-message cap |
 | `HERMES_BUFFER_TOTAL_GROUPS_CAP` | `50` | MessageBuffer total cross-group capacity (LRU eviction) |
 | `HERMES_MCP_ENABLED` | `false` | Start the embedded FastMCP server (M1 reverse channel) |
-| `HERMES_MCP_HOST` | `127.0.0.1` | MCP server bind address (**do not change to non-loopback**) |
+| `HERMES_MCP_HOST` | `127.0.0.1` | MCP server bind address. Read the security note in "Active Sessions + Reverse Channel" before exposing publicly |
 | `HERMES_MCP_PORT` | `8643` | MCP server bind port |
 | `HERMES_MCP_RECENT_LIMIT_MAX` | `50` | Max items the `get_recent_messages` tool returns per call |
 | `HERMES_STRUCTURED_PATH` | `prompt` | Reactive structured-output path: `prompt` (JSON5 parse) / `tools` (OpenAI tool_choice) |

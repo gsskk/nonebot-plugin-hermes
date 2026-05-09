@@ -88,7 +88,10 @@ class Config(BaseModel):
     """是否启动内嵌 FastMCP server(False 时 Hermes 反向调用全失败,出向不影响)"""
 
     hermes_mcp_host: str = "127.0.0.1"
-    """MCP server bind host,**绝不暴露到非 loopback**"""
+    """MCP server bind host. 默认 loopback (127.0.0.1)。
+    改监听公网/局域网在技术上可行,但安全代价:push_message 能让 bot 往群里发
+    任意内容,前端防御只有 Bearer token(明文 HTTP,且与 HERMES_API_KEY 同
+    钥匙)。要改请配套反向代理 + TLS + 来源 IP ACL。"""
 
     hermes_mcp_port: int = 8643
     """MCP server bind port"""

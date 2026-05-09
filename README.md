@@ -213,7 +213,7 @@ HERMES_MCP_ENABLED=true
 - 监听 `127.0.0.1:8643` 暴露 MCP 工具：`push_message` / `list_active_sessions` / `get_recent_messages`
 - 在 @bot 触发后进入 reactive 模式，5 分钟内对群消息做 should_reply 决策（每次插话续期）
 
-> ⚠️ MCP server 仅监听 loopback，**不要**改 `HERMES_MCP_HOST` 暴露到公网——任何能访问该端口的进程都能向群里推消息。
+> ⚠️ **安全注意 ——`HERMES_MCP_HOST` 默认 `127.0.0.1`(loopback)。** 改成监听公网 / 局域网地址在技术上完全可行,但安全后果是:`push_message` 工具能让 bot 往群里发任意内容,而当前防御仅有 Bearer token(明文 HTTP 传输,且与 `HERMES_API_KEY` 同钥匙)。改之前请配套上反向代理(TLS 终结) + 来源 IP ACL,否则任何能 reach 该端口的进程一旦拿到 token 就可以冒名发送。
 
 ### 把插件能力告诉 Hermes Agent
 
@@ -280,7 +280,7 @@ mcp_servers:
 | `HERMES_BUFFER_PER_GROUP_CAP` | `200` | MessageBuffer 每群最近消息上限 |
 | `HERMES_BUFFER_TOTAL_GROUPS_CAP` | `50` | MessageBuffer 跨群总容量（LRU 驱逐） |
 | `HERMES_MCP_ENABLED` | `false` | 启动内嵌 FastMCP server（M1 反向通道） |
-| `HERMES_MCP_HOST` | `127.0.0.1` | MCP server 绑定地址（**勿改为非 loopback**） |
+| `HERMES_MCP_HOST` | `127.0.0.1` | MCP server 绑定地址。改成公开地址前请阅读上文「群活跃态 + 反向通道」节的安全注意 |
 | `HERMES_MCP_PORT` | `8643` | MCP server 绑定端口 |
 | `HERMES_MCP_RECENT_LIMIT_MAX` | `50` | `get_recent_messages` 工具单次最大返回条数 |
 | `HERMES_STRUCTURED_PATH` | `prompt` | reactive 结构化输出路径: `prompt`（JSON5 解析） / `tools`（OpenAI tool_choice） |
