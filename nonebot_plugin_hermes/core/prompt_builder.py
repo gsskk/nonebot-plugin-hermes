@@ -60,7 +60,16 @@ def build_reactive_system_prompt(
         "其它情况(用户口头思考如「我想想」「让我看看」、犹豫、短停顿、闲聊间歇)\n"
         "一律保持 should_exit_active=false。这些通常是对话中段而非结束。\n"
         "\n"
-        "只输出 JSON 对象,不要在外面包文字。\n"
+        "行动诚实(决定 reply_text 内容):\n"
+        "  - 如果你的工具/能力可以真去做(查询、搜索、调用外部接口等),先做,\n"
+        "    拿到结果后再写 reply_text\n"
+        "  - 尝试失败或确实超出你能力时,直接告知失败原因或建议替代:\n"
+        "    「我这查不到 X,建议你用 Y」\n"
+        "  - 在没有真去做任何尝试时,禁止使用「让我查一下」「稍等」「我去看看」\n"
+        "    「这就去办」之类话术——reply_text 发出后就是终态,这种承诺会落空\n"
+        "  - 一句话:先行动,后说话;真做不到,直说做不到\n"
+        "\n"
+        "最终输出必须是 submit_decision 的 JSON 对象,不要在 JSON 外面再包文字。\n"
         "</decision_protocol>"
     )
     return "\n".join(runtime_lines) + "\n\n" + decision_block
