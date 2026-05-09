@@ -39,11 +39,25 @@ def init_runtime_state() -> None:
         bot_registry = BotRegistry()
 
 
+def _on_server_task_done(task: asyncio.Task) -> None:
+    """uvicorn.serve() 在 task 里跑;端口绑定失败 / 中途异常都在这里捕获。
+    没有这个 callback 的话,asyncio 只会以 'Task exception was never retrieved'
+    打到 stderr,我们的应用日志却以为已 'started'。"""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(f"[HERMES MCP] server task died: {exc!r}")
+
+
 async def start_mcp_server() -> None:
     global _server_task, _uvicorn_server
 
     if not plugin_config.hermes_mcp_enabled:
         logger.info("[HERMES MCP] disabled (HERMES_MCP_ENABLED=false)")
+        return
+    if _server_task is not None and not _server_task.done():
+        logger.warning("[HERMES MCP] start_mcp_server called twice; ignoring second call")
         return
     if message_buffer is None or active_sessions is None or bot_registry is None:
         logger.error("[HERMES MCP] runtime state not initialized; skipping")
@@ -64,7 +78,10 @@ async def start_mcp_server() -> None:
     server = uvicorn.Server(config)
     _uvicorn_server = server
     _server_task = asyncio.create_task(server.serve(), name="hermes-mcp-server")
-    logger.info(f"[HERMES MCP] started on {plugin_config.hermes_mcp_host}:{plugin_config.hermes_mcp_port}")
+    _server_task.add_done_callback(_on_server_task_done)
+    # 注:create_task 立刻返回,uvicorn 还在异步绑定端口;此 log 仅声明意图,
+    # 真正起来 / 失败由 _on_server_task_done 捕获或 uvicorn 自身 stderr 日志反映。
+    logger.info(f"[HERMES MCP] starting on {plugin_config.hermes_mcp_host}:{plugin_config.hermes_mcp_port}")
 
 
 async def stop_mcp_server() -> None:
@@ -72,13 +89,18 @@ async def stop_mcp_server() -> None:
     if _uvicorn_server is not None:
         _uvicorn_server.should_exit = True
     if _server_task is not None:
+        forced = False
         try:
+            # asyncio.wait_for 内部已在超时时取消 task,无需再 cancel
             await asyncio.wait_for(_server_task, timeout=5)
         except asyncio.TimeoutError:
-            _server_task.cancel()
+            forced = True
+        if forced:
+            logger.warning("[HERMES MCP] graceful stop timed out; uvicorn was force-cancelled")
+        else:
+            logger.info("[HERMES MCP] stopped")
         _server_task = None
-        _uvicorn_server = None
-        logger.info("[HERMES MCP] stopped")
+    _uvicorn_server = None
 
 
 def register_lifecycle() -> None:

@@ -82,6 +82,7 @@ def build_mcp_app(
             return await response(scope, receive, send)
         return await http_app(scope, receive, send)
 
-    # 把内层 http_app 的 lifespan 暴露在外层,uvicorn 才会跑 FastMCP 的启动钩子
-    bearer_middleware.lifespan = getattr(http_app, "lifespan", None)  # type: ignore[attr-defined]
+    # 注:lifespan 通过上面 `scope["type"] != "http"` 分支自然 passthrough 到 http_app,
+    # FastMCP 的启动钩子在 inner app 里被 uvicorn 直接以 lifespan scope 调到。
+    # 不需要也不应在这里设置 .lifespan 属性——uvicorn 不读这个属性。
     return bearer_middleware
