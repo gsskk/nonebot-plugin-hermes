@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Optional
 
 import uvicorn
@@ -16,37 +17,50 @@ from ..core.message_buffer import MessageBuffer
 from .server import build_mcp_app
 
 
-class _SuppressToolValidationTraceback(logging.Filter):
-    """剥掉 FastMCP 'Error validating tool' 日志的 traceback。
+class _ToolValidationLogRedirect(logging.Filter):
+    """把 FastMCP 'Error validating tool' 日志 drop 掉,用 nonebot logger 重发一行。
 
-    FastMCP 在 server.py 里对客户端参数校验失败用 logger.exception() 打成
+    FastMCP 在 server.py 对客户端参数校验失败用 logger.exception() 打成
     ERROR + 完整栈,但这其实是 *客户端错*——错误已通过 structured response
-    (isError=true) 回给调用方了。服务端再打满屏 traceback 看起来像 server
-    crash 但不是。这里把这一类记录降级为 WARNING + 不带 exc_info,真实异常
-    ('Error calling tool ...' 来自 FastMCPError / 通用 Exception 分支)
-    保持 ERROR + 完整栈不动。
+    (isError=true) 回给调用方了,服务端再打满屏 traceback 看起来像 server
+    crash 但不是。
+    丢弃原 stdlib record,通过 nonebot 的 loguru logger 发一行简洁 WARNING,
+    与 bot 其它日志格式对齐(右对齐时间戳 / 颜色 / 文件位置)。
+    其它真实异常路径('Error calling tool ...')不在前缀范围内,保持原样。
     """
 
     _PREFIX = "Error validating tool "
+    _TOOL_RE = re.compile(r"^Error validating tool '([^']+)'")
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             msg = record.getMessage()
         except Exception:
             return True
-        if msg.startswith(self._PREFIX):
-            record.exc_info = None
-            record.exc_text = None
-            record.levelno = logging.WARNING
-            record.levelname = "WARNING"
-        return True
+        if not msg.startswith(self._PREFIX):
+            return True
+
+        m = self._TOOL_RE.match(msg)
+        tool_name = m.group(1) if m else "?"
+
+        detail = ""
+        if record.exc_info and record.exc_info[1] is not None:
+            # ValidationError str 多行,collapse 成一行并截断
+            detail = str(record.exc_info[1]).replace("\n", " | ")[:200]
+
+        logger.warning(
+            f"[HERMES MCP] tool '{tool_name}' validation failed: {detail}"
+            if detail
+            else f"[HERMES MCP] tool '{tool_name}' validation failed (no detail)"
+        )
+        return False  # 丢弃原 stdlib record
 
 
-# 模块级安装一次:fastmcp 用 logging.getLogger("fastmcp.server.server"),
-# import 期 attach filter 即可,所有后续 record 都过这个 filter。
+# 模块级安装一次。fastmcp 用 logging.getLogger("fastmcp.server.server"),
+# import 期 attach filter,所有后续 record 都过这条。
 _FASTMCP_TOOL_LOGGER = logging.getLogger("fastmcp.server.server")
-if not any(isinstance(f, _SuppressToolValidationTraceback) for f in _FASTMCP_TOOL_LOGGER.filters):
-    _FASTMCP_TOOL_LOGGER.addFilter(_SuppressToolValidationTraceback())
+if not any(isinstance(f, _ToolValidationLogRedirect) for f in _FASTMCP_TOOL_LOGGER.filters):
+    _FASTMCP_TOOL_LOGGER.addFilter(_ToolValidationLogRedirect())
 
 # 全局单例(Task 18 在 plugin __init__.py 装配)
 message_buffer: MessageBuffer | None = None
