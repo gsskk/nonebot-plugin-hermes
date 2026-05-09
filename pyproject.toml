@@ -1,6 +1,6 @@
 [project]
 name = "nonebot-plugin-hermes"
-version = "0.1.6"
+version = "0.2.0+m1mem"
 description = "NoneBot plugin for Hermes Agent — multi-platform AI chatbot via Hermes API Server"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -9,21 +9,38 @@ license = { text = "MIT" }
 dependencies = [
     "nonebot2>=2.3.0",
     "nonebot-plugin-alconna>=0.50.2",
+    "nonebot-plugin-apscheduler>=0.5.0",
     "httpx>=0.27.0",
+    "fastmcp>=3.0,<4",
+    "json5>=0.9.25",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
 ]
 
 [project.urls]
 "Homepage" = "https://github.com/gsskk/nonebot-plugin-hermes"
+
+[project.scripts]
+hermes-install-skill = "hermes_install_skill:main"
 
 [tool.nonebot]
 plugins = ["nonebot_plugin_hermes"]
 
 [tool.ruff]
 line-length = 120
-exclude = ["references"]
+exclude = ["references", "dist", "build"]
 
 [tool.ruff.lint]
 ignore = ["E402"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -31,3 +48,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["nonebot_plugin_hermes*"]
+
+[tool.setuptools]
+py-modules = ["hermes_install_skill"]
+
+[tool.setuptools.package-data]
+nonebot_plugin_hermes = ["skill/*.md"]

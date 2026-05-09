@@ -36,7 +36,9 @@ User Message → NoneBot Adapter → nonebot-plugin-hermes
 - ✅ Image sending (parses markdown images in AI replies)
 - ✅ Session lifecycle managed by Hermes Agent
 - ✅ Allowlist (Group/User level)
-- ✅ Built-in commands (`/clear`, `/ping`, `/help`)
+- ✅ Built-in commands (`/clear`, `/ping`, `/help`, `/hermes-status`)
+- 🧪 **Active group sessions (M1, experimental)**: After being @-mentioned, the bot listens to the group for 5 minutes and lets Hermes structurally decide whether to chime in
+- 🧪 **Reverse channel (M1, experimental)**: Embeds a local MCP server so Hermes can proactively push messages into the chat (delayed replies / async notifications)
 
 ## Quick Start
 
@@ -192,6 +194,46 @@ This plugin automatically injects the following metadata into the Hermes API, en
 
 Backend prompts can leverage this information for personalized greetings or platform-specific logic.
 
+## Active Sessions + Reverse Channel (M1, experimental)
+
+When enabled, an @-mention puts the bot into a 5-minute "active window" — during which it hears every message in the group (no @ needed) and Hermes Agent uses a structured decision (`should_reply` / `should_exit_active`) to choose whether to speak. The plugin also runs a local MCP server so Hermes can proactively push messages into the chat (delayed replies, async notifications, etc.).
+
+### Enable
+
+In `.env`:
+
+```env
+HERMES_PERCEPTION_ENABLED=true     # active sessions need the message buffer for context
+HERMES_ACTIVE_SESSION_ENABLED=true
+HERMES_MCP_ENABLED=true
+```
+
+After restart the bot will:
+
+- Listen on `127.0.0.1:8643` exposing MCP tools: `push_message` / `list_active_sessions` / `get_recent_messages`
+- Enter reactive mode after each @-mention; for the next 5 minutes it makes a `should_reply` decision on every group message (the window slides on each reply)
+
+> ⚠️ The MCP server is loopback-only. **Do not** change `HERMES_MCP_HOST` to a public address — anyone reaching that port can push messages into your groups.
+
+### Tell Hermes Agent about the plugin
+
+The plugin ships a `SKILL.md` (reactive decision contract + reverse-channel usage). After install, run once:
+
+```bash
+hermes-install-skill              # copies SKILL.md into ~/.hermes/skills/nonebot-bridge/
+```
+
+Then register the plugin's MCP server in `~/.hermes/config.yaml`, replacing `<HERMES_API_KEY>` with the same key you generated earlier (used for two-way auth):
+
+```yaml
+mcp_servers:
+  nonebot-bridge:
+    url: http://127.0.0.1:8643/mcp
+    headers: { Authorization: "Bearer <HERMES_API_KEY>" }
+```
+
+When the plugin's `SKILL.md` later changes, run `hermes-install-skill --force` to refresh.
+
 ## Commands
 
 | Command | Description |
@@ -199,6 +241,7 @@ Backend prompts can leverage this information for personalized greetings or plat
 | `/clear` | Reset conversation, start a new session |
 | `/ping` | Check Hermes Agent connection status |
 | `/help` | Show help information |
+| `/hermes-status` | Print M1 runtime state (MCP / active sessions / buffer / registry) |
 
 ## Configuration Options
 
@@ -221,6 +264,16 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_PERCEPTION_BUFFER` | `10` | Number of messages to buffer for perception |
 | `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | Max text length per historical message |
 | `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | Image mode: `placeholder` (text-only refs, recommended) / `inline_labeled` (sent in multimodal with strong labels, for cross-image questions) / `none` |
+| `HERMES_ACTIVE_SESSION_ENABLED` | `false` | Enable active group sessions (M1). When `false` the plugin behaves as in v0.1.6 |
+| `HERMES_ACTIVE_SESSION_TTL_SEC` | `300` | Active-window TTL in seconds; sliding renewal on each reply |
+| `HERMES_ACTIVE_SWEEP_INTERVAL_SEC` | `30` | Cron sweep interval for expired active sessions |
+| `HERMES_BUFFER_PER_GROUP_CAP` | `200` | MessageBuffer per-group recent-message cap |
+| `HERMES_BUFFER_TOTAL_GROUPS_CAP` | `50` | MessageBuffer total cross-group capacity (LRU eviction) |
+| `HERMES_MCP_ENABLED` | `false` | Start the embedded FastMCP server (M1 reverse channel) |
+| `HERMES_MCP_HOST` | `127.0.0.1` | MCP server bind address (**do not change to non-loopback**) |
+| `HERMES_MCP_PORT` | `8643` | MCP server bind port |
+| `HERMES_MCP_RECENT_LIMIT_MAX` | `50` | Max items the `get_recent_messages` tool returns per call |
+| `HERMES_STRUCTURED_PATH` | `prompt` | Reactive structured-output path: `prompt` (JSON5 parse) / `tools` (OpenAI tool_choice) |
 
 ## Limitations
 

@@ -1,119 +1,151 @@
 """
 消息处理器
 
-监听普通消息，根据触发规则调用 Hermes API 并回复。
+priority=1 perception:写 MessageBuffer + BotRegistry,非阻塞
+priority=98 main:触发判断 → reactive 决策 → 出向
 """
 
 from __future__ import annotations
 
-from typing import List
+import time
+from typing import List, Optional
 
 import nonebot_plugin_alconna as alconna
-from nonebot import on_message, logger
+from nonebot import logger, on_message
 from nonebot.adapters import Bot, Event
-from nonebot.rule import Rule
 from nonebot.matcher import Matcher
+from nonebot.rule import Rule
 
+from .. import mcp as _mcp  # lazy access to runtime singletons
 from ..config import plugin_config
 from ..core.hermes_client import hermes_client
+from ..core.message_buffer import BufferedMessage
+from ..core.outbound import send_text_with_media
+from ..core.prompt_builder import (
+    build_reactive_system_prompt,
+    build_reactive_user_content,
+)
 from ..core.session import session_manager
-from ..utils import get_adapter_name, check_isolation
+from ..utils import check_isolation, get_adapter_name
 
 
 async def _ignore_rule(event: Event) -> bool:
-    """过滤不需要处理的消息"""
-    # 检查忽略前缀
     try:
         msg_text = event.get_plaintext().strip()
     except Exception:
         return False
-
     if not msg_text:
-        return True  # 空消息也传递（可能有图片）
-
+        return True
     for prefix in plugin_config.hermes_ignore_prefix:
         if msg_text.startswith(prefix):
             return False
-
     return True
 
 
-# 监听普通消息，设置优先级 98 (比默认 99 高)，在真正响应时阻断后续处理
-receive_message = on_message(
-    rule=Rule(_ignore_rule),
-    priority=98,
-    block=True,
-)
-
-
-# 被动感知：监听所有消息（非阻塞），仅用于记录上下文背景
-# 优先级设为 1，确保在所有可能阻断事件的插件之前执行记录
+receive_message = on_message(rule=Rule(_ignore_rule), priority=98, block=True)
 perception_message = on_message(priority=1, block=False)
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _is_bot_at(uni_msg: alconna.UniMessage, bot_self_id: str) -> bool:
+    if uni_msg.has(alconna.At):
+        for seg in uni_msg[alconna.At]:
+            if str(seg.target) == str(bot_self_id):
+                return True
+    return False
+
+
+def _extract_image_urls(uni_msg: alconna.UniMessage) -> List[str]:
+    urls: List[str] = []
+    if uni_msg.has(alconna.Image):
+        for img in uni_msg[alconna.Image]:
+            url = getattr(img, "url", None)
+            if url:
+                urls.append(url)
+    return urls
 
 
 @perception_message.handle()
 async def handle_perception(bot: Bot, event: Event):
-    """静默记录消息到本地缓存，不触发 AI 回复"""
-    if not plugin_config.hermes_perception_enabled:
+    """记录消息到 MessageBuffer + 维护 BotRegistry。"""
+    if _mcp.message_buffer is None or _mcp.bot_registry is None:
         return
 
     try:
         target = alconna.get_target()
-        if target.private:
-            return
         adapter_name = get_adapter_name(target)
         user_id = event.get_user_id()
     except Exception:
         return
 
-    # 忽略来自自身的消息
     if user_id == str(bot.self_id):
         return
 
-    # 提取消息内容
-    image_urls: List[str] = []
     try:
         uni_msg = alconna.UniMessage.generate_without_reply(event=event, bot=bot)
-        msg_text = uni_msg.extract_plain_text().strip()
-
-        # 提取图片 URL
-        if uni_msg.has(alconna.Image):
-            for img in uni_msg[alconna.Image]:
-                url = getattr(img, "url", None)
-                if url:
-                    image_urls.append(url)
-
-        # 处理图片占位
-        if image_urls and plugin_config.hermes_perception_image_mode != "none":
-            placeholder = " [图片]"
-            if msg_text:
-                msg_text += placeholder
-            else:
-                msg_text = placeholder
     except Exception:
         return
+
+    msg_text = uni_msg.extract_plain_text().strip()
+    image_urls = _extract_image_urls(uni_msg)
+
+    # 文本太长截断
+    max_len = plugin_config.hermes_perception_text_length
+    if msg_text and len(msg_text) > max_len:
+        msg_text = msg_text[:max_len] + "..."
+
+    if image_urls and plugin_config.hermes_perception_image_mode != "none":
+        placeholder = " [图片]"
+        msg_text = (msg_text + placeholder) if msg_text else placeholder.strip()
 
     if not msg_text and not image_urls:
         return
 
+    now = _now_ms()
     group_id = None if target.private else target.id
 
-    # 记录到会话历史
-    session_manager.record_history(
-        adapter_name=adapter_name,
-        is_private=target.private,
-        user_id=user_id,
-        group_id=group_id,
-        sender_name=user_id,
-        content=msg_text,
-        image_urls=image_urls,
+    # 写 MessageBuffer
+    if plugin_config.hermes_perception_enabled or plugin_config.hermes_active_session_enabled:
+        _mcp.message_buffer.append(
+            BufferedMessage(
+                ts=now,
+                adapter=adapter_name,
+                group_id=group_id,
+                user_id=user_id,
+                nickname=user_id,
+                content=msg_text,
+                image_urls=image_urls,
+                is_bot=False,
+            )
+        )
+
+    # 写 BotRegistry
+    scope = "private" if target.private else "group"
+    scope_id = user_id if target.private else (group_id or "")
+    if scope_id:
+        _mcp.bot_registry.upsert(
+            adapter=adapter_name,
+            scope=scope,
+            scope_id=scope_id,
+            bot_self_id=str(bot.self_id),
+            target=target,
+            ts=now,
+        )
+
+    logger.debug(
+        f"[HERMES perception] {adapter_name}/{scope}/{scope_id} user={user_id} "
+        f"text_len={len(msg_text)} imgs={len(image_urls)}"
     )
-    logger.debug(f"[PERCEPTION] 已记录历史: {user_id}: {msg_text[:50]}...")
 
 
 @receive_message.handle()
 async def handle_message(bot: Bot, event: Event, matcher: Matcher):
-    """处理接收到的消息"""
+    if _mcp.message_buffer is None or _mcp.active_sessions is None:
+        return
+
     try:
         target = alconna.get_target()
     except Exception:
@@ -121,179 +153,282 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
 
     adapter_name = get_adapter_name(target)
     user_id = event.get_user_id() or "user"
-
-    # 忽略来自自身的消息
     if user_id == str(bot.self_id):
         matcher.skip()
 
-    # 提取引用消息中的内容
+    if not check_isolation(event, target):
+        matcher.skip()
+
+    # 引用消息提取
     replied_text = ""
     replied_image_urls: List[str] = []
     if hasattr(event, "reply") and event.reply:
         try:
-            # 引用消息的生成通常是异步的 (针对 message 属性)
             replied_message = await alconna.UniMessage.generate(message=event.reply.message, bot=bot)
-
-            # 提取引用文本
             replied_text = replied_message.extract_plain_text().strip()
-
-            # 提取引用图片
-            if replied_message.has(alconna.Image):
-                for img in replied_message[alconna.Image]:
-                    url = getattr(img, "url", None)
-                    if url:
-                        replied_image_urls.append(url)
-                        logger.debug(f"[HERMES] 引用消息图片 URL: {url[:50]!r}")
-                if not replied_text:
-                    replied_text = "[图片]"
+            replied_image_urls = _extract_image_urls(replied_message)
+            if replied_image_urls and not replied_text:
+                replied_text = "[图片]"
         except Exception as e:
             logger.warning(f"[HERMES] 提取引用消息失败: {e}")
 
-    # 生成当前消息对象
     try:
         uni_msg = alconna.UniMessage.generate_without_reply(event=event, bot=bot)
     except Exception:
         matcher.skip()
 
-    # 提取纯文本
     msg_text = uni_msg.extract_plain_text().strip()
-
-    # 如果有引用文本，合并到主消息中提供上下文
     if replied_text:
         msg_text = f"(引用: {replied_text}) {msg_text}".strip()
 
-    # 提取图片 URL
-    image_urls: List[str] = []
-    if uni_msg.has(alconna.Image):
-        for img in uni_msg[alconna.Image]:
-            url = getattr(img, "url", None)
-            if url:
-                image_urls.append(url)
-                logger.debug(f"[HERMES] 当前消息图片 URL: {url[:50]!r}")
-            else:
-                logger.debug(f"[HERMES] 图片段无 url 属性, img={img!r}")
-
-    # 合并引用消息中的图片
+    image_urls = _extract_image_urls(uni_msg)
     image_urls.extend(replied_image_urls)
 
-    # 空消息且无图片则跳过
     if not msg_text and not image_urls:
         matcher.skip()
 
-    # --- 触发判断 ---
-    if not check_isolation(event, target):
-        matcher.skip()
-
     group_id = None if target.private else target.id
+    now = _now_ms()
 
-    if not target.private:
-        is_mentioned = event.is_tome()
-
-        # 检测消息中是否有显式 @bot
-        if not is_mentioned and uni_msg.has(alconna.At):
-            for seg in uni_msg[alconna.At]:
-                if str(seg.target) == str(bot.self_id):
-                    is_mentioned = True
-                    break
-
+    # --- 触发判断 ---
+    is_explicit_trigger = False
+    if target.private:
+        is_explicit_trigger = True
+    else:
+        is_mentioned = event.is_tome() or _is_bot_at(uni_msg, str(bot.self_id))
         trigger_mode = plugin_config.hermes_group_trigger
-
         if trigger_mode == "at":
-            if not is_mentioned:
-                matcher.skip()
+            is_explicit_trigger = is_mentioned
+        elif trigger_mode == "all":
+            is_explicit_trigger = True
         elif trigger_mode == "keyword":
-            matched_kw = False
             for kw in plugin_config.hermes_keywords:
                 if msg_text.startswith(kw):
                     msg_text = msg_text[len(kw) :].strip()
-                    matched_kw = True
+                    is_explicit_trigger = True
                     break
-            if not matched_kw and not is_mentioned:
-                matcher.skip()
-        # "all" 模式：始终响应
+            if not is_explicit_trigger and is_mentioned:
+                is_explicit_trigger = True
 
-        if not msg_text and not image_urls:
-            matcher.skip()
+    # --- M1 核心:活跃态分支 ---
+    in_active_window = (
+        not target.private
+        and plugin_config.hermes_active_session_enabled
+        and group_id is not None
+        and _mcp.active_sessions.is_active(adapter_name, group_id, now)
+    )
 
-    # --- 构建 session key ---
-    group_id = None if target.private else target.id
+    if not is_explicit_trigger and not in_active_window:
+        matcher.skip()
+
+    # 显式触发:进入 / 续期活跃态(群聊场景)
+    if is_explicit_trigger and not target.private and group_id and plugin_config.hermes_active_session_enabled:
+        _mcp.active_sessions.trigger(adapter_name, group_id, user_id, now_ms=now)
+        logger.info(f"[HERMES] active_session triggered/renewed: {adapter_name}/{group_id} by {user_id}")
+
+    if not target.private:
+        logger.info(
+            f"[HERMES] dispatch: group={group_id} explicit={is_explicit_trigger} "
+            f"in_active={in_active_window} mode="
+            f"{'reactive' if plugin_config.hermes_active_session_enabled else 'passive'}"
+        )
+
+    # --- 调用 Hermes ---
+    if target.private or not plugin_config.hermes_active_session_enabled:
+        # 原 v0.1.6 等价路径:passive 模式,raw_text 直接当回复
+        await _handle_passive_path(
+            bot=bot,
+            target=target,
+            adapter_name=adapter_name,
+            user_id=user_id,
+            group_id=group_id,
+            text=msg_text,
+            image_urls=image_urls,
+            is_private=target.private,
+        )
+        return
+
+    # 群聊 + 活跃态启用 → reactive 决策
+    await _handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name=adapter_name,
+        user_id=user_id,
+        group_id=group_id,
+        text=msg_text,
+        image_urls=image_urls,
+        is_explicit_trigger=is_explicit_trigger,
+        now_ms=now,
+    )
+
+
+async def _handle_passive_path(
+    *,
+    bot: Bot,
+    target,
+    adapter_name: str,
+    user_id: str,
+    group_id: Optional[str],
+    text: str,
+    image_urls: List[str],
+    is_private: bool,
+):
     session_key = session_manager.get_session_key(
         adapter_name=adapter_name,
-        is_private=target.private,
+        is_private=is_private,
         user_id=user_id,
         group_id=group_id,
     )
-
-    # --- 获取历史背景上下文 (Passive Perception) ---
-    history_text, history_images = "", []
-    if not target.private:
-        history_text, history_images = session_manager.get_history_context(
-            adapter_name=adapter_name,
-            is_private=target.private,
-            user_id=user_id,
-            group_id=group_id,
-            skip_last=True,
-        )
-    if history_text:
-        logger.debug(f"[PERCEPTION] 成功注入历史背景, history_image_count={len(history_images)}")
-
-    logger.info(
-        f"[HERMES] [{adapter_name}] {'私聊' if target.private else f'群聊({group_id})'} "
-        f"{user_id}: {msg_text[:80].replace(chr(10), ' ')}"
-        f"{f' [+{len(image_urls)} 当前图]' if image_urls else ''}"
-        f"{f' [+{len(history_images)} 历史图]' if history_images else ''}"
-    )
-
-    # --- 调用 Hermes API ---
-    reply_text, media_urls = await hermes_client.chat(
-        text=msg_text or " ",  # 有图无字时发空格确保 API 正常
+    result = await hermes_client.chat(
+        text=text or " ",
         image_urls=image_urls,
         session_key=session_key,
         user_id=user_id,
         group_id=group_id,
         adapter_name=adapter_name,
-        is_private=target.private,
-        historical_text=history_text,
-        historical_image_urls=history_images,
+        is_private=is_private,
+        mode="passive",
+        expect_structured=False,
+    )
+    if not result.raw_text and not result.media_urls:
+        return
+    await send_text_with_media(
+        bot=bot,
+        target=target,
+        text=result.raw_text,
+        media_urls=result.media_urls,
+        at_user_id=None if is_private else user_id,
     )
 
-    if not reply_text and not media_urls:
+
+async def _handle_reactive_path(
+    *,
+    bot: Bot,
+    target,
+    adapter_name: str,
+    user_id: str,
+    group_id: str,
+    text: str,
+    image_urls: List[str],
+    is_explicit_trigger: bool,
+    now_ms: int,
+):
+    assert _mcp.message_buffer is not None and _mcp.active_sessions is not None
+
+    # 用 get_if_active 而非 get():get() 是 debug-only 裸访问,可能返回已过期 session;
+    # get_if_active 与 is_active(handle_message 入口处用过)同口径。
+    session = _mcp.active_sessions.get_if_active(adapter_name, group_id, now_ms)
+    if session is None:
+        return  # 防御:窗口刚刚过期 / 被外部 end()
+
+    recent = _mcp.message_buffer.get_recent(
+        adapter=adapter_name,
+        group_id=group_id,
+        limit=plugin_config.hermes_perception_buffer,
+    )
+
+    system_prompt = build_reactive_system_prompt(
+        adapter=adapter_name,
+        group_id=group_id,
+        triggered_by=session.triggered_by,
+        triggered_by_nickname=None,
+        topic_hint=session.topic_hint,
+    )
+    user_content = build_reactive_user_content(
+        recent_messages=recent,
+        current_user_id=user_id,
+        current_nickname=user_id,
+        current_text=text or "[图片]",
+        current_image_urls=image_urls,
+    )
+
+    session_key = session_manager.get_session_key(
+        adapter_name=adapter_name,
+        is_private=False,
+        user_id=user_id,
+        group_id=group_id,
+    )
+    # 注:user_content_override 已携带 user message 的全部内容(text + 多模态);
+    # text/image_urls 在 chat() 中会被忽略(见 hermes_client.chat 文档),此处显式传 ""
+    # /[] 让契约清晰,避免被读者误以为 image_urls 也参与了构造。
+    result = await hermes_client.chat(
+        text="",
+        image_urls=[],
+        session_key=session_key,
+        user_id=user_id,
+        group_id=group_id,
+        adapter_name=adapter_name,
+        is_private=False,
+        mode="reactive",
+        expect_structured=True,
+        structured_tool_name="submit_decision",
+        system_prompt=system_prompt,
+        user_content_override=user_content,
+    )
+
+    if result.parse_failed or result.structured is None:
+        logger.warning(
+            f"[HERMES reactive] structured parse failed (group={group_id}, "
+            f"transport_error={result.is_transport_error}); fallback="
+            f"{'raw_text' if is_explicit_trigger and result.raw_text else 'silent'}"
+        )
+        # 静默兜底:显式触发时降级发 raw_text;非显式触发(被动)时静默
+        if is_explicit_trigger and result.raw_text:
+            await send_text_with_media(
+                bot=bot,
+                target=target,
+                text=result.raw_text,
+                media_urls=result.media_urls,
+                at_user_id=user_id,
+            )
         return
 
-    # --- 构建回复消息 ---
-    reply_msg = alconna.UniMessage()
+    decision_summary = (
+        f"should_reply={result.structured.get('should_reply')} "
+        f"should_exit_active={result.structured.get('should_exit_active')} "
+        f"topic_hint={result.structured.get('topic_hint')!r}"
+    )
+    logger.info(f"[HERMES reactive] decision (group={group_id}): {decision_summary}")
 
-    # 群聊 @回复用户
-    if not target.private:
-        reply_msg += alconna.UniMessage([alconna.At("user", user_id), " "])
+    decision = result.structured
+    if decision.get("topic_hint"):
+        _mcp.active_sessions.update_topic(adapter_name, group_id, str(decision["topic_hint"]))
+    if decision.get("should_exit_active"):
+        _mcp.active_sessions.end(adapter_name, group_id)
 
-    # 文本内容（截断长消息）
-    if reply_text:
-        max_len = plugin_config.hermes_max_length
-        if len(reply_text) > max_len:
-            reply_text = reply_text[:max_len] + "\n\n…（消息过长，已截断）"
-        reply_msg += alconna.UniMessage(reply_text)
+    if not decision.get("should_reply"):
+        logger.debug(f"[HERMES reactive] should_reply=false (group={group_id})")
+        return
 
-    # 图片内容
-    for url in media_urls:
-        if url.startswith(("http://", "https://")):
-            reply_msg += alconna.UniMessage(alconna.Image(url=url))
+    reply_text = str(decision.get("reply_text") or "").strip()
+    if not reply_text:
+        return
 
-    # --- 发送 ---
-    try:
-        await reply_msg.send(target=target, bot=bot)
-        logger.debug(f"[HERMES] 回复已发送 ({len(reply_text)} 字, {len(media_urls)} 媒体)")
+    # 群里明确说话给某人 → at;主动插话 → 不 at
+    at_user = user_id if is_explicit_trigger else None
+    sent = await send_text_with_media(
+        bot=bot,
+        target=target,
+        text=reply_text,
+        media_urls=[],
+        at_user_id=at_user,
+    )
 
-        # 将 Bot 自身的回复记录到历史（被动感知上下文）
-        if plugin_config.hermes_perception_enabled and not target.private:
-            session_manager.record_history(
-                adapter_name=adapter_name,
-                is_private=target.private,
-                user_id=str(bot.self_id),
+    # 把 bot 自己的回复回写 MessageBuffer。复用入参 now_ms,避免 send 耗时
+    # 后两次 _now_ms() 调用之间出现毫秒级偏差。
+    if sent and _mcp.message_buffer is not None:
+        _mcp.message_buffer.append(
+            BufferedMessage(
+                ts=now_ms,
+                adapter=adapter_name,
                 group_id=group_id,
-                sender_name="Bot",
+                user_id=str(bot.self_id),
+                nickname="Bot",
                 content=reply_text,
-                image_urls=media_urls,
+                image_urls=[],
+                is_bot=True,
             )
-    except Exception as exc:
-        logger.error(f"[HERMES] 发送回复失败: {exc}")
+        )
+        # 注:若 should_exit_active=True,session 已在上方 end(),touch 是安全 no-op
+        # (ActiveSessionManager.touch 文档:session 缺失则 no-op)。
+        _mcp.active_sessions.touch(adapter_name, group_id, now_ms=now_ms)

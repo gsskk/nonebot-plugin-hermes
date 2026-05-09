@@ -36,7 +36,9 @@
 - ✅ 图片发送（解析 AI 回复中的 markdown 图片）
 - ✅ 会话生命周期由 Hermes Agent 管理
 - ✅ 白名单（群/用户级别）
-- ✅ 内置命令（`/clear` `/ping` `/help`）
+- ✅ 内置命令（`/clear` `/ping` `/help` `/hermes-status`）
+- 🧪 **群活跃态 (M1, 实验性)**：@bot 后 5 分钟内主动监听群对话，由 Hermes 通过结构化决策判断是否插话
+- 🧪 **反向通道 (M1, 实验性)**：内嵌本地 MCP server，让 Hermes 主动 push 消息进群（延迟回复 / 异步通知）
 
 ## 快速开始
 
@@ -192,6 +194,46 @@ platform_toolsets:
 
 后端 Prompt 可以通过这些信息实现个性化称呼或针对特定平台的功能逻辑。
 
+## 群活跃态 + 反向通道（M1，实验性）
+
+启用后，bot 在被 @ 之后会进入 5 分钟"活跃窗口"——期间能听到所有群消息（无需再 @），由 Hermes Agent 通过结构化决策（`should_reply` / `should_exit_active`）自行判断是否插话。同时插件起一个本地 MCP server，让 Hermes 可以主动 push 消息进群（延迟回复、异步通知等）。
+
+### 启用
+
+在 `.env` 中：
+
+```env
+HERMES_PERCEPTION_ENABLED=true     # 活跃态依赖消息缓冲做上下文
+HERMES_ACTIVE_SESSION_ENABLED=true
+HERMES_MCP_ENABLED=true
+```
+
+重启后 bot 会：
+
+- 监听 `127.0.0.1:8643` 暴露 MCP 工具：`push_message` / `list_active_sessions` / `get_recent_messages`
+- 在 @bot 触发后进入 reactive 模式，5 分钟内对群消息做 should_reply 决策（每次插话续期）
+
+> ⚠️ MCP server 仅监听 loopback，**不要**改 `HERMES_MCP_HOST` 暴露到公网——任何能访问该端口的进程都能向群里推消息。
+
+### 把插件能力告诉 Hermes Agent
+
+插件自带一份 `SKILL.md`（reactive 决策契约 + 反向通道用法）。安装后跑一次：
+
+```bash
+hermes-install-skill              # 复制 SKILL.md 到 ~/.hermes/skills/nonebot-bridge/
+```
+
+然后在 `~/.hermes/config.yaml` 注册插件 MCP server，把 `<HERMES_API_KEY>` 替换为你前面生成的同一把密钥（用于双向鉴权）：
+
+```yaml
+mcp_servers:
+  nonebot-bridge:
+    url: http://127.0.0.1:8643/mcp
+    headers: { Authorization: "Bearer <HERMES_API_KEY>" }
+```
+
+后续插件 SKILL.md 升级时跑 `hermes-install-skill --force` 重装。
+
 ## 命令
 
 | 命令 | 说明 |
@@ -199,6 +241,7 @@ platform_toolsets:
 | `/clear` | 重置对话，开始新会话 |
 | `/ping` | 检查 Hermes Agent 连接状态 |
 | `/help` | 显示帮助信息 |
+| `/hermes-status` | 打印 M1 运行时状态（MCP / 活跃 sessions / buffer / registry） |
 
 ## 配置项
 
@@ -221,6 +264,16 @@ platform_toolsets:
 | `HERMES_PERCEPTION_BUFFER` | `10` | 被动感知缓存的历史消息数量 |
 | `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | 被动感知单条历史消息最大长度 |
 | `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | 历史图片模式: `placeholder`(纯文本占位,推荐) / `inline_labeled`(带标签随多模态发送,适合跨图诉求) / `none`(不提) |
+| `HERMES_ACTIVE_SESSION_ENABLED` | `false` | 启用群活跃态（M1）。`false` 时退化为 v0.1.6 等价行为 |
+| `HERMES_ACTIVE_SESSION_TTL_SEC` | `300` | 活跃窗口 TTL（秒），每次插话滑动续期 |
+| `HERMES_ACTIVE_SWEEP_INTERVAL_SEC` | `30` | 活跃态过期清扫 cron 频率（秒） |
+| `HERMES_BUFFER_PER_GROUP_CAP` | `200` | MessageBuffer 每群最近消息上限 |
+| `HERMES_BUFFER_TOTAL_GROUPS_CAP` | `50` | MessageBuffer 跨群总容量（LRU 驱逐） |
+| `HERMES_MCP_ENABLED` | `false` | 启动内嵌 FastMCP server（M1 反向通道） |
+| `HERMES_MCP_HOST` | `127.0.0.1` | MCP server 绑定地址（**勿改为非 loopback**） |
+| `HERMES_MCP_PORT` | `8643` | MCP server 绑定端口 |
+| `HERMES_MCP_RECENT_LIMIT_MAX` | `50` | `get_recent_messages` 工具单次最大返回条数 |
+| `HERMES_STRUCTURED_PATH` | `prompt` | reactive 结构化输出路径: `prompt`（JSON5 解析） / `tools`（OpenAI tool_choice） |
 
 ## 限制
 
