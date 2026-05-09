@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Optional
 
 import uvicorn
@@ -13,6 +14,39 @@ from ..core.active_session import ActiveSessionManager
 from ..core.bot_registry import BotRegistry
 from ..core.message_buffer import MessageBuffer
 from .server import build_mcp_app
+
+
+class _SuppressToolValidationTraceback(logging.Filter):
+    """剥掉 FastMCP 'Error validating tool' 日志的 traceback。
+
+    FastMCP 在 server.py 里对客户端参数校验失败用 logger.exception() 打成
+    ERROR + 完整栈,但这其实是 *客户端错*——错误已通过 structured response
+    (isError=true) 回给调用方了。服务端再打满屏 traceback 看起来像 server
+    crash 但不是。这里把这一类记录降级为 WARNING + 不带 exc_info,真实异常
+    ('Error calling tool ...' 来自 FastMCPError / 通用 Exception 分支)
+    保持 ERROR + 完整栈不动。
+    """
+
+    _PREFIX = "Error validating tool "
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        if msg.startswith(self._PREFIX):
+            record.exc_info = None
+            record.exc_text = None
+            record.levelno = logging.WARNING
+            record.levelname = "WARNING"
+        return True
+
+
+# 模块级安装一次:fastmcp 用 logging.getLogger("fastmcp.server.server"),
+# import 期 attach filter 即可,所有后续 record 都过这个 filter。
+_FASTMCP_TOOL_LOGGER = logging.getLogger("fastmcp.server.server")
+if not any(isinstance(f, _SuppressToolValidationTraceback) for f in _FASTMCP_TOOL_LOGGER.filters):
+    _FASTMCP_TOOL_LOGGER.addFilter(_SuppressToolValidationTraceback())
 
 # 全局单例(Task 18 在 plugin __init__.py 装配)
 message_buffer: MessageBuffer | None = None
