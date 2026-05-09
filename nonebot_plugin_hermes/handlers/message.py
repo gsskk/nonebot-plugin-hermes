@@ -22,6 +22,7 @@ from ..core.hermes_client import hermes_client, maybe_extract_decision_reply_tex
 from ..core.message_buffer import BufferedMessage
 from ..core.outbound import send_text_with_media
 from ..core.prompt_builder import (
+    build_passive_system_prompt,
     build_reactive_system_prompt,
     build_reactive_user_content,
 )
@@ -245,6 +246,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             text=msg_text,
             image_urls=image_urls,
             is_private=target.private,
+            now_ms=now,
         )
         return
 
@@ -272,6 +274,7 @@ async def _handle_passive_path(
     text: str,
     image_urls: List[str],
     is_private: bool,
+    now_ms: int,
 ):
     session_key = session_manager.get_session_key(
         adapter_name=adapter_name,
@@ -279,6 +282,27 @@ async def _handle_passive_path(
         user_id=user_id,
         group_id=group_id,
     )
+
+    # 群聊 + 默认配置(active_session=false)+ perception_enabled:补回 0.1.6
+    # 「@bot 时让 LLM 看到群里旁观历史」。before_ts=now_ms 排除 perception 在
+    # 同一事件 priority=1 时刚写入的当前消息,避免历史里出现重复。
+    # 私聊不注入(0.1.6 起 perception 在私聊就是 no-op,Hermes session 已覆盖)。
+    system_prompt = None
+    if not is_private and group_id and plugin_config.hermes_perception_enabled and _mcp.message_buffer is not None:
+        recent = _mcp.message_buffer.get_recent(
+            adapter=adapter_name,
+            group_id=group_id,
+            limit=plugin_config.hermes_perception_buffer,
+            before_ts=now_ms,
+        )
+        system_prompt = build_passive_system_prompt(
+            adapter=adapter_name,
+            is_private=is_private,
+            user_id=user_id,
+            group_id=group_id,
+            recent_messages=recent,
+        )
+
     result = await hermes_client.chat(
         text=text or " ",
         image_urls=image_urls,
@@ -289,6 +313,7 @@ async def _handle_passive_path(
         is_private=is_private,
         mode="passive",
         expect_structured=False,
+        system_prompt=system_prompt,
     )
 
     # 防御:同一 Hermes session 之前跑过 reactive 时学到 submit_decision 契约,

@@ -75,6 +75,46 @@ def build_reactive_system_prompt(
     return "\n".join(runtime_lines) + "\n\n" + decision_block
 
 
+def build_passive_system_prompt(
+    *,
+    adapter: str,
+    is_private: bool,
+    user_id: str,
+    group_id: Optional[str],
+    recent_messages: Sequence[BufferedMessage],
+) -> str:
+    """passive 路径的 system prompt:Message Context 头(对齐 hermes_client.chat
+    默认拼装)+ 可选 <recent_messages> 块。
+
+    用于补回 0.1.6 在群聊 + active_session=false 默认配置下的「旁观历史注入」:
+    @bot 那一刻让 LLM 看到群里其他人之前在聊什么(Hermes 自身只记得 user↔bot
+    来回,看不到群里旁观对话)。
+
+    私聊调用方应传空 recent(0.1.6 起私聊就不跑 perception——1:1 没有旁观第三方)。
+
+    注:Message Context 5 行必须与 hermes_client.chat 的默认拼装保持一致,
+    任一处改格式记得同步另一处(测试 test_passive_prompt_* 是约束)。
+    """
+    ctx_lines = [f"Platform: {adapter or 'unknown'}"]
+    ctx_lines.append("Chat Type: " + ("Private" if is_private else "Group"))
+    if user_id:
+        ctx_lines.append(f"User ID: {user_id}")
+    if not is_private and group_id:
+        ctx_lines.append(f"Group ID: {group_id}")
+    sp = "Message Context:\n" + "\n".join(ctx_lines)
+
+    if not recent_messages:
+        return sp
+
+    history_lines = ["<recent_messages>"]
+    for m in reversed(list(recent_messages)):
+        prefix = "[bot] " if m.is_bot else ""
+        speaker = m.nickname or m.user_id
+        history_lines.append(f"{prefix}{speaker}: {m.content}")
+    history_lines.append("</recent_messages>")
+    return sp + "\n\n" + "\n".join(history_lines)
+
+
 def build_reactive_user_content(
     *,
     recent_messages: Sequence[BufferedMessage],

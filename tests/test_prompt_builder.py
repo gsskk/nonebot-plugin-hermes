@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from nonebot_plugin_hermes.core.message_buffer import BufferedMessage
 from nonebot_plugin_hermes.core.prompt_builder import (
+    build_passive_system_prompt,
     build_reactive_system_prompt,
     build_reactive_user_content,
 )
@@ -141,6 +142,70 @@ def test_user_content_empty_history_still_produces_block():
     assert "<recent_messages>" in content
     assert "</recent_messages>" in content
     assert "Alice: hi" in content
+
+
+def test_passive_prompt_group_with_history_appends_recent_messages_block():
+    """群聊 + 有 buffer 历史:Message Context 后追加 <recent_messages> 块,
+    历史按旧→新顺序;bot 自己的回复带 [bot] 前缀。这是 0.2 补回 0.1.6
+    群聊旁观历史注入的核心场景。"""
+    msgs = [_msg(200, "bob", "hi all"), _msg(100, "alice", "hello")]  # 新→旧 入参
+    sp = build_passive_system_prompt(
+        adapter="ob11",
+        is_private=False,
+        user_id="charlie",
+        group_id="g1",
+        recent_messages=msgs,
+    )
+    assert "Platform: ob11" in sp
+    assert "Chat Type: Group" in sp
+    assert "User ID: charlie" in sp
+    assert "Group ID: g1" in sp
+    assert "<recent_messages>" in sp
+    assert "</recent_messages>" in sp
+    # 旧→新 顺序:alice 行必须出现在 bob 行之前
+    alice_idx = sp.index("alice: hello")
+    bob_idx = sp.index("bob: hi all")
+    assert alice_idx < bob_idx
+
+
+def test_passive_prompt_marks_bot_messages():
+    msgs = [_msg(100, "alice", "hi"), _msg(200, "bot", "hi alice", is_bot=True)]
+    sp = build_passive_system_prompt(
+        adapter="ob11",
+        is_private=False,
+        user_id="charlie",
+        group_id="g1",
+        recent_messages=msgs,
+    )
+    assert "[bot] bot: hi alice" in sp
+
+
+def test_passive_prompt_empty_history_omits_block():
+    """recent_messages=[] 时不追加 <recent_messages> 块——passive 路径下
+    塞个空块只会让 prompt 变长却没信息;与 reactive 的「保持格式齐全」诉求不同。"""
+    sp = build_passive_system_prompt(
+        adapter="ob11",
+        is_private=False,
+        user_id="charlie",
+        group_id="g1",
+        recent_messages=[],
+    )
+    assert "<recent_messages>" not in sp
+    assert "Group ID: g1" in sp
+
+
+def test_passive_prompt_private_omits_group_id():
+    """私聊场景调用方一般不会传 history,但若误传也别在 prompt 里漏出
+    Group ID 字段——和 hermes_client 默认拼装行为对齐。"""
+    sp = build_passive_system_prompt(
+        adapter="ob11",
+        is_private=True,
+        user_id="charlie",
+        group_id=None,
+        recent_messages=[],
+    )
+    assert "Chat Type: Private" in sp
+    assert "Group ID" not in sp
 
 
 def test_user_content_empty_current_text_with_image_is_valid():
