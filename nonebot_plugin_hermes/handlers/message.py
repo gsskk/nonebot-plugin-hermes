@@ -302,14 +302,16 @@ async def _handle_reactive_path(
 ):
     assert _mcp.message_buffer is not None and _mcp.active_sessions is not None
 
-    session = _mcp.active_sessions.get(adapter_name, group_id)
+    # 用 get_if_active 而非 get():get() 是 debug-only 裸访问,可能返回已过期 session;
+    # get_if_active 与 is_active(handle_message 入口处用过)同口径。
+    session = _mcp.active_sessions.get_if_active(adapter_name, group_id, now_ms)
     if session is None:
-        return  # 防御:窗口刚刚过期
+        return  # 防御:窗口刚刚过期 / 被外部 end()
 
     recent = _mcp.message_buffer.get_recent(
         adapter=adapter_name,
         group_id=group_id,
-        limit=20,
+        limit=plugin_config.hermes_perception_buffer,
     )
 
     system_prompt = build_reactive_system_prompt(
@@ -333,9 +335,12 @@ async def _handle_reactive_path(
         user_id=user_id,
         group_id=group_id,
     )
+    # 注:user_content_override 已携带 user message 的全部内容(text + 多模态);
+    # text/image_urls 在 chat() 中会被忽略(见 hermes_client.chat 文档),此处显式传 ""
+    # /[] 让契约清晰,避免被读者误以为 image_urls 也参与了构造。
     result = await hermes_client.chat(
-        text=text,
-        image_urls=image_urls,
+        text="",
+        image_urls=[],
         session_key=session_key,
         user_id=user_id,
         group_id=group_id,
@@ -384,11 +389,12 @@ async def _handle_reactive_path(
         at_user_id=at_user,
     )
 
-    # 把 bot 自己的回复回写 MessageBuffer
+    # 把 bot 自己的回复回写 MessageBuffer。复用入参 now_ms,避免 send 耗时
+    # 后两次 _now_ms() 调用之间出现毫秒级偏差。
     if sent and _mcp.message_buffer is not None:
         _mcp.message_buffer.append(
             BufferedMessage(
-                ts=_now_ms(),
+                ts=now_ms,
                 adapter=adapter_name,
                 group_id=group_id,
                 user_id=str(bot.self_id),
@@ -398,4 +404,6 @@ async def _handle_reactive_path(
                 is_bot=True,
             )
         )
-        _mcp.active_sessions.touch(adapter_name, group_id, now_ms=_now_ms())
+        # 注:若 should_exit_active=True,session 已在上方 end(),touch 是安全 no-op
+        # (ActiveSessionManager.touch 文档:session 缺失则 no-op)。
+        _mcp.active_sessions.touch(adapter_name, group_id, now_ms=now_ms)
