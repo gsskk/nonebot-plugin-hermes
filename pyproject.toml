@@ -25,6 +25,9 @@ dev = [
 [project.urls]
 "Homepage" = "https://github.com/gsskk/nonebot-plugin-hermes"
 
+[project.scripts]
+hermes-install-skill = "hermes_install_skill:main"
+
 [tool.nonebot]
 plugins = ["nonebot_plugin_hermes"]
 
@@ -45,6 +48,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["nonebot_plugin_hermes*"]
+
+[tool.setuptools]
+py-modules = ["hermes_install_skill"]
 
 [tool.setuptools.package-data]
 nonebot_plugin_hermes = ["skill/*.md"]
