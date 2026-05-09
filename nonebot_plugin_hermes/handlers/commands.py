@@ -80,27 +80,26 @@ async def handle_help(bot: Bot, event: Event, matcher: Matcher):
     if not check_isolation(event, target):
         matcher.skip()
 
-    if target.private:
-        help_text = (
-            "🤖 Hermes Agent 帮助\n\n"
-            "直接发送消息即可与 AI 对话。\n\n"
-            "命令：\n"
-            "/clear - 重置对话\n"
-            "/ping - 检查连接状态\n"
-            "/hermes-status - 查看插件运行时状态\n"
-            "/help - 显示本帮助"
-        )
-    else:
-        help_text = (
-            "🤖 Hermes Agent 帮助\n\n"
-            "@我 发送消息即可与 AI 对话。\n\n"
-            "命令：\n"
-            "/clear - 重置对话\n"
-            "/ping - 检查连接状态\n"
-            "/hermes-status - 查看插件运行时状态\n"
-            "/help - 显示本帮助"
-        )
+    # 是否管理员决定要不要把 /hermes-status 暴露给当前用户
+    adapter_name = get_adapter_name(target)
+    user_id = event.get_user_id() or ""
+    is_admin = f"{adapter_name}:{user_id}" in plugin_config.hermes_admin_users
 
+    if target.private:
+        intro = "🤖 Hermes Agent 帮助\n\n直接发送消息即可与 AI 对话。\n\n命令：\n"
+    else:
+        intro = "🤖 Hermes Agent 帮助\n\n@我 发送消息即可与 AI 对话。\n\n命令：\n"
+
+    lines = [
+        "/clear - 重置对话",
+        "/ping - 检查连接状态",
+        "/help - 显示本帮助",
+    ]
+    if is_admin:
+        # 管理员才看见运行时状态命令,普通用户视角下此命令"不存在"
+        lines.append("/hermes-status - 查看插件运行时状态(管理员)")
+
+    help_text = intro + "\n".join(lines)
     await alconna.UniMessage(help_text).send(target=target, bot=bot)
 
 
@@ -116,14 +115,14 @@ async def handle_status(bot: Bot, event: Event, matcher: Matcher):
         matcher.skip()
 
     # /hermes-status 暴露内部运行时(活跃群、buffer 内容、bot 路由),
-    # 应限制在管理员白名单内。空集 = deny by default。
+    # 应限制在管理员白名单内。**隐身策略**:对非管理员完全静默,不发"未授权"
+    # 提示——避免把命令存在性暴露给一般用户。空集 = deny by default。
     adapter_name = get_adapter_name(target)
     user_id = event.get_user_id() or ""
     admin_key = f"{adapter_name}:{user_id}"
     if admin_key not in plugin_config.hermes_admin_users:
-        logger.info(f"[HERMES] /hermes-status denied for {admin_key} (not in HERMES_ADMIN_USERS)")
-        await alconna.UniMessage("⛔ 未授权。该命令需要在 HERMES_ADMIN_USERS 显式配置。").send(target=target, bot=bot)
-        return
+        logger.debug(f"[HERMES] /hermes-status silent skip for {admin_key}")
+        return  # block=True 已阻断后续 matcher,直接 return 即静默
 
     now_ms = int(time.time() * 1000)
 

@@ -251,7 +251,7 @@ mcp_servers:
 | `/clear` | 重置对话，开始新会话 |
 | `/ping` | 检查 Hermes Agent 连接状态 |
 | `/help` | 显示帮助信息 |
-| `/hermes-status` | 打印 M1 运行时状态（MCP / 活跃 sessions / buffer / registry）。**需在 `HERMES_ADMIN_USERS` 显式授权 `adapter:user_id`** |
+| `/hermes-status` | 打印 M1 运行时状态（MCP / 活跃 sessions / buffer / registry）。**需在 `HERMES_ADMIN_USERS` 显式授权 `adapter:user_id`**;非管理员调用时静默无响应,且 `/help` 输出里也不出现该命令 |
 
 ## 配置项
 

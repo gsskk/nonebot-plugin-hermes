@@ -251,7 +251,7 @@ When the plugin's `SKILL.md` later changes, re-run with `--force` using any of t
 | `/clear` | Reset conversation, start a new session |
 | `/ping` | Check Hermes Agent connection status |
 | `/help` | Show help information |
-| `/hermes-status` | Print M1 runtime state (MCP / active sessions / buffer / registry). **Requires `adapter:user_id` to be listed in `HERMES_ADMIN_USERS`** |
+| `/hermes-status` | Print M1 runtime state (MCP / active sessions / buffer / registry). **Requires `adapter:user_id` to be listed in `HERMES_ADMIN_USERS`**; non-admin invocations are silently ignored and the command does not appear in `/help` for them |
 
 ## Configuration Options
 
