@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import mcp.types as mcp_types
 from fastmcp import FastMCP
 from starlette.responses import JSONResponse
 
@@ -46,6 +47,25 @@ def build_mcp_app(
     """
 
     mcp = FastMCP("nonebot-bridge")
+
+    # FastMCP 的 _setup_handlers 无条件注册 list_resources / list_prompts /
+    # read_resource / get_prompt / list_resource_templates 等 5 个 RequestType
+    # handler。MCP SDK 的 get_capabilities 据 request_handlers 是否含这些 key
+    # 决定声明哪些能力——所以即使我们零个 resource/prompt,这两块能力照样被
+    # 声明,Hermes 等代理端就把每个方法包装成 tool 暴露给 LLM(浪费 ~300 token
+    # 的 tool/list 描述,且 LLM 可能误调)。
+    # 把这些 RequestType 从字典 pop 出去,capability 协商就会准确反映成
+    # "我只有 tools",Hermes 重启后只注册我们真正实现的 3 个工具。
+    # FastMCP 顶层 mcp.list_resources() 等 Python API 不受影响——那是 provider
+    # 层的方法,删的是 JSON-RPC 协议入口。
+    for _req_type in (
+        mcp_types.ListResourcesRequest,
+        mcp_types.ListResourceTemplatesRequest,
+        mcp_types.ReadResourceRequest,
+        mcp_types.ListPromptsRequest,
+        mcp_types.GetPromptRequest,
+    ):
+        mcp._mcp_server.request_handlers.pop(_req_type, None)
 
     # 注:三个工具的签名都是扁平参数(非 Pydantic model 包装)。FastMCP 单 model 入参
     # 会把 schema 暴露成 {properties: {input: {...}}},逼客户端 wrap 一层 input,
