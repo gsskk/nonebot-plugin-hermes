@@ -30,11 +30,20 @@ from nonebot_plugin_hermes.mcp.tools.list_active_sessions import (
 
 
 def _make_session_mgr(*entries) -> ActiveSessionManager:
-    """Build an ActiveSessionManager with the given (adapter, group_id, user_id) tuples."""
+    """Build an ActiveSessionManager with the given (adapter, group_id, user_id) tuples.
+
+    All sessions trigger at now_ms=0 → expires_at=300_000ms. Tests passing
+    now_ms < 300_000 to list_active_sessions_impl will see them as active.
+    """
     mgr = ActiveSessionManager(default_ttl_sec=300)
     for adapter, group_id, user_id in entries:
         mgr.trigger(adapter, group_id, user_id, now_ms=0)
     return mgr
+
+
+# 共享时间锚:tests 中所有 list_active_sessions_impl 调用使用此值,
+# 既小于 _make_session_mgr 的 expires_at=300_000,又能让"已过期"测试用 400_000 区分
+_NOW_MS = 1_000  # 1s 后,session 仍在 5min TTL 内
 
 
 def _msg(
@@ -86,7 +95,7 @@ async def test_list_active_sessions_no_filter_returns_all():
     """With adapter=None, returns all sessions regardless of adapter."""
     mgr = _make_session_mgr(("ob11", "g1", "u1"), ("kook", "g2", "u2"), ("ob11", "g3", "u3"))
     inp = ListActiveSessionsInput(adapter=None)
-    result = await list_active_sessions_impl(inp, active_sessions=mgr)
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=_NOW_MS)
     assert isinstance(result, ListActiveSessionsResult)
     assert len(result.sessions) == 3
     group_ids = {v.group_id for v in result.sessions}
@@ -98,7 +107,7 @@ async def test_list_active_sessions_with_adapter_filter():
     """With adapter='ob11', returns only ob11 sessions."""
     mgr = _make_session_mgr(("ob11", "g1", "u1"), ("kook", "g2", "u2"), ("ob11", "g3", "u3"))
     inp = ListActiveSessionsInput(adapter="ob11")
-    result = await list_active_sessions_impl(inp, active_sessions=mgr)
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=_NOW_MS)
     assert len(result.sessions) == 2
     for v in result.sessions:
         assert v.adapter == "ob11"
@@ -110,7 +119,7 @@ async def test_list_active_sessions_view_fields_match_session():
     mgr = ActiveSessionManager(default_ttl_sec=300)
     session = mgr.trigger("ob11", "g1", "u42", now_ms=5_000, topic_hint="rust async")
     inp = ListActiveSessionsInput(adapter=None)
-    result = await list_active_sessions_impl(inp, active_sessions=mgr)
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=10_000)
     assert len(result.sessions) == 1
     v = result.sessions[0]
     assert isinstance(v, ActiveSessionView)
@@ -129,8 +138,30 @@ async def test_list_active_sessions_topic_hint_none_allowed():
     mgr = ActiveSessionManager(default_ttl_sec=300)
     mgr.trigger("ob11", "g1", "u1", now_ms=0, topic_hint=None)
     inp = ListActiveSessionsInput(adapter=None)
-    result = await list_active_sessions_impl(inp, active_sessions=mgr)
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=_NOW_MS)
     assert result.sessions[0].topic_hint is None
+
+
+@pytest.mark.asyncio
+async def test_list_active_sessions_filters_expired():
+    """Expired sessions(expires_at <= now_ms)不应出现在 view——保持与
+    push_message 的 validate_push_context 同口径。Task 16 cron sweep 之前的
+    陈旧条目对外不可见。"""
+    mgr = ActiveSessionManager(default_ttl_sec=300)
+    # session A 在 now_ms=0 触发,expires_at=300_000ms
+    mgr.trigger("ob11", "alive", "u1", now_ms=0)
+    # session B 触发但已过期(注:无法直接构造,改为推时间)
+    mgr.trigger("ob11", "dying", "u2", now_ms=0)
+
+    inp = ListActiveSessionsInput(adapter=None)
+
+    # 推 now_ms 到 400_000(>300_000):两个 session 都应被过滤
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=400_000)
+    assert result.sessions == []
+
+    # 推到 200_000(<300_000):两个都活
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=200_000)
+    assert len(result.sessions) == 2
 
 
 # ---------------------------------------------------------------------------

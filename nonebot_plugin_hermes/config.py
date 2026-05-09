@@ -7,7 +7,7 @@
 from typing import Literal, Set
 
 from nonebot import get_plugin_config
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Config(BaseModel):
@@ -93,8 +93,9 @@ class Config(BaseModel):
     hermes_mcp_port: int = 8643
     """MCP server bind port"""
 
-    hermes_mcp_recent_limit_max: int = 50
-    """get_recent_messages 工具单次返回上限"""
+    hermes_mcp_recent_limit_max: int = Field(default=50, ge=1)
+    """get_recent_messages 工具单次返回上限。最小 1——0/负值会让工具静默返空,
+    Pydantic 在启动期校验防 misconfig。"""
 
     # --- M1: 结构化输出路径(由 P0-spike 决定) ---
     hermes_structured_path: Literal["tools", "prompt"] = "prompt"
