@@ -37,6 +37,12 @@ class Config(BaseModel):
     hermes_allow_groups: Set[str] = set()
     """允许响应的群组 ID(空 = 全部允许)"""
 
+    hermes_admin_users: Set[str] = set()
+    """管理员白名单(adapter+user 复合 ID)。用于 /hermes-status 等敏感命令。
+    格式:`{adapter}:{user_id}`,adapter 取小写 + 去空格点(同 get_adapter_name)。
+    例:["telegram:7055555877", "onebotv11:12345678"]
+    空集 = 不允许任何人使用敏感命令(默认 deny)。"""
+
     # --- 会话 ---
     hermes_session_share_group: bool = False
     """群内是否共享同一个 session(False = 每人独立)"""

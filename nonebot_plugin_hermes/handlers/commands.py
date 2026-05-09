@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 
 import nonebot_plugin_alconna as alconna
-from nonebot import on_command
+from nonebot import logger, on_command
 from nonebot.adapters import Bot, Event
 from nonebot.matcher import Matcher
 
@@ -114,6 +114,16 @@ async def handle_status(bot: Bot, event: Event, matcher: Matcher):
     target = alconna.get_target()
     if not check_isolation(event, target):
         matcher.skip()
+
+    # /hermes-status 暴露内部运行时(活跃群、buffer 内容、bot 路由),
+    # 应限制在管理员白名单内。空集 = deny by default。
+    adapter_name = get_adapter_name(target)
+    user_id = event.get_user_id() or ""
+    admin_key = f"{adapter_name}:{user_id}"
+    if admin_key not in plugin_config.hermes_admin_users:
+        logger.info(f"[HERMES] /hermes-status denied for {admin_key} (not in HERMES_ADMIN_USERS)")
+        await alconna.UniMessage("⛔ 未授权。该命令需要在 HERMES_ADMIN_USERS 显式配置。").send(target=target, bot=bot)
+        return
 
     now_ms = int(time.time() * 1000)
 

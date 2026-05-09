@@ -251,7 +251,7 @@ When the plugin's `SKILL.md` later changes, re-run with `--force` using any of t
 | `/clear` | Reset conversation, start a new session |
 | `/ping` | Check Hermes Agent connection status |
 | `/help` | Show help information |
-| `/hermes-status` | Print M1 runtime state (MCP / active sessions / buffer / registry) |
+| `/hermes-status` | Print M1 runtime state (MCP / active sessions / buffer / registry). **Requires `adapter:user_id` to be listed in `HERMES_ADMIN_USERS`** |
 
 ## Configuration Options
 
@@ -267,6 +267,7 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_PRIVATE_TRIGGER` | `all` | Private trigger mode: `all` / `allowlist` |
 | `HERMES_ALLOW_USERS` | `[]` | Allowed user IDs for `allowlist` mode |
 | `HERMES_ALLOW_GROUPS` | `[]` | Allowed group IDs (empty for all) |
+| `HERMES_ADMIN_USERS` | `[]` | Admin allowlist as `["telegram:<user_id>", "onebotv11:<user_id>"]`. **Empty = deny by default**; sensitive commands like `/hermes-status` only run if the caller's `adapter:user_id` is in this list |
 | `HERMES_SESSION_SHARE_GROUP` | `false` | Share session within group |
 | `HERMES_MAX_LENGTH` | `4000` | Max reply length (truncated if exceeded) |
 | `HERMES_IGNORE_PREFIX` | `["."]` | Ignore messages starting with these chars |

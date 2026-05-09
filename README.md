@@ -251,7 +251,7 @@ mcp_servers:
 | `/clear` | 重置对话，开始新会话 |
 | `/ping` | 检查 Hermes Agent 连接状态 |
 | `/help` | 显示帮助信息 |
-| `/hermes-status` | 打印 M1 运行时状态（MCP / 活跃 sessions / buffer / registry） |
+| `/hermes-status` | 打印 M1 运行时状态（MCP / 活跃 sessions / buffer / registry）。**需在 `HERMES_ADMIN_USERS` 显式授权 `adapter:user_id`** |
 
 ## 配置项
 
@@ -267,6 +267,7 @@ mcp_servers:
 | `HERMES_PRIVATE_TRIGGER` | `all` | 私聊触发方式: `all` / `allowlist` |
 | `HERMES_ALLOW_USERS` | `[]` | 允许私聊的用户 ID 列表 (`allowlist` 模式) |
 | `HERMES_ALLOW_GROUPS` | `[]` | 允许响应的群组 ID 列表（空为全部允许） |
+| `HERMES_ADMIN_USERS` | `[]` | 管理员白名单,格式 `["telegram:<user_id>", "onebotv11:<user_id>"]`。**默认空集 = deny by default**;`/hermes-status` 等敏感命令必须命中此列表才执行 |
 | `HERMES_SESSION_SHARE_GROUP` | `false` | 群内是否共享同一个 session |
 | `HERMES_MAX_LENGTH` | `4000` | 单条回复最大长度（超出后截断） |
 | `HERMES_IGNORE_PREFIX` | `["."]` | 以这些字符开头的消息不触发回复 |
