@@ -135,6 +135,11 @@ async def handle_perception(bot: Bot, event: Event):
             ts=now,
         )
 
+    logger.debug(
+        f"[HERMES perception] {adapter_name}/{scope}/{scope_id} user={user_id} "
+        f"text_len={len(msg_text)} imgs={len(image_urls)}"
+    )
+
 
 @receive_message.handle()
 async def handle_message(bot: Bot, event: Event, matcher: Matcher):
@@ -219,6 +224,14 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     # 显式触发:进入 / 续期活跃态(群聊场景)
     if is_explicit_trigger and not target.private and group_id and plugin_config.hermes_active_session_enabled:
         _mcp.active_sessions.trigger(adapter_name, group_id, user_id, now_ms=now)
+        logger.info(f"[HERMES] active_session triggered/renewed: {adapter_name}/{group_id} by {user_id}")
+
+    if not target.private:
+        logger.info(
+            f"[HERMES] dispatch: group={group_id} explicit={is_explicit_trigger} "
+            f"in_active={in_active_window} mode="
+            f"{'reactive' if plugin_config.hermes_active_session_enabled else 'passive'}"
+        )
 
     # --- 调用 Hermes ---
     if target.private or not plugin_config.hermes_active_session_enabled:
@@ -354,6 +367,11 @@ async def _handle_reactive_path(
     )
 
     if result.parse_failed or result.structured is None:
+        logger.warning(
+            f"[HERMES reactive] structured parse failed (group={group_id}, "
+            f"transport_error={result.is_transport_error}); fallback="
+            f"{'raw_text' if is_explicit_trigger and result.raw_text else 'silent'}"
+        )
         # 静默兜底:显式触发时降级发 raw_text;非显式触发(被动)时静默
         if is_explicit_trigger and result.raw_text:
             await send_text_with_media(
@@ -364,6 +382,13 @@ async def _handle_reactive_path(
                 at_user_id=user_id,
             )
         return
+
+    decision_summary = (
+        f"should_reply={result.structured.get('should_reply')} "
+        f"should_exit_active={result.structured.get('should_exit_active')} "
+        f"topic_hint={result.structured.get('topic_hint')!r}"
+    )
+    logger.info(f"[HERMES reactive] decision (group={group_id}): {decision_summary}")
 
     decision = result.structured
     if decision.get("topic_hint"):
