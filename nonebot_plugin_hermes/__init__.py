@@ -13,7 +13,7 @@ require("nonebot_plugin_apscheduler")
 
 from .config import Config, plugin_config
 
-__version__ = "0.2.0+m1mem"
+__version__ = "0.2.0"
 
 __plugin_meta__ = PluginMetadata(
     name="Hermes Agent",
