@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import List
 from unittest.mock import AsyncMock, MagicMock
@@ -65,7 +66,8 @@ async def test_reactive_burst_coalesces_to_two_chat_calls(monkeypatch):
     """同一 group 上 5 条 burst,chat 实际被调 2 次(初发 + 一次合并重燃)。"""
     from nonebot_plugin_hermes.handlers import message as handler_mod
 
-    now = 1_000_000
+    # 用 wall-clock,因为 _refire 内部读 _now_ms() 做 is_active 校验
+    now = int(time.time() * 1000)
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
     chat_calls: List[int] = []
@@ -287,7 +289,8 @@ async def test_refire_depth_caps_at_max(monkeypatch):
     """持续 burst:链尾最多重燃 MAX_REFIRE_DEPTH 次,触顶后 warn + drop pending。"""
     from nonebot_plugin_hermes.handlers import message as handler_mod
 
-    now = 4_000_000
+    # 用 wall-clock,因为 _refire 内部读 _now_ms() 做 is_active 校验
+    now = int(time.time() * 1000)
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
     chat_calls: List[int] = []

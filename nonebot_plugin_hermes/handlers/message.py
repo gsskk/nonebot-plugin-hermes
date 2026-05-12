@@ -667,6 +667,12 @@ async def _refire(
         _mcp.inflight.exit(key)
         return
 
+    # now_ms 用 wall-clock 而不是 trigger_msg.ts:_run_*_turn 内部用它做
+    # get_if_active 的 TTL 校验、active_sessions.touch 的滑动续期、以及 bot
+    # 自己回复的 BufferedMessage.ts。如果用 trigger 时间会导致 touch 后窗口
+    # 比预期早 N 秒过期、bot 回复时间戳倒退。trigger_msg.ts 只在 finally 的
+    # pending.ts 比对里用,那是消息到达时序而非「当前是几点」。
+    refire_now_ms = _now_ms()
     should_refire = False
     try:
         if mode == "reactive":
@@ -680,7 +686,7 @@ async def _refire(
                 text=trigger_msg.content,
                 image_urls=list(trigger_msg.image_urls),
                 is_explicit_trigger=False,  # 重燃总是 passive 旁观;显式触发已是初发那一发
-                now_ms=trigger_msg.ts,
+                now_ms=refire_now_ms,
             )
         else:
             result = await _run_passive_turn(
@@ -692,7 +698,7 @@ async def _refire(
                 text=trigger_msg.content,
                 image_urls=list(trigger_msg.image_urls),
                 is_private=trigger_msg.group_id is None,
-                now_ms=trigger_msg.ts,
+                now_ms=refire_now_ms,
             )
         should_refire = not (result is not None and result.is_transport_error)
     except Exception:
