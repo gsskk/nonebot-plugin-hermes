@@ -167,7 +167,7 @@ async def test_path_b_appends_decision_hint_to_system_prompt(monkeypatch: Monkey
 @pytest.mark.asyncio
 async def test_http_error_marks_transport_and_parse_failed(monkeypatch: MonkeyPatch):
     """HTTP 500 必须同时标 parse_failed=True 与 is_transport_error=True,
-    供 Task 15 handler 区分"重试 vs 降级"。"""
+    供 Task 15 handler 区分"重试 vs 降级"。用户可见文案带上 reason 片段, 不再只露状态码。"""
     _patch_httpx(monkeypatch, _MockResponse(500, {"error": "server down"}))
 
     client = HermesClient()
@@ -184,7 +184,58 @@ async def test_http_error_marks_transport_and_parse_failed(monkeypatch: MonkeyPa
     )
     assert r.parse_failed is True
     assert r.is_transport_error is True
-    assert "500" in r.raw_text
+    assert "server down" in r.raw_text
+
+
+@pytest.mark.asyncio
+async def test_wrapped_provider_image_url_error_yields_vision_hint(monkeypatch: MonkeyPatch):
+    """Hermes 把 provider 端 400 包成 502, body.error.message 含 `image_url` 不支持时,
+    用户看到的是"不支持图片识别"而不是误导性的 502。"""
+    inner = (
+        "Error code: 400 - {'error': {'message': 'Error from provider (DeepSeek): "
+        "Failed to deserialize the JSON body into the target type: messages[1]: "
+        "unknown variant `image_url`, expected one of ...'}}"
+    )
+    _patch_httpx(monkeypatch, _MockResponse(502, {"error": {"message": inner}}))
+
+    client = HermesClient()
+    r = await client.chat(
+        text="看图",
+        image_urls=["https://example.com/x.jpg"],
+        session_key="s1",
+        user_id="u1",
+        group_id="g1",
+        adapter_name="ob11",
+        is_private=False,
+        mode="passive",
+    )
+    assert r.is_transport_error is True
+    assert r.parse_failed is True
+    assert "图片" in r.raw_text  # 命中 vision-unsupported 分支
+    # 不再把外层 502 直接当真因显示
+    assert "502" not in r.raw_text
+
+
+@pytest.mark.asyncio
+async def test_wrapped_error_with_message_surfaces_inner_reason(monkeypatch: MonkeyPatch):
+    """非 vision 类的 wrap-502, 用户可见文案带上 error.message 片段。"""
+    _patch_httpx(
+        monkeypatch,
+        _MockResponse(502, {"error": {"message": "rate limit exceeded"}}),
+    )
+
+    client = HermesClient()
+    r = await client.chat(
+        text="hi",
+        session_key="s1",
+        user_id="u1",
+        group_id="g1",
+        adapter_name="ob11",
+        is_private=False,
+        mode="passive",
+    )
+    assert r.is_transport_error is True
+    assert "rate limit exceeded" in r.raw_text
 
 
 @pytest.mark.asyncio

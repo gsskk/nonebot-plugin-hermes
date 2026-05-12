@@ -7,6 +7,7 @@ M1-mem 路径 B(P0-spike 决策):tools/tool_choice 被 Hermes 吞掉,改用 syst
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
@@ -23,6 +24,16 @@ UserContent = Union[str, List[Dict[str, Any]]]
 _MD_IMAGE_PATTERN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _MEDIA_TAG_PATTERN = re.compile(r"MEDIA:(\S+)")
 
+# Hermes apiserver 把 provider 端错误包成 502, body 形如:
+#   {"error": {"message": "Error code: 400 - {'error': {'message': '...'}}"}}
+# 把外层 502 当真因显示会误导, 因此抠出内层 status 与 reason。
+_INNER_STATUS_RE = re.compile(r"Error code:\s*(\d+)")
+_VISION_UNSUPPORTED_RE = re.compile(
+    r"unknown variant\s+[`'\"]image_url|image_url.*not.*support|does not support.*image|"
+    r"input_image.*not.*support|multimodal.*not.*support",
+    re.IGNORECASE,
+)
+
 # 提取首个 {...} 块。
 # 当前正则只支持嵌套一层(`\{[^{}]*\}` 出现在外层 `\{...\}` 中)。
 # M1 submit_decision schema 全平,够用。如未来 schema 加 nested object,
@@ -38,6 +49,51 @@ _DECISION_HINT = (
     "  should_exit_active (boolean, optional)\n"
     "Output ONLY the JSON object, no preamble, no postscript, no markdown fences."
 )
+
+
+def _summarize_error_body(body: str) -> Tuple[str, Optional[int]]:
+    """从 Hermes 错误响应体里抠出可读 reason 与内层 status。
+
+    Hermes apiserver 习惯把 provider 端错误外包成 502, body 是 JSON, `error.message`
+    形如 `"Error code: 400 - {...}"`。直接把 200 字符 body 倒进日志噪音大、
+    用户看到只剩外层 502 完全不知道发生了什么, 所以这里先剥一层。
+
+    返回 (reason_snippet, inner_status_or_None);body 不可解析时退化到 body 截断。
+    """
+    if not body:
+        return "(empty body)", None
+    raw = body.strip()
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return raw[:200], None
+    err = parsed.get("error") if isinstance(parsed, dict) else None
+    if isinstance(err, dict):
+        msg = str(err.get("message") or err).strip()
+    elif isinstance(err, str):
+        msg = err.strip()
+    else:
+        msg = raw[:200]
+    inner_status: Optional[int] = None
+    m = _INNER_STATUS_RE.search(msg)
+    if m:
+        try:
+            inner_status = int(m.group(1))
+        except ValueError:
+            inner_status = None
+    return msg[:300], inner_status
+
+
+def _user_facing_error(reason: str) -> str:
+    """把 _summarize_error_body 的 reason 翻译成给群里发的简短提示。
+
+    命中已知模式(目前: 图片输入被非 vision 模型拒)就给精准提示;否则带 reason 片段
+    让用户能直接看到真因, 不再只露一个误导性的 502。
+    """
+    if _VISION_UNSUPPORTED_RE.search(reason):
+        return "⚠️ 当前主模型不支持图片识别,请改用文字提问或换用 vision 模型"
+    snippet = reason.strip().splitlines()[0][:140] if reason.strip() else "未知错误"
+    return f"⚠️ AI 服务异常: {snippet}"
 
 
 def extract_response_media(text: str) -> Tuple[str, List[str]]:
@@ -212,10 +268,11 @@ class HermesClient:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(url, json=payload, headers=headers)
                 if resp.status_code != 200:
-                    body = resp.text[:200]
-                    logger.error(f"[HERMES] API 返回 {resp.status_code}: {body}")
+                    reason, inner_status = _summarize_error_body(resp.text)
+                    inner_tag = f" inner={inner_status}" if inner_status else ""
+                    logger.error(f"[HERMES] upstream HTTP {resp.status_code}{inner_tag}: {reason}")
                     return ChatResult(
-                        raw_text=f"⚠️ AI 服务返回错误 ({resp.status_code})",
+                        raw_text=_user_facing_error(reason),
                         parse_failed=True,
                         is_transport_error=True,
                     )
