@@ -576,7 +576,19 @@ async def _handle_reactive_path(
     本发完成后 take_pending,如有则用 create_task 起一个 _refire 接力,
     本 task 立即 return,不阻塞 NoneBot 事件循环。
     """
-    assert _mcp.inflight is not None
+    assert _mcp.inflight is not None and _mcp.active_sessions is not None
+
+    # 图片门控:active window + 非显式触发 + 纯图无文本 → 跳过 chat()
+    # 理由:LLM 自己的 should_reply 决策对图片要先看完才能定,而看图本身慢。
+    # 这种「旁观纯图」最大概率是 should_reply=false,跳过它就是省一次多模态调用。
+    # 消息已被 priority=1 perception 写入 MessageBuffer,等下次文本触发能看到。
+    in_active = _mcp.active_sessions.is_active(adapter_name, group_id, now_ms)
+    if in_active and not is_explicit_trigger and image_urls and not text.strip():
+        logger.debug(
+            f"[HERMES reactive] skip image-only passive in-window msg "
+            f"(group={group_id} user={user_id}); buffered for next text trigger"
+        )
+        return
 
     key = (adapter_name, f"group:{group_id}")
     current_buffered = BufferedMessage(

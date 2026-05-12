@@ -151,3 +151,132 @@ async def test_passive_private_burst_coalesces(monkeypatch):
     await asyncio.sleep(0.3)
 
     assert len(chat_calls) == 2, f"got {len(chat_calls)} chat calls, expected 2"
+
+
+@pytest.mark.asyncio
+async def test_image_only_passive_in_window_skips_chat(monkeypatch):
+    """active window 内、非显式触发、纯图无文本 → 不进 chat(),只写 buffer。"""
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 3_000_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    chat_mock = AsyncMock()
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_mock)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u2",
+        group_id="g1",
+        text="",
+        image_urls=["http://example.com/cat.jpg"],
+        is_explicit_trigger=False,
+        now_ms=now + 100,
+    )
+
+    chat_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_image_with_text_passive_in_window_does_call_chat(monkeypatch):
+    """active window 内、非显式触发、图 + 任意非空文本 → 进 chat()。"""
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 3_100_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    async def fake_chat(**kwargs):
+        return _make_chat_result(text="ok")
+
+    chat_mock = AsyncMock(side_effect=fake_chat)
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_mock)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u2",
+        group_id="g1",
+        text="看",
+        image_urls=["http://example.com/cat.jpg"],
+        is_explicit_trigger=False,
+        now_ms=now + 100,
+    )
+
+    chat_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_image_only_explicit_trigger_does_call_chat(monkeypatch):
+    """显式触发(@bot)+ 纯图 → 进 chat()(门控豁免)。"""
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 3_200_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    async def fake_chat(**kwargs):
+        return _make_chat_result(text="ok")
+
+    chat_mock = AsyncMock(side_effect=fake_chat)
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_mock)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u2",
+        group_id="g1",
+        text="",
+        image_urls=["http://example.com/cat.jpg"],
+        is_explicit_trigger=True,
+        now_ms=now + 100,
+    )
+
+    chat_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_text_only_passive_in_window_does_call_chat(monkeypatch):
+    """active window 内、非显式触发、纯文本无图 → 进 chat()(门控不适用)。"""
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 3_300_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    async def fake_chat(**kwargs):
+        return _make_chat_result(text="ok")
+
+    chat_mock = AsyncMock(side_effect=fake_chat)
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_mock)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u2",
+        group_id="g1",
+        text="hello",
+        image_urls=[],
+        is_explicit_trigger=False,
+        now_ms=now + 100,
+    )
+
+    chat_mock.assert_called_once()
