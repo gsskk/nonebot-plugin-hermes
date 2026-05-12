@@ -7,6 +7,7 @@ priority=98 main:触发判断 → reactive 决策 → 出向
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import List, Optional
 
@@ -480,10 +481,156 @@ async def _run_reactive_turn(
     return result
 
 
-# Task 4/5 will replace these temporary shells with real inflight + coalesce logic.
+# Task 5 will replace this temporary shell with real inflight + coalesce logic.
 async def _handle_passive_path(**kwargs):
     await _run_passive_turn(**kwargs)
 
 
-async def _handle_reactive_path(**kwargs):
-    await _run_reactive_turn(**kwargs)
+async def _handle_reactive_path(
+    *,
+    bot: Bot,
+    target,
+    adapter_name: str,
+    user_id: str,
+    group_id: str,
+    text: str,
+    image_urls: List[str],
+    is_explicit_trigger: bool,
+    now_ms: int,
+):
+    """Reactive 外壳:inflight 占位 → 调 _run_reactive_turn → finally 合并重燃。
+
+    coalesce 语义:in-flight 期间到来的新触发不并发跑,只覆盖 pending 单元;
+    本发完成后 take_pending,如有则用 create_task 起一个 _refire 接力,
+    本 task 立即 return,不阻塞 NoneBot 事件循环。
+    """
+    assert _mcp.inflight is not None
+
+    key = (adapter_name, f"group:{group_id}")
+    current_buffered = BufferedMessage(
+        ts=now_ms,
+        adapter=adapter_name,
+        group_id=group_id,
+        user_id=user_id,
+        nickname=user_id,
+        content=text,
+        image_urls=list(image_urls),
+        reply_to_ts=None,
+        is_bot=False,
+    )
+
+    if _mcp.inflight.try_enter(key, current_buffered, now_ms) == "pending_set":
+        return
+
+    should_refire = False
+    try:
+        result = await _run_reactive_turn(
+            bot=bot,
+            target=target,
+            adapter_name=adapter_name,
+            user_id=user_id,
+            group_id=group_id,
+            text=text,
+            image_urls=image_urls,
+            is_explicit_trigger=is_explicit_trigger,
+            now_ms=now_ms,
+        )
+        should_refire = not (result is not None and result.is_transport_error)
+    except Exception:
+        logger.exception(f"[HERMES] reactive turn raised; dropping pending for {key}")
+        should_refire = False
+        raise
+    finally:
+        if not should_refire:
+            _mcp.inflight.exit(key)
+        else:
+            pending = _mcp.inflight.take_pending(key)
+            if pending is None or pending.ts <= current_buffered.ts:
+                _mcp.inflight.exit(key)
+            else:
+                asyncio.create_task(
+                    _refire(
+                        key=key,
+                        trigger_msg=pending,
+                        depth=1,
+                        mode="reactive",
+                        bot=bot,
+                        target=target,
+                        adapter_name=adapter_name,
+                        group_id=group_id,
+                    )
+                )
+
+
+async def _refire(
+    *,
+    key,
+    trigger_msg: BufferedMessage,
+    depth: int,
+    mode: str,
+    bot: Bot,
+    target,
+    adapter_name: str,
+    group_id,
+):
+    """链式重燃。fire-and-forget,深度上限 MAX_REFIRE_DEPTH。"""
+    from ..core.inflight import MAX_REFIRE_DEPTH
+
+    assert _mcp.inflight is not None
+
+    if depth > MAX_REFIRE_DEPTH:
+        logger.warning(f"[HERMES] refire depth exceeded ({depth}); dropping pending {key}")
+        _mcp.inflight.exit(key)
+        return
+
+    should_refire = False
+    try:
+        if mode == "reactive":
+            assert group_id is not None
+            result = await _run_reactive_turn(
+                bot=bot,
+                target=target,
+                adapter_name=adapter_name,
+                user_id=trigger_msg.user_id,
+                group_id=group_id,
+                text=trigger_msg.content,
+                image_urls=list(trigger_msg.image_urls),
+                is_explicit_trigger=False,  # 重燃总是 passive 旁观;显式触发已是初发那一发
+                now_ms=trigger_msg.ts,
+            )
+        else:
+            result = await _run_passive_turn(
+                bot=bot,
+                target=target,
+                adapter_name=adapter_name,
+                user_id=trigger_msg.user_id,
+                group_id=trigger_msg.group_id,
+                text=trigger_msg.content,
+                image_urls=list(trigger_msg.image_urls),
+                is_private=trigger_msg.group_id is None,
+                now_ms=trigger_msg.ts,
+            )
+        should_refire = not (result is not None and result.is_transport_error)
+    except Exception:
+        logger.exception(f"[HERMES] refire raised at depth {depth}; dropping pending for {key}")
+        should_refire = False
+    finally:
+        if not should_refire:
+            _mcp.inflight.exit(key)
+            return
+        pending = _mcp.inflight.take_pending(key)
+        if pending and pending.ts > trigger_msg.ts:
+            asyncio.create_task(
+                _refire(
+                    key=key,
+                    trigger_msg=pending,
+                    depth=depth + 1,
+                    mode=mode,
+                    bot=bot,
+                    target=target,
+                    adapter_name=adapter_name,
+                    group_id=group_id,
+                )
+            )
+        else:
+            _mcp.inflight.exit(key)
