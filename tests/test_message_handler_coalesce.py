@@ -102,3 +102,52 @@ async def test_reactive_burst_coalesces_to_two_chat_calls(monkeypatch):
     await asyncio.sleep(0.3)
 
     assert len(chat_calls) == 2, f"got {len(chat_calls)} chat calls, expected 2"
+
+
+@pytest.mark.asyncio
+async def test_passive_private_burst_coalesces(monkeypatch):
+    """私聊连发 3 条,chat 实际被调 2 次(初发 + 合并重燃)。"""
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+    from nonebot_plugin_hermes.core.hermes_client import ChatResult
+
+    chat_calls: List[int] = []
+
+    async def slow_chat_passive(**kwargs):
+        chat_calls.append(len(chat_calls))
+        await asyncio.sleep(0.1)
+        return ChatResult(
+            raw_text=f"reply-{len(chat_calls)}",
+            media_urls=[],
+            structured=None,
+            parse_failed=False,
+            is_transport_error=False,
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", slow_chat_passive)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="u1", private=True)
+    bot = _fake_bot()
+    now = 2_000_000
+
+    tasks = []
+    for i in range(3):
+        tasks.append(
+            asyncio.create_task(
+                handler_mod._handle_passive_path(
+                    bot=bot,
+                    target=target,
+                    adapter_name="ob11",
+                    user_id="u1",
+                    group_id=None,
+                    text=f"msg-{i}",
+                    image_urls=[],
+                    is_private=True,
+                    now_ms=now + i,
+                )
+            )
+        )
+    await asyncio.gather(*tasks)
+    await asyncio.sleep(0.3)
+
+    assert len(chat_calls) == 2, f"got {len(chat_calls)} chat calls, expected 2"

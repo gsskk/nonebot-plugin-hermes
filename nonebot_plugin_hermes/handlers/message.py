@@ -481,9 +481,81 @@ async def _run_reactive_turn(
     return result
 
 
-# Task 5 will replace this temporary shell with real inflight + coalesce logic.
-async def _handle_passive_path(**kwargs):
-    await _run_passive_turn(**kwargs)
+async def _handle_passive_path(
+    *,
+    bot: Bot,
+    target,
+    adapter_name: str,
+    user_id: str,
+    group_id: Optional[str],
+    text: str,
+    image_urls: List[str],
+    is_private: bool,
+    now_ms: int,
+):
+    """Passive 外壳:inflight 占位 → _run_passive_turn → 合并重燃。
+
+    与 reactive 同形,key 含 private/group 前缀区分。
+    """
+    assert _mcp.inflight is not None
+
+    scope_id = user_id if is_private else (group_id or "")
+    scope_prefix = "private" if is_private else "group"
+    key = (adapter_name, f"{scope_prefix}:{scope_id}")
+
+    current_buffered = BufferedMessage(
+        ts=now_ms,
+        adapter=adapter_name,
+        group_id=group_id,
+        user_id=user_id,
+        nickname=user_id,
+        content=text,
+        image_urls=list(image_urls),
+        reply_to_ts=None,
+        is_bot=False,
+    )
+
+    if _mcp.inflight.try_enter(key, current_buffered, now_ms) == "pending_set":
+        return
+
+    should_refire = False
+    try:
+        result = await _run_passive_turn(
+            bot=bot,
+            target=target,
+            adapter_name=adapter_name,
+            user_id=user_id,
+            group_id=group_id,
+            text=text,
+            image_urls=image_urls,
+            is_private=is_private,
+            now_ms=now_ms,
+        )
+        should_refire = not (result is not None and result.is_transport_error)
+    except Exception:
+        logger.exception(f"[HERMES] passive turn raised; dropping pending for {key}")
+        should_refire = False
+        raise
+    finally:
+        if not should_refire:
+            _mcp.inflight.exit(key)
+        else:
+            pending = _mcp.inflight.take_pending(key)
+            if pending is None or pending.ts <= current_buffered.ts:
+                _mcp.inflight.exit(key)
+            else:
+                asyncio.create_task(
+                    _refire(
+                        key=key,
+                        trigger_msg=pending,
+                        depth=1,
+                        mode="passive",
+                        bot=bot,
+                        target=target,
+                        adapter_name=adapter_name,
+                        group_id=group_id,
+                    )
+                )
 
 
 async def _handle_reactive_path(
