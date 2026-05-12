@@ -285,7 +285,6 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_MCP_HOST` | `127.0.0.1` | MCP server bind address. Read the security note in "Active Sessions + Reverse Channel" before exposing publicly |
 | `HERMES_MCP_PORT` | `8643` | MCP server bind port |
 | `HERMES_MCP_RECENT_LIMIT_MAX` | `50` | Max items the `get_recent_messages` tool returns per call |
-| `HERMES_STRUCTURED_PATH` | `prompt` | Reactive structured-output path: `prompt` (JSON5 parse) / `tools` (OpenAI tool_choice) |
 
 ## Limitations
 

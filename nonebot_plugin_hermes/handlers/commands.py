@@ -168,7 +168,6 @@ async def handle_status(bot: Bot, event: Event, matcher: Matcher):
         "🔍 Hermes Plugin M1-mem 状态",
         f"MCP: {mcp_line}",
         f"active_session: {active_line}",
-        f"structured_path: {plugin_config.hermes_structured_path}",
         f"hermes_api: {plugin_config.hermes_api_url}",
         "",
         f"📊 ActiveSessions: {active_count} 个活跃",

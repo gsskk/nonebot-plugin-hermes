@@ -285,7 +285,6 @@ mcp_servers:
 | `HERMES_MCP_HOST` | `127.0.0.1` | MCP server 绑定地址。改成公开地址前请阅读上文「群活跃态 + 反向通道」节的安全注意 |
 | `HERMES_MCP_PORT` | `8643` | MCP server 绑定端口 |
 | `HERMES_MCP_RECENT_LIMIT_MAX` | `50` | `get_recent_messages` 工具单次最大返回条数 |
-| `HERMES_STRUCTURED_PATH` | `prompt` | reactive 结构化输出路径: `prompt`（JSON5 解析） / `tools`（OpenAI tool_choice） |
 
 ## 限制
 

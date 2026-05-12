@@ -4,7 +4,7 @@
 所有配置项通过 NoneBot 的 .env 文件读取，前缀为 HERMES_。
 """
 
-from typing import Literal, Set
+from typing import Set
 
 from nonebot import get_plugin_config
 from pydantic import BaseModel, Field
@@ -105,12 +105,6 @@ class Config(BaseModel):
     hermes_mcp_recent_limit_max: int = Field(default=50, ge=1)
     """get_recent_messages 工具单次返回上限。最小 1——0/负值会让工具静默返空,
     Pydantic 在启动期校验防 misconfig。"""
-
-    # --- M1: 结构化输出路径(由 P0-spike 决定) ---
-    hermes_structured_path: Literal["tools", "prompt"] = "prompt"
-    """tools = 路径 A(tools+tool_choice);prompt = 路径 B(JSON5)。
-    Task 3 spike (2026-05-09) 结论:Hermes 不透传 tools/tool_choice 给底层 LLM,
-    必须用 prompt 强约束 + JSON5 容错解析。"""
 
 
 plugin_config = get_plugin_config(Config)
