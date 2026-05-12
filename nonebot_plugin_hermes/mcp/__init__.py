@@ -13,6 +13,7 @@ from nonebot import get_driver, logger
 from ..config import plugin_config
 from ..core.active_session import ActiveSessionManager
 from ..core.bot_registry import BotRegistry
+from ..core.inflight import InflightRegistry
 from ..core.message_buffer import MessageBuffer
 from .server import build_mcp_app
 
@@ -66,14 +67,15 @@ if not any(isinstance(f, _ToolValidationLogRedirect) for f in _FASTMCP_TOOL_LOGG
 message_buffer: MessageBuffer | None = None
 active_sessions: ActiveSessionManager | None = None
 bot_registry: BotRegistry | None = None
+inflight: InflightRegistry | None = None
 
 _server_task: Optional[asyncio.Task] = None
 _uvicorn_server: Optional[uvicorn.Server] = None
 
 
 def init_runtime_state() -> None:
-    """由 plugin __init__.py 在 import 时调用,装配三个全局对象。"""
-    global message_buffer, active_sessions, bot_registry
+    """由 plugin __init__.py 在 import 时调用,装配全局对象。"""
+    global message_buffer, active_sessions, bot_registry, inflight
     if message_buffer is None:
         message_buffer = MessageBuffer(
             per_group_cap=plugin_config.hermes_buffer_per_group_cap,
@@ -85,6 +87,8 @@ def init_runtime_state() -> None:
         )
     if bot_registry is None:
         bot_registry = BotRegistry()
+    if inflight is None:
+        inflight = InflightRegistry()
 
 
 def _on_server_task_done(task: asyncio.Task) -> None:
