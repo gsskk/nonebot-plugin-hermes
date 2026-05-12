@@ -264,7 +264,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     )
 
 
-async def _handle_passive_path(
+async def _run_passive_turn(
     *,
     bot: Bot,
     target,
@@ -276,6 +276,7 @@ async def _handle_passive_path(
     is_private: bool,
     now_ms: int,
 ):
+    """跑一发 passive turn,返回 ChatResult 或 None(被 submit_decision 静默兜底等情况)。"""
     session_key = session_manager.get_session_key(
         adapter_name=adapter_name,
         is_private=is_private,
@@ -323,12 +324,12 @@ async def _handle_passive_path(
     if extracted is not None:
         if extracted == "":
             logger.info(f"[HERMES passive] LLM 返回 should_reply=false 结构,静默(group={group_id})")
-            return
+            return result
         logger.warning(f"[HERMES passive] 检测到 submit_decision 形 JSON 残留,抠 reply_text 后发送(group={group_id})")
         reply_text = extracted
 
     if not reply_text and not result.media_urls:
-        return
+        return result
     await send_text_with_media(
         bot=bot,
         target=target,
@@ -336,9 +337,10 @@ async def _handle_passive_path(
         media_urls=result.media_urls,
         at_user_id=None if is_private else user_id,
     )
+    return result
 
 
-async def _handle_reactive_path(
+async def _run_reactive_turn(
     *,
     bot: Bot,
     target,
@@ -350,13 +352,18 @@ async def _handle_reactive_path(
     is_explicit_trigger: bool,
     now_ms: int,
 ):
+    """跑一发 reactive turn,返回 hermes_client.chat() 的 ChatResult,或 None 表示提前 return。
+
+    外壳 _handle_reactive_path 负责 inflight + 图片门控,这里只管:
+    拉 recent → 组 prompt → 调 chat → 解析 decision → 发出向 → 回写 buffer。
+    """
     assert _mcp.message_buffer is not None and _mcp.active_sessions is not None
 
     # 用 get_if_active 而非 get():get() 是 debug-only 裸访问,可能返回已过期 session;
     # get_if_active 与 is_active(handle_message 入口处用过)同口径。
     session = _mcp.active_sessions.get_if_active(adapter_name, group_id, now_ms)
     if session is None:
-        return  # 防御:窗口刚刚过期 / 被外部 end()
+        return None  # 防御:窗口刚刚过期 / 被外部 end()
 
     recent = _mcp.message_buffer.get_recent(
         adapter=adapter_name,
@@ -418,7 +425,7 @@ async def _handle_reactive_path(
                 media_urls=result.media_urls,
                 at_user_id=user_id,
             )
-        return
+        return result
 
     decision_summary = (
         f"should_reply={result.structured.get('should_reply')} "
@@ -435,11 +442,11 @@ async def _handle_reactive_path(
 
     if not decision.get("should_reply"):
         logger.debug(f"[HERMES reactive] should_reply=false (group={group_id})")
-        return
+        return result
 
     reply_text = str(decision.get("reply_text") or "").strip()
     if not reply_text:
-        return
+        return result
 
     # 群里明确说话给某人 → at;主动插话 → 不 at
     at_user = user_id if is_explicit_trigger else None
@@ -469,3 +476,14 @@ async def _handle_reactive_path(
         # 注:若 should_exit_active=True,session 已在上方 end(),touch 是安全 no-op
         # (ActiveSessionManager.touch 文档:session 缺失则 no-op)。
         _mcp.active_sessions.touch(adapter_name, group_id, now_ms=now_ms)
+
+    return result
+
+
+# Task 4/5 will replace these temporary shells with real inflight + coalesce logic.
+async def _handle_passive_path(**kwargs):
+    await _run_passive_turn(**kwargs)
+
+
+async def _handle_reactive_path(**kwargs):
+    await _run_reactive_turn(**kwargs)
