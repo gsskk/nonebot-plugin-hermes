@@ -254,18 +254,32 @@ async def test_get_recent_messages_view_fields_mapped_correctly(buffer_factory):
     assert v.user_id == "u42"
     assert v.nickname == "u42"
     assert v.content == "hello world"
-    assert v.image_urls == ["https://example.com/img.png"]
+    # 新结构:image_urls 字段不再外露,只暴露 count
+    assert v.image_count == 1
+    assert not hasattr(v, "image_urls")
     assert v.is_bot is False
 
 
 @pytest.mark.asyncio
-async def test_get_recent_messages_image_urls_is_copy(buffer_factory):
-    """image_urls in RecentMessageView is a copy, not the original list (defensive mutation guard)."""
-    original_urls = ["https://example.com/img.png"]
-    buf = buffer_factory(_msg(ts=100, image_urls=original_urls))
-    inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=1)
+async def test_get_recent_messages_id_field_populated(buffer_factory):
+    """id 字段必填(来自 MessageStore.append 回填的 autoincrement)。"""
+    buf = buffer_factory(_msg(100), _msg(200))
+    inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=10)
     result = await get_recent_messages_impl(inp, message_buffer=buf)
-    v = result.messages[0]
-    # Mutating the view's image_urls should not affect the original list in the buffer
-    v.image_urls.append("https://example.com/extra.png")
-    assert original_urls == ["https://example.com/img.png"]
+    assert all(v.id > 0 for v in result.messages)
+    # 两条消息 id 互不相同
+    assert result.messages[0].id != result.messages[1].id
+
+
+@pytest.mark.asyncio
+async def test_get_recent_messages_image_count_is_length(buffer_factory):
+    """image_count 准确反映多图消息中的图数。"""
+    buf = buffer_factory(
+        _msg(ts=100, image_urls=["http://x/a.jpg", "http://x/b.jpg", "http://x/c.jpg"]),
+        _msg(ts=200, image_urls=[]),
+    )
+    inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=10)
+    result = await get_recent_messages_impl(inp, message_buffer=buf)
+    by_ts = {v.ts: v for v in result.messages}
+    assert by_ts[100].image_count == 3
+    assert by_ts[200].image_count == 0

@@ -1,6 +1,8 @@
-"""get_recent_messages: 拉取一个群的最近 N 条消息。
+"""get_recent_messages: 拉取一个群的最近 N 条消息(文本 + 图数,不含图字节)。
 
-skill 文档明示此工具贵,慎用。
+返回每条消息的 `id` (DB 主键),供 Hermes 端后续调 `get_message_images`
+按 id 取图字节。原 `image_urls: list[str]` 字段去掉 —— 让 Hermes 不要直接
+读到 CDN 链接,统一走 MCP 工具拿字节(URL 可能短效,且能避免 prompt token 浪费)。
 """
 
 from __future__ import annotations
@@ -21,11 +23,12 @@ class GetRecentMessagesInput(BaseModel):
 
 
 class RecentMessageView(BaseModel):
+    id: int = Field(..., description="DB 主键;调 get_message_images 时引用")
     ts: int = Field(..., description="Unix timestamp (ms)")
     user_id: str
     nickname: str
     content: str
-    image_urls: list[str]
+    image_count: int = Field(..., description="该消息附带的图数量;0 表示无图")
     is_bot: bool
 
 
@@ -48,11 +51,12 @@ async def get_recent_messages_impl(
     )
     views = [
         RecentMessageView(
+            id=m.id if m.id is not None else 0,
             ts=m.ts,
             user_id=m.user_id,
             nickname=m.nickname,
             content=m.content,
-            image_urls=list(m.image_urls),
+            image_count=len(m.image_urls),
             is_bot=m.is_bot,
         )
         for m in rows
