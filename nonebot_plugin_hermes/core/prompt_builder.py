@@ -108,9 +108,10 @@ def build_passive_system_prompt(
 
     history_lines = ["<recent_messages>"]
     for m in reversed(list(recent_messages)):
-        prefix = "[bot] " if m.is_bot else ""
+        bot_prefix = "[bot] " if m.is_bot else ""
         speaker = m.nickname or m.user_id
-        history_lines.append(f"{prefix}{speaker}: {m.content}")
+        id_prefix = f"[m:{m.id}] " if m.id is not None else ""
+        history_lines.append(f"{id_prefix}{bot_prefix}{speaker}: {m.content}")
     history_lines.append("</recent_messages>")
     return sp + "\n\n" + "\n".join(history_lines)
 
@@ -123,12 +124,18 @@ def build_reactive_user_content(
     current_text: str,
     current_image_urls: Sequence[str],
 ) -> UserContent:
-    """recent_messages: 新→旧顺序;在 prompt 内反转为旧→新。"""
+    """recent_messages: 新→旧顺序;在 prompt 内反转为旧→新。
+
+    每条历史行用 `[m:<id>] ` 前缀标识 DB 主键 — 跨 turn 稳定,Hermes 调
+    get_message_images 时按此 id 召回。id=None(未入库 transient 消息)时
+    跳过前缀,避免 prompt 出现 `[m:None]` 噪音。
+    """
     history_lines = ["<recent_messages>"]
     for m in reversed(list(recent_messages)):
-        prefix = "[bot] " if m.is_bot else ""
+        bot_prefix = "[bot] " if m.is_bot else ""
         speaker = m.nickname or m.user_id
-        line = f"{prefix}{speaker}: {m.content}"
+        id_prefix = f"[m:{m.id}] " if m.id is not None else ""
+        line = f"{id_prefix}{bot_prefix}{speaker}: {m.content}"
         history_lines.append(line)
     history_lines.append("</recent_messages>")
 

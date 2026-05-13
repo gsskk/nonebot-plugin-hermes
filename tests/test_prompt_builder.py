@@ -223,3 +223,93 @@ def test_user_content_empty_current_text_with_image_is_valid():
     assert "Alice:" in content[0]["text"]  # speaker 仍存在,内容空
     assert content[-1]["type"] == "image_url"
     assert content[-1]["image_url"]["url"] == "http://x/photo.jpg"
+
+
+# --- [m:<id>] 前缀:跨 turn 稳定标识符约定 ---
+
+
+def _msg_with_id(ts, sender, content, msg_id, is_bot=False, imgs=None):
+    return BufferedMessage(
+        ts=ts,
+        adapter="ob11",
+        group_id="g1",
+        user_id=sender,
+        nickname=sender,
+        content=content,
+        image_urls=imgs or [],
+        is_bot=is_bot,
+        id=msg_id,
+    )
+
+
+def test_reactive_user_content_prefixes_history_lines_with_msg_id():
+    """每条 <recent_messages> 行有 [m:<id>] 前缀,current_message 没有。"""
+    msgs = [
+        _msg_with_id(300, "龙", "哈哈", msg_id=1235),
+        _msg_with_id(200, "小丑鱼", "[图片]", msg_id=1234, imgs=["http://x/a.jpg"]),
+    ]
+    content = build_reactive_user_content(
+        recent_messages=msgs,
+        current_user_id="ph",
+        current_nickname="ph",
+        current_text="评价下上图",
+        current_image_urls=[],
+    )
+    assert isinstance(content, str)
+    assert "[m:1234] 小丑鱼: [图片]" in content
+    assert "[m:1235] 龙: 哈哈" in content
+    # current_message 块内不带 [m:N]
+    current_block = content.split("<current_message>", 1)[1].split("</current_message>", 1)[0]
+    assert "[m:" not in current_block
+    assert "ph: 评价下上图" in current_block
+
+
+def test_reactive_user_content_bot_messages_keep_bot_marker_and_get_msg_id():
+    msgs = [_msg_with_id(100, "Bot", "收到", msg_id=99, is_bot=True)]
+    content = build_reactive_user_content(
+        recent_messages=msgs,
+        current_user_id="alice",
+        current_nickname="Alice",
+        current_text="hi",
+        current_image_urls=[],
+    )
+    assert "[m:99] [bot] Bot: 收到" in content
+
+
+def test_reactive_user_content_omits_prefix_when_id_is_none():
+    """id=None(transient,从未入库)时不应在 prompt 里出现 [m:None]。"""
+    msgs = [_msg(100, "alice", "hi")]  # 老 helper 不传 id → None
+    content = build_reactive_user_content(
+        recent_messages=msgs,
+        current_user_id="bob",
+        current_nickname="Bob",
+        current_text="hello",
+        current_image_urls=[],
+    )
+    assert "[m:None]" not in content
+    assert "alice: hi" in content
+
+
+def test_passive_system_prompt_prefixes_history_lines_with_msg_id():
+    msgs = [_msg_with_id(100, "A", "hi", msg_id=42)]
+    sp = build_passive_system_prompt(
+        adapter="ob11",
+        is_private=False,
+        user_id="u2",
+        group_id="g1",
+        recent_messages=msgs,
+    )
+    assert "[m:42] A: hi" in sp
+
+
+def test_passive_system_prompt_omits_prefix_when_id_is_none():
+    msgs = [_msg(100, "alice", "hi")]
+    sp = build_passive_system_prompt(
+        adapter="ob11",
+        is_private=False,
+        user_id="u2",
+        group_id="g1",
+        recent_messages=msgs,
+    )
+    assert "[m:None]" not in sp
+    assert "alice: hi" in sp
