@@ -99,13 +99,32 @@ async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_nam
     return urls
 
 
+# Telegram `bot.get_file(file_id)` → URL 短期缓存。
+# 同一事件经过 priority=1 perception + priority=98 main handler 两个 matcher,
+# 各自跑一次 _extract_image_urls,如果不缓存就要打两次 Telegram API
+# (~300-500ms 网络往返/次)。
+#
+# TTL 设 60 秒:Telegram 自己返的 file_path 大约 1 小时有效,我们 60s 内
+# 复用足够覆盖事件突发,且远小于真实失效窗口,不引入隐患。
+_RESOLVED_URL_TTL_S = 60.0
+_resolved_url_cache: dict[tuple[str, str], tuple[str, float]] = {}
+
+
 async def _resolve_telegram_file_url(bot: Bot, file_id: str) -> Optional[str]:
     """Telegram file_id → 可拉的 HTTPS URL。失败返 None,perception 不崩。
 
     URL 里含 token,只在 plugin 本地 DB / fetcher 流转(不会进 prompt / MCP 返回)。
     file_path 一般 ~1h 失效,fetcher 必须及时抓——本设计走 perception 异步触发,
     秒级到达 fetcher,不会拖到失效。
+
+    短期缓存:同一 (bot_self_id, file_id) 60s 内复用上次 resolve 结果,避免
+    perception + main handler 两层各调一次 Telegram getFile API。
     """
+    cache_key = (str(getattr(bot, "self_id", "?")), file_id)
+    now = time.monotonic()
+    cached = _resolved_url_cache.get(cache_key)
+    if cached and cached[1] > now:
+        return cached[0]
     try:
         file = await bot.get_file(file_id=file_id)
     except Exception as exc:
@@ -116,7 +135,14 @@ async def _resolve_telegram_file_url(bot: Bot, file_id: str) -> Optional[str]:
     if not file_path or not token:
         logger.warning(f"[image] telegram get_file returned no file_path/token (file_id={file_id[:24]}...)")
         return None
-    return f"https://api.telegram.org/file/bot{token}/{file_path}"
+    url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+    _resolved_url_cache[cache_key] = (url, now + _RESOLVED_URL_TTL_S)
+    # 偶尔顺手清掉过期 entry,避免长期跑爆字典(O(N) 但 N 很小)
+    if len(_resolved_url_cache) > 256:
+        expired = [k for k, (_u, exp) in _resolved_url_cache.items() if exp <= now]
+        for k in expired:
+            _resolved_url_cache.pop(k, None)
+    return url
 
 
 @perception_message.handle()
