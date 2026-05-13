@@ -19,6 +19,9 @@ from nonebot_plugin_hermes.core.active_session import ActiveSessionManager
 from nonebot_plugin_hermes.core.bot_registry import BotRegistry
 from nonebot_plugin_hermes.core.inflight import MAX_REFIRE_DEPTH, InflightRegistry
 from nonebot_plugin_hermes.core.message_buffer import BufferedMessage, MessageBuffer
+from nonebot_plugin_hermes.core.storage.image_cache import ImageCache
+from nonebot_plugin_hermes.core.storage.image_fetcher import ImageFetcher
+from nonebot_plugin_hermes.core.storage.message_store import MessageStore
 
 
 @dataclass
@@ -35,9 +38,12 @@ def _fake_bot(self_id: str = "999"):
 
 
 @pytest.fixture(autouse=True)
-def _setup_runtime(monkeypatch):
-    """每个测试用例独立运行时单例。"""
-    _mcp.message_buffer = MessageBuffer(per_group_cap=50, total_groups_cap=10)
+def _setup_runtime(monkeypatch, tmp_path):
+    """每个测试用例独立运行时单例(SQLite 存到 tmp_path,fixture 拆除时关库)。"""
+    store = MessageStore(db_path=tmp_path / "messages.db")
+    cache = ImageCache(cache_dir=tmp_path / "imgs", quota_bytes=1024 * 1024)
+    fetcher = ImageFetcher(store=store, cache=cache)
+    _mcp.message_buffer = MessageBuffer(store=store, fetcher=fetcher)
     _mcp.active_sessions = ActiveSessionManager(default_ttl_sec=300)
     _mcp.bot_registry = BotRegistry()
     _mcp.inflight = InflightRegistry()
@@ -46,6 +52,7 @@ def _setup_runtime(monkeypatch):
     _mcp.active_sessions = None
     _mcp.bot_registry = None
     _mcp.inflight = None
+    store.close()
 
 
 def _make_chat_result(text: str = "ok", transport_error: bool = False, structured=None):

@@ -10,6 +10,9 @@ import pytest
 
 from nonebot_plugin_hermes.core.active_session import ActiveSessionManager
 from nonebot_plugin_hermes.core.message_buffer import BufferedMessage, MessageBuffer
+from nonebot_plugin_hermes.core.storage.image_cache import ImageCache
+from nonebot_plugin_hermes.core.storage.image_fetcher import ImageFetcher
+from nonebot_plugin_hermes.core.storage.message_store import MessageStore
 from nonebot_plugin_hermes.mcp.tools.get_recent_messages import (
     GetRecentMessagesInput,
     GetRecentMessagesResult,
@@ -68,11 +71,25 @@ def _msg(
     )
 
 
-def _make_buffer(*msgs: BufferedMessage) -> MessageBuffer:
-    buf = MessageBuffer(per_group_cap=200, total_groups_cap=50)
-    for m in msgs:
-        buf.append(m)
-    return buf
+@pytest.fixture
+def buffer_factory(tmp_path):
+    """每次调用建一个 SQLite-backed MessageBuffer,fixture cleanup 关 DB。"""
+    created: list[MessageStore] = []
+
+    def factory(*msgs: BufferedMessage) -> MessageBuffer:
+        idx = len(created)
+        store = MessageStore(db_path=tmp_path / f"m_{idx}.db")
+        cache = ImageCache(cache_dir=tmp_path / f"imgs_{idx}", quota_bytes=1024 * 1024)
+        fetcher = ImageFetcher(store=store, cache=cache)
+        created.append(store)
+        buf = MessageBuffer(store=store, fetcher=fetcher)
+        for m in msgs:
+            buf.append(m)
+        return buf
+
+    yield factory
+    for s in created:
+        s.close()
 
 
 # ---------------------------------------------------------------------------
@@ -170,9 +187,9 @@ async def test_list_active_sessions_filters_expired():
 
 
 @pytest.mark.asyncio
-async def test_get_recent_messages_empty_bucket():
+async def test_get_recent_messages_empty_bucket(buffer_factory):
     """Returns empty list for unknown (adapter, group_id)."""
-    buf = MessageBuffer()
+    buf = buffer_factory()
     inp = GetRecentMessagesInput(adapter="ob11", group_id="g_unknown")
     result = await get_recent_messages_impl(inp, message_buffer=buf)
     assert isinstance(result, GetRecentMessagesResult)
@@ -180,16 +197,16 @@ async def test_get_recent_messages_empty_bucket():
 
 
 @pytest.mark.asyncio
-async def test_get_recent_messages_returns_newest_first():
+async def test_get_recent_messages_returns_newest_first(buffer_factory):
     """Messages are returned newest-first (matching MessageBuffer.get_recent ordering)."""
-    buf = _make_buffer(_msg(100), _msg(200), _msg(300))
+    buf = buffer_factory(_msg(100), _msg(200), _msg(300))
     inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=10)
     result = await get_recent_messages_impl(inp, message_buffer=buf)
     assert [v.ts for v in result.messages] == [300, 200, 100]
 
 
 @pytest.mark.asyncio
-async def test_get_recent_messages_limit_clamped_to_config_cap(monkeypatch):
+async def test_get_recent_messages_limit_clamped_to_config_cap(monkeypatch, buffer_factory):
     """limit is clamped to hermes_mcp_recent_limit_max even when Pydantic max (100) allows more.
 
     We monkeypatch plugin_config.hermes_mcp_recent_limit_max to 3 and verify
@@ -197,7 +214,7 @@ async def test_get_recent_messages_limit_clamped_to_config_cap(monkeypatch):
     """
     import nonebot_plugin_hermes.mcp.tools.get_recent_messages as mod
 
-    buf = _make_buffer(*[_msg(ts) for ts in range(1, 11)])  # 10 messages
+    buf = buffer_factory(*[_msg(ts) for ts in range(1, 11)])  # 10 messages
     monkeypatch.setattr(mod.plugin_config, "hermes_mcp_recent_limit_max", 3)
     inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=100)
     result = await get_recent_messages_impl(inp, message_buffer=buf)
@@ -205,9 +222,9 @@ async def test_get_recent_messages_limit_clamped_to_config_cap(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_recent_messages_before_ts_filter():
+async def test_get_recent_messages_before_ts_filter(buffer_factory):
     """before_ts is passed through to MessageBuffer.get_recent (exclusive upper bound)."""
-    buf = _make_buffer(_msg(100), _msg(200), _msg(300), _msg(400))
+    buf = buffer_factory(_msg(100), _msg(200), _msg(300), _msg(400))
     inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=10, before_ts=300)
     result = await get_recent_messages_impl(inp, message_buffer=buf)
     # Should only include ts < 300: ts=200, ts=100
@@ -215,9 +232,9 @@ async def test_get_recent_messages_before_ts_filter():
 
 
 @pytest.mark.asyncio
-async def test_get_recent_messages_view_fields_mapped_correctly():
+async def test_get_recent_messages_view_fields_mapped_correctly(buffer_factory):
     """RecentMessageView fields are correctly mapped from BufferedMessage."""
-    buf = _make_buffer(
+    buf = buffer_factory(
         _msg(
             ts=999,
             adapter="ob11",
@@ -242,10 +259,10 @@ async def test_get_recent_messages_view_fields_mapped_correctly():
 
 
 @pytest.mark.asyncio
-async def test_get_recent_messages_image_urls_is_copy():
+async def test_get_recent_messages_image_urls_is_copy(buffer_factory):
     """image_urls in RecentMessageView is a copy, not the original list (defensive mutation guard)."""
     original_urls = ["https://example.com/img.png"]
-    buf = _make_buffer(_msg(ts=100, image_urls=original_urls))
+    buf = buffer_factory(_msg(ts=100, image_urls=original_urls))
     inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=1)
     result = await get_recent_messages_impl(inp, message_buffer=buf)
     v = result.messages[0]
