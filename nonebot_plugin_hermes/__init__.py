@@ -59,7 +59,7 @@ async def _hermes_m1_startup():
         stop_mcp_server,
         stop_storage,
     )
-    from .tasks import register_expire_active_sessions
+    from .tasks import register_expire_active_sessions, register_storage_vacuum
 
     init_runtime_state()
     await start_storage()
@@ -67,6 +67,7 @@ async def _hermes_m1_startup():
     _driver.on_shutdown(stop_mcp_server)
     _driver.on_shutdown(stop_storage)
     register_expire_active_sessions()
+    register_storage_vacuum()
 
     if os.environ.get("HERMES_PERCEPTION_IMAGE_MODE"):
         logger.warning(
