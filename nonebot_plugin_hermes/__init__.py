@@ -10,6 +10,7 @@ from nonebot.plugin import PluginMetadata, inherit_supported_adapters
 # 确保依赖的插件已加载
 require("nonebot_plugin_alconna")
 require("nonebot_plugin_apscheduler")
+require("nonebot_plugin_localstore")
 
 from .config import Config, plugin_config
 

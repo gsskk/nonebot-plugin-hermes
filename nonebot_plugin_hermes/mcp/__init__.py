@@ -81,11 +81,26 @@ _uvicorn_server: Optional[uvicorn.Server] = None
 
 
 def _default_db_path() -> Path:
-    return Path.home() / ".local/share/nonebot-plugin-hermes/messages.db"
+    """SQLite 默认存储位置:走 nonebot-plugin-localstore 的 plugin_data_dir。
+
+    具体路径由 localstore 解析(通常 ~/.local/share/nonebot2/nonebot_plugin_hermes/);
+    可被环境变量 LOCALSTORE_DATA_DIR / LOCALSTORE_PLUGIN_DATA_DIR 重定向,这是
+    NoneBot 官方约定的存储位置管理方式,优于硬编码 XDG_DATA_HOME。
+    """
+    import nonebot_plugin_localstore as store
+
+    return store.get_plugin_data_dir() / "messages.db"
 
 
 def _default_image_cache_dir() -> Path:
-    return Path.home() / ".cache/nonebot-plugin-hermes/images"
+    """图字节缓存默认位置:走 localstore 的 plugin_cache_dir。
+
+    图字节是 regenerable 资源(可重新从 URL 抓),走 cache_dir 而非 data_dir 是对的——
+    cache_dir 默认在 XDG_CACHE_HOME 下,系统/用户可放心整目录清理。
+    """
+    import nonebot_plugin_localstore as store
+
+    return store.get_plugin_cache_dir() / "images"
 
 
 def init_runtime_state() -> None:

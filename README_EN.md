@@ -214,7 +214,7 @@ After restart the bot will:
 
 - Listen on `127.0.0.1:8643` exposing MCP tools: `push_message` / `list_active_sessions` / `get_recent_messages` / `get_message_images`
 - Enter reactive mode after each @-mention; for the next 5 minutes it makes a `should_reply` decision on every group message (the window slides on each reply)
-- Persist every group message into SQLite (default `~/.local/share/nonebot-plugin-hermes/messages.db`) and assign a stable msg_id; each line in the `<recent_messages>` prompt block now gets an `[m:<id>]` prefix that Hermes uses to call `get_message_images` for historical image bytes
+- Persist every group message into SQLite (path managed by `nonebot-plugin-localstore`, default `~/.local/share/nonebot2/nonebot_plugin_hermes/messages.db`) and assign a stable msg_id; each line in the `<recent_messages>` prompt block now gets an `[m:<id>]` prefix that Hermes uses to call `get_message_images` for historical image bytes
 
 > ⚠️ **Security note — `HERMES_MCP_HOST` defaults to `127.0.0.1` (loopback).** Binding to a public or LAN address technically works, but the security trade-off is real: the `push_message` tool lets the bot send arbitrary messages into your groups, and the only defense in front of it is the Bearer token (sent over plain HTTP, and shared with `HERMES_API_KEY`). Before exposing the port, put a reverse proxy with TLS in front and add source-IP ACLs — otherwise any process that can reach the port and obtains the token can impersonate the bot.
 
@@ -263,8 +263,8 @@ T+5s  User B:  @bot please rate the image just sent
 
 Implementation details:
 
-- **Persistence**: messages go to SQLite (default `~/.local/share/nonebot-plugin-hermes/messages.db`); the autoincrement id becomes the N in the `[m:<id>]` prefix
-- **Byte cache**: perception kicks off an async HTTP fetch on each image URL, persisting bytes to `~/.cache/nonebot-plugin-hermes/images/<sha256>.<ext>`. LRU eviction by atime, default 200MB quota
+- **Persistence**: messages go to SQLite at a path managed by `nonebot-plugin-localstore` (default `~/.local/share/nonebot2/nonebot_plugin_hermes/messages.db`, can be redirected via `LOCALSTORE_*` env vars); the autoincrement id becomes the N in the `[m:<id>]` prefix
+- **Byte cache**: perception kicks off an async HTTP fetch on each image URL, persisting bytes to the localstore-managed cache dir (default `~/.cache/nonebot2/nonebot_plugin_hermes/images/<sha256>.<ext>`). LRU eviction by atime, default 200MB quota
 - **Graceful degradation**: short-lived CDN URLs expired / cache evicted / message past 30-day retention → the MCP tool returns `available: false` and Hermes tells the user the image is gone, no crash
 - **Retention window**: 30 days OR 100k rows (whichever comes first); hourly cron at :37 runs vacuum
 
@@ -310,10 +310,10 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_MCP_HOST` | `127.0.0.1` | MCP server bind address. Read the security note in "Active Sessions + Reverse Channel" before exposing publicly |
 | `HERMES_MCP_PORT` | `8643` | MCP server bind port |
 | `HERMES_MCP_RECENT_LIMIT_MAX` | `50` | Max items the `get_recent_messages` tool returns per call |
-| `HERMES_STORAGE_DB_PATH` | (empty) | SQLite message log path. Empty falls back to `~/.local/share/nonebot-plugin-hermes/messages.db` |
+| `HERMES_STORAGE_DB_PATH` | (empty) | SQLite message log path. Empty falls back to `nonebot-plugin-localstore`'s plugin_data_dir (typically `~/.local/share/nonebot2/nonebot_plugin_hermes/messages.db`); can also be redirected by `LOCALSTORE_*` env vars |
 | `HERMES_STORAGE_MESSAGE_RETENTION_DAYS` | `30` | Message log retention days; vacuum cron deletes anything older |
 | `HERMES_STORAGE_MESSAGE_MAX_ROWS` | `100000` | Hard row cap; vacuum cron deletes oldest by ts when exceeded |
-| `HERMES_IMAGE_CACHE_DIR` | (empty) | Image byte cache directory. Empty falls back to `~/.cache/nonebot-plugin-hermes/images/` |
+| `HERMES_IMAGE_CACHE_DIR` | (empty) | Image byte cache directory. Empty falls back to localstore's plugin_cache_dir (typically `~/.cache/nonebot2/nonebot_plugin_hermes/images/`) |
 | `HERMES_IMAGE_CACHE_QUOTA_MB` | `200` | Image cache total size cap (MB); LRU-by-atime eviction during vacuum |
 | `HERMES_IMAGE_FETCH_TIMEOUT_S` | `10` | Per-image HTTP fetch timeout, seconds |
 | `HERMES_IMAGE_FETCH_MAX_ATTEMPTS` | `2` | Total HTTP attempts per image (1=no retry, 2=one retry, …) |

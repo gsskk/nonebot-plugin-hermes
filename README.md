@@ -214,7 +214,7 @@ HERMES_MCP_ENABLED=true
 
 - 监听 `127.0.0.1:8643` 暴露 MCP 工具:`push_message` / `list_active_sessions` / `get_recent_messages` / `get_message_images`
 - 在 @bot 触发后进入 reactive 模式，5 分钟内对群消息做 should_reply 决策（每次插话续期）
-- 把每条群消息持久化到 SQLite(默认 `~/.local/share/nonebot-plugin-hermes/messages.db`)并分配稳定 msg_id;`<recent_messages>` prompt 块的每条历史前缀变成 `[m:<id>]`,Hermes 凭此 id 调 `get_message_images` 取回历史图字节
+- 把每条群消息持久化到 SQLite(默认走 `nonebot-plugin-localstore`,通常 `~/.local/share/nonebot2/nonebot_plugin_hermes/messages.db`)并分配稳定 msg_id;`<recent_messages>` prompt 块的每条历史前缀变成 `[m:<id>]`,Hermes 凭此 id 调 `get_message_images` 取回历史图字节
 
 > ⚠️ **安全注意 ——`HERMES_MCP_HOST` 默认 `127.0.0.1`(loopback)。** 改成监听公网 / 局域网地址在技术上完全可行,但安全后果是:`push_message` 工具能让 bot 往群里发任意内容,而当前防御仅有 Bearer token(明文 HTTP 传输,且与 `HERMES_API_KEY` 同钥匙)。改之前请配套上反向代理(TLS 终结) + 来源 IP ACL,否则任何能 reach 该端口的进程一旦拿到 token 就可以冒名发送。
 
@@ -263,8 +263,8 @@ T+5s  用户 B:  @bot 评价下上图
 
 技术细节:
 
-- **持久化**:消息进 SQLite(默认 `~/.local/share/nonebot-plugin-hermes/messages.db`),自增 id 即 `[m:<id>]` 前缀的 N
-- **字节缓存**:perception 看到图后异步抓 URL → 落到 `~/.cache/nonebot-plugin-hermes/images/<sha256>.<ext>`,LRU 按 atime 淘汰,默认 200MB 上限
+- **持久化**:消息进 SQLite,路径由 `nonebot-plugin-localstore` 管理(默认 `~/.local/share/nonebot2/nonebot_plugin_hermes/messages.db`,可被 `LOCALSTORE_*` env vars 整体重定向);自增 id 即 `[m:<id>]` 前缀的 N
+- **字节缓存**:perception 看到图后异步抓 URL → 落到 localstore 管理的 cache dir(默认 `~/.cache/nonebot2/nonebot_plugin_hermes/images/<sha256>.<ext>`),LRU 按 atime 淘汰,默认 200MB 上限
 - **失败降级**:URL 短效过期 / 缓存被淘汰 / 消息已过 30 天保留期 → MCP 工具返回 `available: false`,Hermes 礼貌告知用户图不可用,不崩
 - **保留窗口**:消息 30 天或 10 万条上限(谁先到),整点 :37 后台 vacuum
 
@@ -310,10 +310,10 @@ T+5s  用户 B:  @bot 评价下上图
 | `HERMES_MCP_HOST` | `127.0.0.1` | MCP server 绑定地址。改成公开地址前请阅读上文「群活跃态 + 反向通道」节的安全注意 |
 | `HERMES_MCP_PORT` | `8643` | MCP server 绑定端口 |
 | `HERMES_MCP_RECENT_LIMIT_MAX` | `50` | `get_recent_messages` 工具单次最大返回条数 |
-| `HERMES_STORAGE_DB_PATH` | (空) | SQLite 消息日志路径。空值走默认 `~/.local/share/nonebot-plugin-hermes/messages.db` |
+| `HERMES_STORAGE_DB_PATH` | (空) | SQLite 消息日志路径。空值走 `nonebot-plugin-localstore` 的 plugin_data_dir(通常 `~/.local/share/nonebot2/nonebot_plugin_hermes/messages.db`),也可被 `LOCALSTORE_*` env vars 重定向 |
 | `HERMES_STORAGE_MESSAGE_RETENTION_DAYS` | `30` | 消息日志保留天数,vacuum cron 删超龄行 |
 | `HERMES_STORAGE_MESSAGE_MAX_ROWS` | `100000` | 消息日志总行数硬上限,超出按 ts 老到新删 |
-| `HERMES_IMAGE_CACHE_DIR` | (空) | 图字节缓存目录。空值走默认 `~/.cache/nonebot-plugin-hermes/images/` |
+| `HERMES_IMAGE_CACHE_DIR` | (空) | 图字节缓存目录。空值走 localstore 的 plugin_cache_dir(通常 `~/.cache/nonebot2/nonebot_plugin_hermes/images/`) |
 | `HERMES_IMAGE_CACHE_QUOTA_MB` | `200` | 图缓存总体积上限(MB),vacuum 时按 atime 老到新淘汰 |
 | `HERMES_IMAGE_FETCH_TIMEOUT_S` | `10` | 单图 HTTP 抓取超时秒数 |
 | `HERMES_IMAGE_FETCH_MAX_ATTEMPTS` | `2` | 单图总尝试次数(1=不重试,2=一次重试,以此类推) |
