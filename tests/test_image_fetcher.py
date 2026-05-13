@@ -136,7 +136,7 @@ async def test_fetcher_queue_overflow_drops_oldest(store_and_cache):
 
 @pytest.mark.asyncio
 async def test_fetcher_non_image_content_type_skipped(store_and_cache):
-    """content-type 不是 image/* 时,即使 HTTP 200 也不写 cache。"""
+    """content-type 不是 image/* 且字节头也不像图(html)时,不写 cache。"""
     store, cache = store_and_cache
     msg = BufferedMessage(
         ts=100,
@@ -173,3 +173,70 @@ async def test_fetcher_non_image_content_type_skipped(store_and_cache):
 
     metas = store.get_message_images_meta([msg.id])
     assert metas[msg.id][0]["sha256"] is None
+
+
+@pytest.mark.asyncio
+async def test_fetcher_accepts_octet_stream_when_bytes_sniff_image(store_and_cache):
+    """Telegram CDN 常返回 application/octet-stream;只要字节头匹配 JPEG/PNG/WebP/GIF
+    魔数,应该接受并按嗅探到的真 MIME 入 cache。这是 Telegram 路径能跑通的关键。"""
+    store, cache = store_and_cache
+    msg = BufferedMessage(
+        ts=100,
+        adapter="telegram",
+        group_id="g1",
+        user_id="u1",
+        nickname="u1",
+        content="hi",
+        image_urls=["https://api.telegram.org/file/bot.../photo.jpg"],
+    )
+    store.append(msg)
+
+    # 真 JPEG 字节头(SOI 0xFFD8 + APP0 0xFFE0),后面任意填充
+    jpeg_bytes = b"\xff\xd8\xff\xe0" + b"FAKE_JPEG_PAYLOAD" * 8
+    response = MagicMock()
+    response.status_code = 200
+    response.content = jpeg_bytes
+    # 关键:Content-Type 是 octet-stream,旧代码会拒收
+    response.headers = {"content-type": "application/octet-stream"}
+    response.raise_for_status = MagicMock(return_value=None)
+
+    factory, _client = _make_async_client_factory(response)
+
+    fetcher = ImageFetcher(store=store, cache=cache, timeout_s=1, max_attempts=2)
+    with patch(
+        "nonebot_plugin_hermes.core.storage.image_fetcher.httpx.AsyncClient",
+        side_effect=factory,
+    ):
+        await fetcher.start()
+        fetcher.submit(msg.id, msg.image_urls)
+        for _ in range(20):
+            if fetcher.queue_size() == 0:
+                break
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.05)
+        await fetcher.stop()
+
+    metas = store.get_message_images_meta([msg.id])
+    # sha 应该写入,mime 应该是嗅探出的 image/jpeg(不是 octet-stream)
+    assert metas[msg.id][0]["sha256"] is not None
+    assert metas[msg.id][0]["mime_type"] == "image/jpeg"
+    payload = cache.get_bytes(metas[msg.id][0]["sha256"])
+    assert payload is not None
+    bytes_back, mime_back = payload
+    assert bytes_back == jpeg_bytes
+    assert mime_back == "image/jpeg"
+
+
+def test_sniff_image_mime_recognizes_known_formats():
+    """字节嗅探:JPEG/PNG/GIF/WebP 各家魔数都识别。"""
+    from nonebot_plugin_hermes.core.storage.image_fetcher import _sniff_image_mime
+
+    assert _sniff_image_mime(b"\xff\xd8\xff\xe0xxx") == "image/jpeg"
+    assert _sniff_image_mime(b"\x89PNG\r\n\x1a\n more") == "image/png"
+    assert _sniff_image_mime(b"GIF87a more bytes") == "image/gif"
+    assert _sniff_image_mime(b"GIF89a") == "image/gif"
+    # WebP: RIFF........WEBP....
+    assert _sniff_image_mime(b"RIFF\x00\x00\x00\x00WEBP_____") == "image/webp"
+    # 非图字节
+    assert _sniff_image_mime(b"<html><body>") is None
+    assert _sniff_image_mime(b"") is None

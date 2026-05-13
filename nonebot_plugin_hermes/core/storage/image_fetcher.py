@@ -18,6 +18,28 @@ from .image_cache import ImageCache
 from .message_store import MessageStore
 
 
+# 图片字节魔数 → 标准 MIME。用于 Telegram CDN 这类返回
+# `application/octet-stream` 的源 —— Content-Type 不可信,从字节头识别。
+_MAGIC_TO_MIME: list[tuple[bytes, str]] = [
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+]
+
+
+def _sniff_image_mime(data: bytes) -> Optional[str]:
+    """Return a normalized image MIME if the byte head matches a known magic,
+    else None. WebP needs both RIFF header + WEBP at offset 8.
+    """
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    for magic, mime in _MAGIC_TO_MIME:
+        if data.startswith(magic):
+            return mime
+    return None
+
+
 class ImageFetcher:
     """单 worker 协程消费 queue;失败重试 max_attempts 次。
 
@@ -101,11 +123,13 @@ class ImageFetcher:
                     resp = await client.get(url)
                     resp.raise_for_status()
                     bytes_ = resp.content
-                    mime_raw = resp.headers.get("content-type", "image/jpeg")
-                    mime = mime_raw.split(";", 1)[0].strip().lower()
-                    if not mime.startswith("image/"):
-                        last_err = f"non-image content-type: {mime}"
-                        # 非图直接放弃这一张,不重试(再试也是同样结果)
+                    mime = self._resolve_mime(resp.headers.get("content-type"), bytes_)
+                    if mime is None:
+                        # Content-Type 不是 image,字节头也不是已知图片格式 → 真不是图
+                        last_err = (
+                            f"non-image: ct={resp.headers.get('content-type')!r} "
+                            f"head={bytes_[:16].hex() if bytes_ else 'empty'}"
+                        )
                         break
                     sha = self._cache.put(bytes_, mime)
                     self._store.update_image_sha(message_id, idx, sha, mime)
@@ -118,3 +142,19 @@ class ImageFetcher:
             f"[image_fetcher] fetch failed m={message_id} idx={idx} url={url[:80]} "
             f"after {self._max_attempts} attempts: {last_err}"
         )
+
+    @staticmethod
+    def _resolve_mime(content_type: Optional[str], bytes_: bytes) -> Optional[str]:
+        """信任顺序:
+        1. Content-Type 是 image/* → 直接用
+        2. Content-Type 是 application/octet-stream(Telegram CDN 典型行为)
+           或缺失 → 嗅探字节魔数
+        3. 字节嗅探命中已知图片格式 → 用嗅探结果
+        4. 都不是 → 返回 None,表示真不是图
+        """
+        ct = (content_type or "").split(";", 1)[0].strip().lower()
+        if ct.startswith("image/"):
+            return ct
+        # octet-stream / 缺失 / 其他 → 字节嗅探
+        sniffed = _sniff_image_mime(bytes_)
+        return sniffed
