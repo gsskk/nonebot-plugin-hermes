@@ -22,6 +22,9 @@ class BufferedMessage:
     image_urls: List[str] = field(default_factory=list)
     reply_to_ts: Optional[int] = None
     is_bot: bool = False
+    id: Optional[int] = None
+    """DB 主键。perception 构造时为 None,MessageStore.append 写入后回填。
+    handlers 不应直接读写;由 MessageStore.append 管控。"""
 
 
 def _bucket_key(adapter: str, group_id: Optional[str], user_id: Optional[str]) -> Tuple[str, str]:

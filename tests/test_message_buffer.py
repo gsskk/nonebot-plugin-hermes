@@ -136,3 +136,30 @@ def test_limit_respected():
     recent = buf.get_recent("ob11", "g1", limit=5)
     assert len(recent) == 5
     assert recent[0].ts == 20
+
+
+def test_buffered_message_id_defaults_to_none():
+    """新建的 BufferedMessage 在没被 store append 时 id 应为 None。"""
+    msg = BufferedMessage(
+        ts=100,
+        adapter="ob11",
+        group_id="g1",
+        user_id="u1",
+        nickname="u1",
+        content="hi",
+    )
+    assert msg.id is None
+
+
+def test_buffered_message_id_can_be_set():
+    """MessageStore.append 后回填 id;dataclass 应支持赋值。"""
+    msg = BufferedMessage(
+        ts=100,
+        adapter="ob11",
+        group_id="g1",
+        user_id="u1",
+        nickname="u1",
+        content="hi",
+    )
+    msg.id = 42
+    assert msg.id == 42
