@@ -16,7 +16,13 @@ from ..config import plugin_config
 from ..core.active_session import ActiveSessionManager
 from ..core.bot_registry import BotRegistry
 from ..core.message_buffer import MessageBuffer
+from ..core.storage.image_cache import ImageCache
+from ..core.storage.message_store import MessageStore
 from .auth import AuthError, check_bearer
+from .tools.get_message_images import (
+    GetMessageImagesInput,
+    get_message_images_impl,
+)
 from .tools.get_recent_messages import (
     GetRecentMessagesInput,
     GetRecentMessagesResult,
@@ -39,6 +45,8 @@ def build_mcp_app(
     message_buffer: MessageBuffer,
     active_sessions: ActiveSessionManager,
     bot_registry: BotRegistry,
+    message_store: MessageStore,
+    image_cache: ImageCache,
 ) -> Any:
     """构造 FastMCP 实例并返回 http_app(),由调用者交给 uvicorn。
 
@@ -121,6 +129,26 @@ def build_mcp_app(
             before_ts=before_ts,
         )
         return await get_recent_messages_impl(inp, message_buffer=message_buffer)
+
+    @mcp.tool()
+    async def get_message_images(
+        message_ids: list[int],
+        adapter: str | None = None,
+        group_id: str | None = None,
+    ) -> list:
+        """Fetch image bytes for specific message ids (max 4 ids per call).
+
+        Returns a content[] array combining a JSON header (per-image metadata)
+        with TextContent markers + ImageContent blocks for each available image.
+        Use after get_recent_messages identifies which message_id the user
+        is referring to (e.g. '上图' → most recent msg with image_count > 0).
+        """
+        inp = GetMessageImagesInput(
+            message_ids=message_ids,
+            adapter=adapter,
+            group_id=group_id,
+        )
+        return await get_message_images_impl(inp, store=message_store, cache=image_cache)
 
     http_app = mcp.http_app()
 
