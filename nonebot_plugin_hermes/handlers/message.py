@@ -60,14 +60,63 @@ def _is_bot_at(uni_msg: alconna.UniMessage, bot_self_id: str) -> bool:
     return False
 
 
-def _extract_image_urls(uni_msg: alconna.UniMessage) -> List[str]:
+async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_name: str) -> List[str]:
+    """从 UniMessage 中抽出图片 URL 列表(可直接 HTTP GET 拿字节的那种)。
+
+    多 adapter 行为不一致:
+    - OneBot v11 / QQ Official / Discord 等:alconna 直接在 Image 段上填好 `.url`,
+      最廉价路径,优先用
+    - Telegram:alconna 只填 `.id`(就是 file_id),URL 必须二次调
+      `bot.get_file(file_id)` 拿到 `file_path` 后拼成 `https://api.telegram.org/
+      file/bot<TOKEN>/<file_path>`。这条路径 URL 里**带 token**,但 fetcher
+      和 DB 都本地,落地可接受;且 file_path 只有 ~1h 有效,异步 fetcher 必须
+      及时抓字节进 ImageCache,后面 MCP 工具读 cache 不再依赖 URL
+    - 其他 adapter:只看 `.url`,没的话就放弃这张图(不抛、不 fail bot)
+
+    本函数是 async 因为 telegram 分支要 await bot.get_file。
+    """
     urls: List[str] = []
-    if uni_msg.has(alconna.Image):
-        for img in uni_msg[alconna.Image]:
-            url = getattr(img, "url", None)
-            if url:
-                urls.append(url)
+    if not uni_msg.has(alconna.Image):
+        return urls
+    adapter_lc = (adapter_name or "").lower()
+    for img in uni_msg[alconna.Image]:
+        url = getattr(img, "url", None)
+        if url and isinstance(url, str) and url.startswith(("http://", "https://")):
+            urls.append(url)
+            continue
+        file_id = getattr(img, "id", None)
+        if not file_id:
+            continue
+        if "telegram" in adapter_lc:
+            resolved = await _resolve_telegram_file_url(bot, file_id)
+            if resolved:
+                urls.append(resolved)
+                continue
+        # 其他 adapter 但 Image 没 .url 的情况:debug 一行,不当错误处理
+        logger.debug(
+            f"[image] skipped image segment with no resolvable URL (adapter={adapter_lc} id={file_id[:24]}...)"
+        )
     return urls
+
+
+async def _resolve_telegram_file_url(bot: Bot, file_id: str) -> Optional[str]:
+    """Telegram file_id → 可拉的 HTTPS URL。失败返 None,perception 不崩。
+
+    URL 里含 token,只在 plugin 本地 DB / fetcher 流转(不会进 prompt / MCP 返回)。
+    file_path 一般 ~1h 失效,fetcher 必须及时抓——本设计走 perception 异步触发,
+    秒级到达 fetcher,不会拖到失效。
+    """
+    try:
+        file = await bot.get_file(file_id=file_id)
+    except Exception as exc:
+        logger.warning(f"[image] telegram get_file failed for file_id={file_id[:24]}...: {exc}")
+        return None
+    file_path = getattr(file, "file_path", None)
+    token = getattr(getattr(bot, "bot_config", None), "token", None)
+    if not file_path or not token:
+        logger.warning(f"[image] telegram get_file returned no file_path/token (file_id={file_id[:24]}...)")
+        return None
+    return f"https://api.telegram.org/file/bot{token}/{file_path}"
 
 
 @perception_message.handle()
@@ -92,7 +141,7 @@ async def handle_perception(bot: Bot, event: Event):
         return
 
     msg_text = uni_msg.extract_plain_text().strip()
-    image_urls = _extract_image_urls(uni_msg)
+    image_urls = await _extract_image_urls(uni_msg, bot, adapter_name)
 
     # 文本太长截断
     max_len = plugin_config.hermes_perception_text_length
@@ -168,7 +217,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
         try:
             replied_message = await alconna.UniMessage.generate(message=event.reply.message, bot=bot)
             replied_text = replied_message.extract_plain_text().strip()
-            replied_image_urls = _extract_image_urls(replied_message)
+            replied_image_urls = await _extract_image_urls(replied_message, bot, adapter_name)
             if replied_image_urls and not replied_text:
                 replied_text = "[图片]"
         except Exception as e:
@@ -183,7 +232,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     if replied_text:
         msg_text = f"(引用: {replied_text}) {msg_text}".strip()
 
-    image_urls = _extract_image_urls(uni_msg)
+    image_urls = await _extract_image_urls(uni_msg, bot, adapter_name)
     image_urls.extend(replied_image_urls)
 
     if not msg_text and not image_urls:
