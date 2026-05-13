@@ -18,14 +18,13 @@ def register_storage_vacuum() -> None:
 
     错峰避开 expire_active_sessions(那个跑秒级 interval),且 :37 是个安静时段
     (与各种整点报告 / 业务监控错开)。
+
+    注:apscheduler 的 @scheduled_job 装饰器内部已经在 add_job 时硬编码
+    replace_existing=True(base.py:560 的 positional True),如果我们再传一遍
+    kwarg 会撞 `multiple values for argument` —— 启动直接挂。同样不要传 `replace_existing`。
     """
 
-    @scheduler.scheduled_job(
-        "cron",
-        minute=37,
-        id="hermes_storage_vacuum",
-        replace_existing=True,
-    )
+    @scheduler.scheduled_job("cron", minute=37, id="hermes_storage_vacuum")
     async def _vacuum() -> None:
         if _mcp.message_store is None or _mcp.image_cache is None:
             return
