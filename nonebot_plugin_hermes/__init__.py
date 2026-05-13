@@ -50,13 +50,31 @@ async def _hermes_m1_startup():
     所以直接 await start_mcp_server() 而非走 register_lifecycle 的间接路径。
     on_shutdown 钩子仍可在此追加,因为 shutdown phase 还没到。
     """
-    from .mcp import init_runtime_state, start_mcp_server, stop_mcp_server
+    import os
+
+    from .mcp import (
+        init_runtime_state,
+        start_mcp_server,
+        start_storage,
+        stop_mcp_server,
+        stop_storage,
+    )
     from .tasks import register_expire_active_sessions
 
     init_runtime_state()
+    await start_storage()
     await start_mcp_server()
     _driver.on_shutdown(stop_mcp_server)
+    _driver.on_shutdown(stop_storage)
     register_expire_active_sessions()
+
+    if os.environ.get("HERMES_PERCEPTION_IMAGE_MODE"):
+        logger.warning(
+            "[HERMES] HERMES_PERCEPTION_IMAGE_MODE is deprecated since 2026-05-13. "
+            "Historical image recall now goes through MCP tools (get_message_images). "
+            "You can remove this env var safely."
+        )
+
     logger.info(
         f"Hermes Plugin loaded — API: {plugin_config.hermes_api_url} | "
         f"MCP: {'on ' + plugin_config.hermes_mcp_host + ':' + str(plugin_config.hermes_mcp_port) if plugin_config.hermes_mcp_enabled else 'off'} | "

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from pathlib import Path
 from typing import Optional
 
 import uvicorn
@@ -15,6 +16,9 @@ from ..core.active_session import ActiveSessionManager
 from ..core.bot_registry import BotRegistry
 from ..core.inflight import InflightRegistry
 from ..core.message_buffer import MessageBuffer
+from ..core.storage.image_cache import ImageCache
+from ..core.storage.image_fetcher import ImageFetcher
+from ..core.storage.message_store import MessageStore
 from .server import build_mcp_app
 
 
@@ -63,24 +67,53 @@ _FASTMCP_TOOL_LOGGER = logging.getLogger("fastmcp.server.server")
 if not any(isinstance(f, _ToolValidationLogRedirect) for f in _FASTMCP_TOOL_LOGGER.filters):
     _FASTMCP_TOOL_LOGGER.addFilter(_ToolValidationLogRedirect())
 
-# 全局单例(Task 18 在 plugin __init__.py 装配)
+# 全局单例(plugin __init__.py 在 startup 钩子里装配)
 message_buffer: MessageBuffer | None = None
 active_sessions: ActiveSessionManager | None = None
 bot_registry: BotRegistry | None = None
 inflight: InflightRegistry | None = None
+message_store: MessageStore | None = None
+image_cache: ImageCache | None = None
+image_fetcher: ImageFetcher | None = None
 
 _server_task: Optional[asyncio.Task] = None
 _uvicorn_server: Optional[uvicorn.Server] = None
 
 
+def _default_db_path() -> Path:
+    return Path.home() / ".local/share/nonebot-plugin-hermes/messages.db"
+
+
+def _default_image_cache_dir() -> Path:
+    return Path.home() / ".cache/nonebot-plugin-hermes/images"
+
+
 def init_runtime_state() -> None:
-    """由 plugin __init__.py 在 import 时调用,装配全局对象。"""
+    """由 plugin __init__.py 在 startup 钩子里调用,装配全局对象。"""
     global message_buffer, active_sessions, bot_registry, inflight
-    if message_buffer is None:
-        message_buffer = MessageBuffer(
-            per_group_cap=plugin_config.hermes_buffer_per_group_cap,
-            total_groups_cap=plugin_config.hermes_buffer_total_groups_cap,
+    global message_store, image_cache, image_fetcher
+
+    if message_store is None:
+        db_path_str = plugin_config.hermes_storage_db_path or ""
+        db_path = Path(db_path_str) if db_path_str else _default_db_path()
+        message_store = MessageStore(db_path=db_path)
+    if image_cache is None:
+        cache_dir_str = plugin_config.hermes_image_cache_dir or ""
+        cache_dir = Path(cache_dir_str) if cache_dir_str else _default_image_cache_dir()
+        image_cache = ImageCache(
+            cache_dir=cache_dir,
+            quota_bytes=plugin_config.hermes_image_cache_quota_mb * 1024 * 1024,
         )
+        image_cache.evict_if_over_quota()
+    if image_fetcher is None:
+        image_fetcher = ImageFetcher(
+            store=message_store,
+            cache=image_cache,
+            timeout_s=plugin_config.hermes_image_fetch_timeout_s,
+            max_attempts=plugin_config.hermes_image_fetch_max_attempts,
+        )
+    if message_buffer is None:
+        message_buffer = MessageBuffer(store=message_store, fetcher=image_fetcher)
     if active_sessions is None:
         active_sessions = ActiveSessionManager(
             default_ttl_sec=plugin_config.hermes_active_session_ttl_sec,
@@ -89,6 +122,20 @@ def init_runtime_state() -> None:
         bot_registry = BotRegistry()
     if inflight is None:
         inflight = InflightRegistry()
+
+
+async def start_storage() -> None:
+    """启动 image_fetcher 异步 worker。"""
+    if image_fetcher is not None:
+        await image_fetcher.start()
+
+
+async def stop_storage() -> None:
+    """关闭 image_fetcher 与 message_store。"""
+    if image_fetcher is not None:
+        await image_fetcher.stop()
+    if message_store is not None:
+        message_store.close()
 
 
 def _on_server_task_done(task: asyncio.Task) -> None:
@@ -111,7 +158,13 @@ async def start_mcp_server() -> None:
     if _server_task is not None and not _server_task.done():
         logger.warning("[HERMES MCP] start_mcp_server called twice; ignoring second call")
         return
-    if message_buffer is None or active_sessions is None or bot_registry is None:
+    if (
+        message_buffer is None
+        or active_sessions is None
+        or bot_registry is None
+        or message_store is None
+        or image_cache is None
+    ):
         logger.error("[HERMES MCP] runtime state not initialized; skipping")
         return
 
@@ -119,6 +172,8 @@ async def start_mcp_server() -> None:
         message_buffer=message_buffer,
         active_sessions=active_sessions,
         bot_registry=bot_registry,
+        message_store=message_store,
+        image_cache=image_cache,
     )
 
     config = uvicorn.Config(
