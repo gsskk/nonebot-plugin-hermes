@@ -39,6 +39,7 @@ User Message → NoneBot Adapter → nonebot-plugin-hermes
 - ✅ Built-in commands (`/clear`, `/ping`, `/help`, `/hermes-status`)
 - 🧪 **Active group sessions (M1, experimental)**: After being @-mentioned, the bot listens to the group for 5 minutes and lets Hermes structurally decide whether to chime in
 - 🧪 **Reverse channel (M1, experimental)**: Embeds a local MCP server so Hermes can proactively push messages into the chat (delayed replies / async notifications)
+- 🧪 **Historical image recall (0.3+, experimental)**: SQLite-backed message log + filesystem image-byte cache + `get_message_images` MCP tool. Lets Hermes precisely fetch a past image by message id when the user says things like "上图" / "the image just now"
 
 ## Quick Start
 
@@ -211,8 +212,9 @@ HERMES_MCP_ENABLED=true
 
 After restart the bot will:
 
-- Listen on `127.0.0.1:8643` exposing MCP tools: `push_message` / `list_active_sessions` / `get_recent_messages`
+- Listen on `127.0.0.1:8643` exposing MCP tools: `push_message` / `list_active_sessions` / `get_recent_messages` / `get_message_images`
 - Enter reactive mode after each @-mention; for the next 5 minutes it makes a `should_reply` decision on every group message (the window slides on each reply)
+- Persist every group message into SQLite (default `~/.local/share/nonebot-plugin-hermes/messages.db`) and assign a stable msg_id; each line in the `<recent_messages>` prompt block now gets an `[m:<id>]` prefix that Hermes uses to call `get_message_images` for historical image bytes
 
 > ⚠️ **Security note — `HERMES_MCP_HOST` defaults to `127.0.0.1` (loopback).** Binding to a public or LAN address technically works, but the security trade-off is real: the `push_message` tool lets the bot send arbitrary messages into your groups, and the only defense in front of it is the Bearer token (sent over plain HTTP, and shared with `HERMES_API_KEY`). Before exposing the port, put a reverse proxy with TLS in front and add source-IP ACLs — otherwise any process that can reach the port and obtains the token can impersonate the bot.
 
@@ -245,6 +247,29 @@ mcp_servers:
 
 When the plugin's `SKILL.md` later changes, re-run with `--force` using any of the entries above, e.g. `uv run hermes-install-skill --force` or `.venv/bin/hermes-install-skill --force`.
 
+## Historical image recall (0.3+, experimental)
+
+Starting in 0.3, when perception and the reverse channel are both enabled the bot turns on a "precise per-msg-id historical image recall" path. Typical scenario:
+
+```
+T0    User A:  [image]                    ← caption-less; bot sees [图片] placeholder
+T+5s  User B:  @bot please rate the image just sent
+                ↓
+                Hermes sees [m:1234] A: [图片] in the prompt
+                Hermes calls get_recent_messages → knows m:1234 has image_count=1
+                Hermes calls get_message_images([1234]) → fetches bytes
+                Hermes's next LLM turn actually sees that image, replies correctly
+```
+
+Implementation details:
+
+- **Persistence**: messages go to SQLite (default `~/.local/share/nonebot-plugin-hermes/messages.db`); the autoincrement id becomes the N in the `[m:<id>]` prefix
+- **Byte cache**: perception kicks off an async HTTP fetch on each image URL, persisting bytes to `~/.cache/nonebot-plugin-hermes/images/<sha256>.<ext>`. LRU eviction by atime, default 200MB quota
+- **Graceful degradation**: short-lived CDN URLs expired / cache evicted / message past 30-day retention → the MCP tool returns `available: false` and Hermes tells the user the image is gone, no crash
+- **Retention window**: 30 days OR 100k rows (whichever comes first); hourly cron at :37 runs vacuum
+
+If your Hermes backend model is weak and unreliably parses the `[m:<id>]` convention, behavior degrades to today's "can't see the image you mentioned" — no regression.
+
 ## Commands
 
 | Command | Description |
@@ -275,16 +300,23 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_PERCEPTION_ENABLED` | `false` | In groups with active_session=false, inject bystander history into the LLM on @-mention. **Auto-implied when `HERMES_ACTIVE_SESSION_ENABLED=true`; this flag is then a no-op**. Never injected in private chats (Hermes session already covers it) |
 | `HERMES_PERCEPTION_BUFFER` | `10` | Number of messages to buffer for perception |
 | `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | Max text length per historical message |
-| `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | Image mode: `placeholder` (text-only refs, recommended) / `inline_labeled` (sent in multimodal with strong labels, for cross-image questions) / `none` |
+| `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | ⚠️ **Deprecated since 0.3** — historical image recall moved to the `get_message_images` MCP tool. This knob now only controls whether a `[图片]` placeholder appears in history text (`none` = no placeholder; anything else = add placeholder). `inline_labeled` is superseded; setting it is equivalent to `placeholder` |
 | `HERMES_ACTIVE_SESSION_ENABLED` | `false` | Enable active group sessions (M1). When `false` the plugin behaves as in v0.1.6 |
 | `HERMES_ACTIVE_SESSION_TTL_SEC` | `300` | Active-window TTL in seconds; sliding renewal on each reply |
 | `HERMES_ACTIVE_SWEEP_INTERVAL_SEC` | `30` | Cron sweep interval for expired active sessions |
-| `HERMES_BUFFER_PER_GROUP_CAP` | `200` | MessageBuffer per-group recent-message cap |
-| `HERMES_BUFFER_TOTAL_GROUPS_CAP` | `50` | MessageBuffer total cross-group capacity (LRU eviction) |
+| `HERMES_BUFFER_PER_GROUP_CAP` | `200` | ⚠️ **No-op since 0.3** — MessageBuffer is now SQLite-backed; message eviction is governed by `HERMES_STORAGE_MESSAGE_*` instead. Will be removed in the next major version |
+| `HERMES_BUFFER_TOTAL_GROUPS_CAP` | `50` | ⚠️ **No-op since 0.3** — see above |
 | `HERMES_MCP_ENABLED` | `false` | Start the embedded FastMCP server (M1 reverse channel) |
 | `HERMES_MCP_HOST` | `127.0.0.1` | MCP server bind address. Read the security note in "Active Sessions + Reverse Channel" before exposing publicly |
 | `HERMES_MCP_PORT` | `8643` | MCP server bind port |
 | `HERMES_MCP_RECENT_LIMIT_MAX` | `50` | Max items the `get_recent_messages` tool returns per call |
+| `HERMES_STORAGE_DB_PATH` | (empty) | SQLite message log path. Empty falls back to `~/.local/share/nonebot-plugin-hermes/messages.db` |
+| `HERMES_STORAGE_MESSAGE_RETENTION_DAYS` | `30` | Message log retention days; vacuum cron deletes anything older |
+| `HERMES_STORAGE_MESSAGE_MAX_ROWS` | `100000` | Hard row cap; vacuum cron deletes oldest by ts when exceeded |
+| `HERMES_IMAGE_CACHE_DIR` | (empty) | Image byte cache directory. Empty falls back to `~/.cache/nonebot-plugin-hermes/images/` |
+| `HERMES_IMAGE_CACHE_QUOTA_MB` | `200` | Image cache total size cap (MB); LRU-by-atime eviction during vacuum |
+| `HERMES_IMAGE_FETCH_TIMEOUT_S` | `10` | Per-image HTTP fetch timeout, seconds |
+| `HERMES_IMAGE_FETCH_MAX_ATTEMPTS` | `2` | Total HTTP attempts per image (1=no retry, 2=one retry, …) |
 
 ## Limitations
 

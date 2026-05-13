@@ -39,6 +39,7 @@
 - ✅ 内置命令（`/clear` `/ping` `/help` `/hermes-status`）
 - 🧪 **群活跃态 (M1, 实验性)**：@bot 后 5 分钟内主动监听群对话，由 Hermes 通过结构化决策判断是否插话
 - 🧪 **反向通道 (M1, 实验性)**：内嵌本地 MCP server，让 Hermes 主动 push 消息进群（延迟回复 / 异步通知）
+- 🧪 **历史图片召回 (0.3+, 实验性)**：SQLite 持久化消息日志 + 文件系统图字节缓存 + MCP 工具 `get_message_images`，让 Hermes 在用户说"上图"/"刚才那张"时按消息 id 精确取回历史图字节
 
 ## 快速开始
 
@@ -211,8 +212,9 @@ HERMES_MCP_ENABLED=true
 
 重启后 bot 会：
 
-- 监听 `127.0.0.1:8643` 暴露 MCP 工具：`push_message` / `list_active_sessions` / `get_recent_messages`
+- 监听 `127.0.0.1:8643` 暴露 MCP 工具:`push_message` / `list_active_sessions` / `get_recent_messages` / `get_message_images`
 - 在 @bot 触发后进入 reactive 模式，5 分钟内对群消息做 should_reply 决策（每次插话续期）
+- 把每条群消息持久化到 SQLite(默认 `~/.local/share/nonebot-plugin-hermes/messages.db`)并分配稳定 msg_id;`<recent_messages>` prompt 块的每条历史前缀变成 `[m:<id>]`,Hermes 凭此 id 调 `get_message_images` 取回历史图字节
 
 > ⚠️ **安全注意 ——`HERMES_MCP_HOST` 默认 `127.0.0.1`(loopback)。** 改成监听公网 / 局域网地址在技术上完全可行,但安全后果是:`push_message` 工具能让 bot 往群里发任意内容,而当前防御仅有 Bearer token(明文 HTTP 传输,且与 `HERMES_API_KEY` 同钥匙)。改之前请配套上反向代理(TLS 终结) + 来源 IP ACL,否则任何能 reach 该端口的进程一旦拿到 token 就可以冒名发送。
 
@@ -245,6 +247,29 @@ mcp_servers:
 
 后续插件 SKILL.md 升级时,用上面同样的入口加 `--force` 重装,例如 `uv run hermes-install-skill --force` 或 `.venv/bin/hermes-install-skill --force`。
 
+## 历史图片召回（0.3+，实验性）
+
+在 0.3 起,消息感知 + 反向通道一起开启时,bot 自动启用一条"按消息 id 精确召回历史图"的通路。典型场景:
+
+```
+T0    用户 A:  [图片]                    ← 仅文字描述,bot 看到 [图片] 占位
+T+5s  用户 B:  @bot 评价下上图
+                ↓
+                Hermes 看到 prompt 里 [m:1234] A: [图片]
+                Hermes 调 get_recent_messages → 知道 m:1234 有图(image_count=1)
+                Hermes 调 get_message_images([1234]) → 拿到字节
+                下一轮 LLM 真的看到那张图,回复正常
+```
+
+技术细节:
+
+- **持久化**:消息进 SQLite(默认 `~/.local/share/nonebot-plugin-hermes/messages.db`),自增 id 即 `[m:<id>]` 前缀的 N
+- **字节缓存**:perception 看到图后异步抓 URL → 落到 `~/.cache/nonebot-plugin-hermes/images/<sha256>.<ext>`,LRU 按 atime 淘汰,默认 200MB 上限
+- **失败降级**:URL 短效过期 / 缓存被淘汰 / 消息已过 30 天保留期 → MCP 工具返回 `available: false`,Hermes 礼貌告知用户图不可用,不崩
+- **保留窗口**:消息 30 天或 10 万条上限(谁先到),整点 :37 后台 vacuum
+
+如果你的 Hermes 后端模型偏弱、识别 `[m:<id>]` 约定不稳,bot 行为退化为今天的"看不到上图"——无 regression。
+
 ## 命令
 
 | 命令 | 说明 |
@@ -275,16 +300,23 @@ mcp_servers:
 | `HERMES_PERCEPTION_ENABLED` | `false` | 群聊 + active_session=false 下,是否在 @bot 时给 LLM 注入旁观历史。**`HERMES_ACTIVE_SESSION_ENABLED=true` 时自动隐含为 on,本开关无效**。私聊永远不注入(Hermes session 已覆盖) |
 | `HERMES_PERCEPTION_BUFFER` | `10` | 被动感知缓存的历史消息数量 |
 | `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | 被动感知单条历史消息最大长度 |
-| `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | 历史图片模式: `placeholder`(纯文本占位,推荐) / `inline_labeled`(带标签随多模态发送,适合跨图诉求) / `none`(不提) |
+| `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | ⚠️ **0.3 起弃用**——历史图召回改走 `get_message_images` MCP 工具。本配置当前仅控制 `[图片]` 文本占位是否出现(`none`=不加占位;其他值=加占位)。`inline_labeled` 行为已被 MCP 工具流取代,设为该值与 `placeholder` 等效 |
 | `HERMES_ACTIVE_SESSION_ENABLED` | `false` | 启用群活跃态（M1）。`false` 时退化为 v0.1.6 等价行为 |
 | `HERMES_ACTIVE_SESSION_TTL_SEC` | `300` | 活跃窗口 TTL（秒），每次插话滑动续期 |
 | `HERMES_ACTIVE_SWEEP_INTERVAL_SEC` | `30` | 活跃态过期清扫 cron 频率（秒） |
-| `HERMES_BUFFER_PER_GROUP_CAP` | `200` | MessageBuffer 每群最近消息上限 |
-| `HERMES_BUFFER_TOTAL_GROUPS_CAP` | `50` | MessageBuffer 跨群总容量（LRU 驱逐） |
+| `HERMES_BUFFER_PER_GROUP_CAP` | `200` | ⚠️ **0.3 起空转**——MessageBuffer 改为 SQLite 后端,无内存 per-group 上限;消息淘汰由 `HERMES_STORAGE_MESSAGE_*` 控制。下一个 major 版本会移除 |
+| `HERMES_BUFFER_TOTAL_GROUPS_CAP` | `50` | ⚠️ **0.3 起空转**——同上,SQLite 后端无 LRU,改为 retention + 行数上限 |
 | `HERMES_MCP_ENABLED` | `false` | 启动内嵌 FastMCP server（M1 反向通道） |
 | `HERMES_MCP_HOST` | `127.0.0.1` | MCP server 绑定地址。改成公开地址前请阅读上文「群活跃态 + 反向通道」节的安全注意 |
 | `HERMES_MCP_PORT` | `8643` | MCP server 绑定端口 |
 | `HERMES_MCP_RECENT_LIMIT_MAX` | `50` | `get_recent_messages` 工具单次最大返回条数 |
+| `HERMES_STORAGE_DB_PATH` | (空) | SQLite 消息日志路径。空值走默认 `~/.local/share/nonebot-plugin-hermes/messages.db` |
+| `HERMES_STORAGE_MESSAGE_RETENTION_DAYS` | `30` | 消息日志保留天数,vacuum cron 删超龄行 |
+| `HERMES_STORAGE_MESSAGE_MAX_ROWS` | `100000` | 消息日志总行数硬上限,超出按 ts 老到新删 |
+| `HERMES_IMAGE_CACHE_DIR` | (空) | 图字节缓存目录。空值走默认 `~/.cache/nonebot-plugin-hermes/images/` |
+| `HERMES_IMAGE_CACHE_QUOTA_MB` | `200` | 图缓存总体积上限(MB),vacuum 时按 atime 老到新淘汰 |
+| `HERMES_IMAGE_FETCH_TIMEOUT_S` | `10` | 单图 HTTP 抓取超时秒数 |
+| `HERMES_IMAGE_FETCH_MAX_ATTEMPTS` | `2` | 单图总尝试次数(1=不重试,2=一次重试,以此类推) |
 
 ## 限制
 
