@@ -14,6 +14,7 @@ tools:
   - push_message
   - list_active_sessions
   - get_recent_messages
+  - get_message_images
 ---
 
 # nonebot-bridge — chat adapter (M1)
@@ -54,6 +55,28 @@ welcome.
 Pull the latest `limit` messages from a group buffer (capped at 50). **This is expensive** —
 each call burns context. Prefer the `<recent_messages>` block already inlined in your
 reactive prompt. Use this only when you need to look further back than ~20 messages.
+
+Each returned message carries:
+- `id` — DB primary key, stable across turns; pair with `get_message_images` to fetch
+  image bytes
+- `image_count` — number of images attached to that message (0 = text only)
+- text/user/ts/is_bot — as before
+
+### `get_message_images(message_ids, adapter?, group_id?)`
+
+Fetch image bytes for up to 4 message ids in a single call. Returns a content array
+mixing a JSON header (per-image metadata) with `TextContent` markers + `ImageContent`
+base64 blocks. The image content flows through Hermes's multimodal injection pipeline,
+so on your next LLM turn you'll **actually see** the images.
+
+Each per-image result has `available: true|false`. When unavailable, `reason` is one of:
+- `cache_miss` — image was never fetched (URL expired before download) or has been
+  evicted from the local cache; tell the user the image is gone, request a resend
+- `not_found` — the message_id is not in the DB anymore (past 30-day retention or
+  hard row cap)
+- `too_large` — image exceeds 5 MB; ask user for a smaller version
+- `cap_exceeded` — your call totaled more than 25 MB or hit the per-call cap; retry
+  with fewer ids
 
 ## Output contract (reactive)
 
@@ -100,6 +123,38 @@ When the user asks you to do something (look up data, search, fetch info):
   phrases dangle a promise you cannot keep, and the user gets nothing.
 - Rule of thumb: act first, talk after. If you can't, say so directly and stop.
 
+## Historical media recall
+
+When the user refers to a past image (e.g. "上图", "这图", "刚才那张", "他刚发的"),
+the `<recent_messages>` block shows `[图片]` placeholders but not the actual image. To
+see the image content, follow this two-step protocol:
+
+1. **Identify the message.** Read `<recent_messages>` and find which message the user
+   means. Each line starts with `[m:<id>]` — that id is the DB primary key, stable
+   across turns. Heuristics:
+   - "上图" / "这图" / "刚才那张" → most recent line where the message has an image
+   - "我刚发的" → most recent image-bearing message from the current speaker
+   - "他刚发的" → most recent image-bearing message from the user named in context
+2. **Fetch the bytes.** Call `get_message_images(message_ids=[<id>])`. The returned
+   ImageContent blocks become real visual input on your next LLM turn.
+
+### The `[m:<id>]` convention
+
+The id prefix in `<recent_messages>` is **stable** — the same image always has the
+same `[m:<id>]` label across turns, unlike positional schemes (#1, #2, …) which would
+shift when new messages arrive. You can use it in your internal reasoning to anchor
+cross-turn references ("I analyzed m:1234 last turn, user is now asking about it again").
+
+The `<current_message>` block does NOT carry an `[m:<id>]` — the current turn hasn't
+been persisted yet. Only past messages have stable ids.
+
+### When to skip the tool
+
+- The user did not reference an image — don't fetch (token cost).
+- `image_count == 0` on every recent message — there's nothing to look at, tell the
+  user directly.
+- Identical image has already been fetched in this turn — reuse the previous result.
+
 ## What NOT to do
 
 - Don't call `push_message` for normal request/response replies — return `submit_decision`
@@ -108,3 +163,5 @@ When the user asks you to do something (look up data, search, fetch info):
   will return 422 and your message will be discarded.
 - Don't try to set user profiles / facts via this skill. M1 has no user profile support.
 - Don't assume `reply_to_msg_id` works — M1 does not implement it.
+- Don't call `get_message_images` speculatively for every reactive turn — only when the
+  user's text actually references a past image. Each call costs bytes + an extra LLM turn.
