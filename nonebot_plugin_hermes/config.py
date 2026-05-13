@@ -70,6 +70,9 @@ class Config(BaseModel):
     - inline_labeled: 历史最后一张图带 <<HISTORICAL IMAGES>> 标签放入多模态 content,与当前图清晰分隔
     - none: 完全不提历史图
     旧值 'last' 视为 'inline_labeled' 别名 (已废弃,启动时 WARN)
+
+    **DEPRECATED (2026-05-13)**: 历史图召回改走 MCP 工具 (get_message_images),
+    本配置仅控制 [图片] 占位是否出现在历史里;inline_labeled 模式已不再实装。
     """
 
     # --- M1: 内存缓冲 ---
@@ -105,6 +108,28 @@ class Config(BaseModel):
     hermes_mcp_recent_limit_max: int = Field(default=50, ge=1)
     """get_recent_messages 工具单次返回上限。最小 1——0/负值会让工具静默返空,
     Pydantic 在启动期校验防 misconfig。"""
+
+    # --- M1: 持久化存储 ---
+    hermes_storage_db_path: str = ""
+    """SQLite 消息日志路径。空串走默认 ~/.local/share/nonebot-plugin-hermes/messages.db"""
+
+    hermes_storage_message_retention_days: int = 30
+    """消息日志保留天数,超龄行 vacuum 时删"""
+
+    hermes_storage_message_max_rows: int = 100_000
+    """消息日志总行数硬上限,超出 vacuum 时按 ts 老到新删"""
+
+    hermes_image_cache_dir: str = ""
+    """图字节缓存目录。空串走默认 ~/.cache/nonebot-plugin-hermes/images/"""
+
+    hermes_image_cache_quota_mb: int = 200
+    """图缓存总体积上限(MB),超出按 atime 老到新淘汰"""
+
+    hermes_image_fetch_timeout_s: int = 10
+    """单图 HTTP 抓取超时秒数"""
+
+    hermes_image_fetch_max_attempts: int = 2
+    """单图总尝试次数(1=不重试,2=一次重试,以此类推)"""
 
 
 plugin_config = get_plugin_config(Config)
