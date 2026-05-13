@@ -47,8 +47,54 @@ _DECISION_HINT = (
     "  reply_text (string, optional, required when should_reply=true)\n"
     "  topic_hint (string, optional)\n"
     "  should_exit_active (boolean, optional)\n"
-    "Output ONLY the JSON object, no preamble, no postscript, no markdown fences."
+    "Output ONLY the JSON object, no preamble, no postscript, no markdown fences.\n"
+    "All string values MUST be single-line; escape line breaks inside strings as \\n (no raw newlines)."
 )
+
+
+def _escape_raw_newlines_in_strings(s: str) -> str:
+    """把 JSON 字符串字面量内部的裸 \\n/\\r/\\t 转义掉,让 json5 能解析。
+
+    LLM 经常在 reply_text 里嵌真换行(段落分隔),JSON5 字符串不允许;首发 json5
+    抛 `Unexpected "\\n"` 后我们走这一遍状态机重试一次。状态:跟踪 " / ' 进出
+    string、`\\X` 整对透传(不参与 quote 计数),quoted 区里把裸控制字符替换。
+    """
+    out: List[str] = []
+    in_string = False
+    quote = ""
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if not in_string:
+            if c == '"' or c == "'":
+                in_string = True
+                quote = c
+            out.append(c)
+            i += 1
+            continue
+        # 在 string 内
+        if c == "\\" and i + 1 < n:
+            # 转义序列整对透传(含 \" / \' / \\ / \n 等),不参与 quote 计数
+            out.append(s[i : i + 2])
+            i += 2
+            continue
+        if c == quote:
+            in_string = False
+            quote = ""
+            out.append(c)
+            i += 1
+            continue
+        if c == "\n":
+            out.append("\\n")
+        elif c == "\r":
+            out.append("\\r")
+        elif c == "\t":
+            out.append("\\t")
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def _summarize_error_body(body: str) -> Tuple[str, Optional[int]]:
@@ -111,16 +157,24 @@ def extract_response_media(text: str) -> Tuple[str, List[str]]:
 
 
 def _try_parse_first_json_block(text: str) -> Optional[Dict[str, Any]]:
-    """从模型回复中提取首个 {...} 块并 JSON5 解析。失败返回 None,调用方记 parse_failed。"""
+    """从模型回复中提取首个 {...} 块并 JSON5 解析。失败返回 None,调用方记 parse_failed。
+
+    两段式回退:json5 首发失败 → 走 _escape_raw_newlines_in_strings 把字符串内
+    的裸控制字符转义后重试。两次都失败才返回 None。
+    """
     if not text:
         return None
     m = _FIRST_JSON_BLOCK.search(text)
     if not m:
         return None
+    candidate = m.group(0)
     try:
-        parsed = json5.loads(m.group(0))
+        parsed = json5.loads(candidate)
     except Exception:
-        return None
+        try:
+            parsed = json5.loads(_escape_raw_newlines_in_strings(candidate))
+        except Exception:
+            return None
     if not isinstance(parsed, dict):
         return None
     return parsed

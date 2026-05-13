@@ -342,3 +342,69 @@ def test_extract_decision_reply_text_should_reply_no_text():
 
     out = maybe_extract_decision_reply_text('{"should_reply": true}')
     assert out is None
+
+
+# --- raw-newline 容错回退(regression for "@user {raw JSON dumped to chat}" bug) ---
+
+
+@pytest.mark.asyncio
+async def test_path_b_parses_decision_with_raw_newlines_in_reply_text(monkeypatch: MonkeyPatch):
+    """LLM 在 reply_text 里嵌真换行是高频 emission 模式(段落分隔),JSON5 规范
+    不允许,首发 json5.loads 会抛 `Unexpected "\\n"`。状态机回退必须把整段
+    decision 还原出来,reply_text 里的换行原样保留(以 \\n 形式)。
+
+    Regression: 不修这个,reactive 路径会走 parse_failed 兜底,把整段 JSON
+    信封 @ 发给用户。
+    """
+    raw = (
+        "{\n"
+        '  "should_reply": true,\n'
+        '  "reply_text": "第一段内容。\n'
+        "\n"
+        '第二段内容。",\n'
+        '  "topic_hint": "demo",\n'
+        '  "should_exit_active": false\n'
+        "}"
+    )
+    body = {"choices": [{"message": {"content": raw}}]}
+    _patch_httpx(monkeypatch, _MockResponse(200, body))
+    client = HermesClient()
+    r = await client.chat(
+        text="hi",
+        session_key="s1",
+        user_id="u1",
+        group_id="g1",
+        adapter_name="ob11",
+        is_private=False,
+        mode="reactive",
+        expect_structured=True,
+        structured_tool_name="submit_decision",
+    )
+    assert r.parse_failed is False
+    assert r.structured is not None
+    assert r.structured["should_reply"] is True
+    # reply_text 里的换行被还原为字符串内容(state machine 转义后 json5 解码)
+    assert r.structured["reply_text"] == "第一段内容。\n\n第二段内容。"
+    assert r.structured["topic_hint"] == "demo"
+    assert r.structured["should_exit_active"] is False
+
+
+def test_parse_first_json_block_genuinely_malformed_still_fails():
+    """状态机只补换行,不补结构。真·缺右括号之类必须仍然 parse_failed。"""
+    from nonebot_plugin_hermes.core.hermes_client import _try_parse_first_json_block
+
+    # 缺右括号:regex 根本匹配不到平衡块 → None
+    assert _try_parse_first_json_block('{"should_reply": true, "reply_text": "x"') is None
+    # 字符串内带裸 \n 且 ALSO 缺右括号:状态机修了 \n 但 json5 仍然语法失败
+    assert _try_parse_first_json_block('{"should_reply": true, "reply_text": "a\nb"') is None
+
+
+def test_parse_first_json_block_preserves_embedded_quotes():
+    """状态机必须正确处理 \\" 转义,不能误把它当 quote 退出 string state
+    (否则会把后面的真换行漏掉转义)。"""
+    from nonebot_plugin_hermes.core.hermes_client import _try_parse_first_json_block
+
+    raw = '{"should_reply": true, "reply_text": "他说\\"你好\\"\n下一段"}'
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed["reply_text"] == '他说"你好"\n下一段'
