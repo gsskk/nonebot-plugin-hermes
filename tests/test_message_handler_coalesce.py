@@ -473,6 +473,186 @@ async def test_exception_in_turn_does_not_refire(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_post_reply_cooldown_skips_non_explicit_trigger(monkeypatch):
+    """B: bot 刚 mark_bot_replied 过、当前消息非显式触发 → 冷却内 chat 不被调。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 8)
+
+    now = 8_000_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+    _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now)
+
+    chat_mock = AsyncMock()
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_mock)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    # 冷却中(now+1000 < now+8000)、非显式触发的旁观消息 → skip
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u2",
+        group_id="g1",
+        text="随便聊聊",
+        image_urls=[],
+        is_explicit_trigger=False,
+        now_ms=now + 1000,
+    )
+
+    chat_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_post_reply_cooldown_bypassed_by_explicit_trigger(monkeypatch):
+    """B: 冷却内但消息是显式 @bot 触发 → 必须立刻进 chat,不能被冷却拦下。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 8)
+
+    now = 8_100_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+    _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now)
+
+    async def fake_chat(**kwargs):
+        return _make_chat_result(text="ok")
+
+    chat_mock = AsyncMock(side_effect=fake_chat)
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_mock)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u2",
+        group_id="g1",
+        text="@bot 再问个事",
+        image_urls=[],
+        is_explicit_trigger=True,  # 显式触发应绕过 B
+        now_ms=now + 1000,
+    )
+
+    chat_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_post_reply_cooldown_expires_after_window(monkeypatch):
+    """B: 冷却窗已过(elapsed >= cooldown_ms)、非显式触发 → 正常进 chat。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 8)
+
+    now = 8_200_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+    _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now)
+
+    async def fake_chat(**kwargs):
+        return _make_chat_result(text="ok")
+
+    chat_mock = AsyncMock(side_effect=fake_chat)
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_mock)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    # 冷却 8s 已过(now+9000 > now+8000)
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u2",
+        group_id="g1",
+        text="过了一会儿",
+        image_urls=[],
+        is_explicit_trigger=False,
+        now_ms=now + 9000,
+    )
+
+    chat_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_post_reply_cooldown_disabled_when_zero(monkeypatch):
+    """B: cooldown_sec=0 时冷却完全关闭,任何 mark 都不会拦截后续消息。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 0)
+
+    now = 8_300_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+    _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now)
+
+    async def fake_chat(**kwargs):
+        return _make_chat_result(text="ok")
+
+    chat_mock = AsyncMock(side_effect=fake_chat)
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_mock)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u2",
+        group_id="g1",
+        text="紧贴上一回",
+        image_urls=[],
+        is_explicit_trigger=False,
+        now_ms=now + 100,  # 100ms 就紧跟,但 cooldown=0 应不拦
+    )
+
+    chat_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_reactive_turn_marks_bot_replied_after_send(monkeypatch):
+    """B.2: 一发成功的 reactive 回复 send 后,ActiveSession.last_bot_reply_at 被写入。"""
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 8_400_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+    assert _mcp.active_sessions.get("ob11", "g1").last_bot_reply_at == 0
+
+    async def fake_chat(**kwargs):
+        return _make_chat_result(text="hi back")
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", AsyncMock(side_effect=fake_chat))
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="hi",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now,
+    )
+
+    assert _mcp.active_sessions.get("ob11", "g1").last_bot_reply_at == now
+
+
+@pytest.mark.asyncio
 async def test_refire_when_active_session_expired(monkeypatch):
     """重燃时 session 已过期 → _run_reactive_turn 返回 None,registry 干净 exit,不抛。"""
     from nonebot_plugin_hermes.handlers import message as handler_mod

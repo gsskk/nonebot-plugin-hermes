@@ -60,6 +60,18 @@ def _is_bot_at(uni_msg: alconna.UniMessage, bot_self_id: str) -> bool:
     return False
 
 
+def _msg_at_only_other_users(uni_msg: alconna.UniMessage, bot_self_id: str) -> bool:
+    """消息含 At 段、且所有 At target 都不是 bot 自身 → True。
+
+    用于 reactive 入口 C 层过滤(模式 1 修复):active 窗口内,若消息明确 @ 了
+    其他用户但**未点名 bot**,视作非本路径触发,只让 perception matcher 写 buffer,
+    不进 chat() 决策。无 At 段时返回 False(走原有路径)。
+    """
+    if not uni_msg.has(alconna.At):
+        return False
+    return not _is_bot_at(uni_msg, bot_self_id)
+
+
 async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_name: str) -> List[str]:
     """从 UniMessage 中抽出图片 URL 列表(可直接 HTTP GET 拿字节的那种)。
 
@@ -296,6 +308,15 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     )
 
     if not is_explicit_trigger and not in_active_window:
+        matcher.skip()
+
+    # C: 活跃窗口内,若消息只 @ 他人未点名 bot,视作非本路径触发,只让 perception
+    # 写 buffer,不进 chat() 决策。修「跨目标 @ 误抢」模式 1。
+    # 显式触发(at-bot)早已在上面计入 is_explicit_trigger,不会到这里被过滤。
+    if in_active_window and not is_explicit_trigger and _msg_at_only_other_users(uni_msg, str(bot.self_id)):
+        logger.debug(
+            f"[HERMES reactive] skip: msg @s only other users (adapter={adapter_name} group={group_id} user={user_id})"
+        )
         matcher.skip()
 
     # 显式触发:进入 / 续期活跃态(群聊场景)
@@ -549,9 +570,11 @@ async def _run_reactive_turn(
                 is_bot=True,
             )
         )
-        # 注:若 should_exit_active=True,session 已在上方 end(),touch 是安全 no-op
-        # (ActiveSessionManager.touch 文档:session 缺失则 no-op)。
+        # 注:若 should_exit_active=True,session 已在上方 end(),touch / mark_bot_replied
+        # 都是安全 no-op(两者文档统一:session 缺失则 no-op)。
         _mcp.active_sessions.touch(adapter_name, group_id, now_ms=now_ms)
+        # B.2: 记下「bot 刚回过」时间戳,供 _handle_reactive_path 入口的 cooldown 闸门判定
+        _mcp.active_sessions.mark_bot_replied(adapter_name, group_id, now_ms=now_ms)
 
     return result
 
@@ -664,6 +687,22 @@ async def _handle_reactive_path(
             f"(group={group_id} user={user_id}); buffered for next text trigger"
         )
         return
+
+    # B: post-reply cooldown — bot 刚在本群发出 reactive 回复 N 秒内,非显式触发的
+    # 新消息直接静默。压「我刚说完别人接话→我又凑一句」模式 2。
+    # 显式 @bot 触发不受影响(is_explicit_trigger=True 直接旁路)。
+    # 写在 inflight try_enter 之前,避免占用 slot 又立刻退出造成 pending 抖动。
+    cooldown_sec = plugin_config.hermes_reactive_post_reply_cooldown_sec
+    if in_active and not is_explicit_trigger and cooldown_sec > 0:
+        sess = _mcp.active_sessions.get_if_active(adapter_name, group_id, now_ms)
+        if sess is not None and sess.last_bot_reply_at:
+            elapsed_ms = now_ms - sess.last_bot_reply_at
+            if 0 <= elapsed_ms < cooldown_sec * 1000:
+                logger.debug(
+                    f"[HERMES reactive] skip: post-reply cooldown "
+                    f"(group={group_id} elapsed_ms={elapsed_ms} window_ms={cooldown_sec * 1000})"
+                )
+                return
 
     key = (adapter_name, f"group:{group_id}")
     current_buffered = BufferedMessage(

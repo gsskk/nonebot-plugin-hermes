@@ -59,6 +59,36 @@ def test_system_prompt_omits_topic_when_none():
     assert "topic_hint:" not in runtime_state
 
 
+def test_decision_protocol_includes_recent_bot_self_guard():
+    """decision_protocol 必须显式提示「上一条是你自己且无新指向你的内容 → false」,
+    用于压制 reactive 模式下的连发凑话(模式 2)。"""
+    sp = build_reactive_system_prompt(
+        adapter="ob11",
+        group_id="g1",
+        triggered_by="u42",
+        triggered_by_nickname=None,
+        topic_hint=None,
+    )
+    decision = sp.split("<decision_protocol>")[1]
+    # 显式提到「[bot] 在最近消息末尾」+「无新指向你的内容 → false」
+    assert "[bot]" in decision
+    assert "recent_messages" in decision
+
+
+def test_decision_protocol_includes_no_repeat_guard():
+    """decision_protocol 必须显式提示「已回过同一问题且无新疑问/反对 → false」,
+    用于压制 reactive 模式下的重复凑话。"""
+    sp = build_reactive_system_prompt(
+        adapter="ob11",
+        group_id="g1",
+        triggered_by="u42",
+        triggered_by_nickname=None,
+        topic_hint=None,
+    )
+    decision = sp.split("<decision_protocol>")[1]
+    assert "重复凑话" in decision or "已回复过" in decision or "重复回答" in decision
+
+
 def test_decision_protocol_uses_topic_hint_field_name():
     """字段名必须是 topic_hint(对齐 hermes_client _DECISION_HINT 与
     ActiveSessionManager.update_topic),不能是 topic_tag 等别名,否则模型

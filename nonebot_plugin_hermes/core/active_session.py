@@ -19,6 +19,10 @@ class ActiveSession:
     last_active_at: int  # ms
     expires_at: int  # ms
     topic_hint: Optional[str] = None
+    last_bot_reply_at: int = 0
+    """bot 最近一次在本群发出 reactive 回复的 ms 时间戳。0 = 本窗口期未回复过。
+    用作 handlers 的 post-reply cooldown 判定。再次 trigger() 时清零,避免跨窗口
+    残留状态把新一轮对话的第一条非显式消息直接 skip 掉。"""
 
 
 class ActiveSessionManager:
@@ -81,6 +85,16 @@ class ActiveSessionManager:
     def is_active(self, adapter: str, group_id: str, now_ms: int) -> bool:
         s = self._sessions.get((adapter, group_id))
         return s is not None and s.expires_at > now_ms
+
+    def mark_bot_replied(self, adapter: str, group_id: str, now_ms: int) -> None:
+        """记录 bot 在本群刚发出回复的时间戳;session 缺失则 no-op。
+
+        只写 last_bot_reply_at,不滑动 expires_at(滑动续期由 touch 负责)。
+        handlers 在 reactive 模式 send 成功后调用,供 post-reply cooldown 判定。
+        """
+        s = self._sessions.get((adapter, group_id))
+        if s is not None:
+            s.last_bot_reply_at = now_ms
 
     def update_topic(self, adapter: str, group_id: str, topic_hint: Optional[str]) -> None:
         """更新或清空 topic_hint。

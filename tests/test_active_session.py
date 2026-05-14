@@ -119,3 +119,44 @@ def test_update_topic_with_none_clears():
     assert mgr.get("ob11", "g1").topic_hint == "rust async"
     mgr.update_topic("ob11", "g1", None)
     assert mgr.get("ob11", "g1").topic_hint is None
+
+
+def test_last_bot_reply_at_default_zero():
+    """新建 session 时 last_bot_reply_at = 0(未回复过)。"""
+    mgr = ActiveSessionManager(default_ttl_sec=60)
+    s = mgr.trigger("ob11", "g1", "u1", now_ms=100_000)
+    assert s.last_bot_reply_at == 0
+
+
+def test_mark_bot_replied_updates_timestamp():
+    """mark_bot_replied 在已存在 session 上写入 now_ms。"""
+    mgr = ActiveSessionManager(default_ttl_sec=60)
+    mgr.trigger("ob11", "g1", "u1", now_ms=100_000)
+    mgr.mark_bot_replied("ob11", "g1", now_ms=105_000)
+    assert mgr.get("ob11", "g1").last_bot_reply_at == 105_000
+
+
+def test_mark_bot_replied_missing_session_is_noop():
+    """session 不存在时 mark_bot_replied 静默 no-op,与 update_topic 同款约定。"""
+    mgr = ActiveSessionManager(default_ttl_sec=60)
+    mgr.mark_bot_replied("ob11", "ghost", now_ms=1_000)  # 不抛
+    assert mgr.get("ob11", "ghost") is None
+
+
+def test_mark_bot_replied_does_not_extend_ttl():
+    """mark_bot_replied 只写时间戳,不滑动 expires_at(滑动续期是 touch 的事)。"""
+    mgr = ActiveSessionManager(default_ttl_sec=60)
+    mgr.trigger("ob11", "g1", "u1", now_ms=0)  # expires_at = 60_000
+    mgr.mark_bot_replied("ob11", "g1", now_ms=30_000)
+    assert mgr.get("ob11", "g1").expires_at == 60_000
+    assert mgr.is_active("ob11", "g1", now_ms=60_001) is False
+
+
+def test_re_trigger_resets_last_bot_reply_at():
+    """重新 trigger 一个 session 应该把 last_bot_reply_at 清零,旧的"刚回过"状态不应跨窗口。"""
+    mgr = ActiveSessionManager(default_ttl_sec=60)
+    mgr.trigger("ob11", "g1", "u1", now_ms=0)
+    mgr.mark_bot_replied("ob11", "g1", now_ms=30_000)
+    assert mgr.get("ob11", "g1").last_bot_reply_at == 30_000
+    mgr.trigger("ob11", "g1", "u2", now_ms=200_000)
+    assert mgr.get("ob11", "g1").last_bot_reply_at == 0

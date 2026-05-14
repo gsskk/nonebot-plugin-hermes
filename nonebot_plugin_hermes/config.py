@@ -92,6 +92,11 @@ class Config(BaseModel):
     hermes_active_sweep_interval_sec: int = 30
     """expire_active_sessions cron 频率(秒)"""
 
+    hermes_reactive_post_reply_cooldown_sec: int = 8
+    """reactive 模式下,bot 刚回复完群里 N 秒内,非显式 @ 触发的新消息直接静默。
+    用来阻断「我刚说完别人接话→我又凑一句」类型的过触发。
+    0 = 关闭(回退到旧行为)。显式 @bot 不受影响,任何时候都会立刻进入决策。"""
+
     # --- M1: 反向 MCP 通道 ---
     hermes_mcp_enabled: bool = False
     """是否启动内嵌 FastMCP server(False 时 Hermes 反向调用全失败,出向不影响)"""
