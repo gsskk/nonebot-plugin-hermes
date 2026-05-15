@@ -246,6 +246,10 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
         matcher.skip()
 
     if not check_isolation(event, target):
+        logger.debug(
+            f"[HERMES skip] isolation_denied adapter={get_adapter_name(target)} "
+            f"target={target.id} private={target.private} user={user_id}"
+        )
         matcher.skip()
 
     # 引用消息提取
@@ -273,7 +277,15 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     image_urls = await _extract_image_urls(uni_msg, bot, adapter_name)
     image_urls.extend(replied_image_urls)
 
+    logger.debug(
+        f"[HERMES recv] adapter={adapter_name} target={target.id} private={target.private} "
+        f"user={user_id} is_tome={event.is_tome()} self_id={bot.self_id!r} "
+        f"at_targets={[str(s.target) for s in uni_msg[alconna.At]] if uni_msg.has(alconna.At) else []} "
+        f"text_len={len(msg_text)} imgs={len(image_urls)}"
+    )
+
     if not msg_text and not image_urls:
+        logger.debug(f"[HERMES skip] empty adapter={adapter_name} user={user_id}")
         matcher.skip()
 
     group_id = None if target.private else target.id
@@ -308,6 +320,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     )
 
     if not is_explicit_trigger and not in_active_window:
+        logger.debug(f"[HERMES skip] not_active_not_explicit adapter={adapter_name} group={group_id} user={user_id}")
         matcher.skip()
 
     # C: 活跃窗口内,若消息只 @ 他人未点名 bot,视作非本路径触发,只让 perception
@@ -524,12 +537,13 @@ async def _run_reactive_turn(
             )
         return result
 
-    decision_summary = (
-        f"should_reply={result.structured.get('should_reply')} "
+    logger.info(
+        f"[HERMES reactive] decision adapter={adapter_name} group={group_id} user={user_id} "
+        f"explicit={is_explicit_trigger} should_reply={result.structured.get('should_reply')} "
         f"should_exit_active={result.structured.get('should_exit_active')} "
+        f"reply_text_len={len(str(result.structured.get('reply_text') or ''))} "
         f"topic_hint={result.structured.get('topic_hint')!r}"
     )
-    logger.info(f"[HERMES reactive] decision (group={group_id}): {decision_summary}")
 
     decision = result.structured
     if decision.get("topic_hint"):
@@ -553,6 +567,10 @@ async def _run_reactive_turn(
         text=reply_text,
         media_urls=[],
         at_user_id=at_user,
+    )
+    logger.debug(
+        f"[HERMES reactive] sent adapter={adapter_name} group={group_id} "
+        f"ok={sent} text_len={len(reply_text)} at_user={at_user}"
     )
 
     # 把 bot 自己的回复回写 MessageBuffer。复用入参 now_ms,避免 send 耗时
@@ -695,6 +713,12 @@ async def _handle_reactive_path(
     cooldown_sec = plugin_config.hermes_reactive_post_reply_cooldown_sec
     if in_active and not is_explicit_trigger and cooldown_sec > 0:
         sess = _mcp.active_sessions.get_if_active(adapter_name, group_id, now_ms)
+        logger.debug(
+            f"[HERMES reactive] cooldown_check group={group_id} user={user_id} "
+            f"sess_exists={sess is not None} "
+            f"last_bot_reply_at={sess.last_bot_reply_at if sess else 'n/a'} "
+            f"now_ms={now_ms} window_ms={cooldown_sec * 1000}"
+        )
         if sess is not None and sess.last_bot_reply_at:
             elapsed_ms = now_ms - sess.last_bot_reply_at
             if 0 <= elapsed_ms < cooldown_sec * 1000:
