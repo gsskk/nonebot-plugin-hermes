@@ -629,7 +629,13 @@ async def _run_reactive_turn(
         _mcp.active_sessions.end(adapter_name, group_id)
 
     if not decision.get("should_reply"):
-        logger.debug(f"[HERMES reactive] should_reply=false (group={group_id})")
+        # 显式触发 + LLM 选择沉默是「看起来该回但没回」最常见的来源,
+        # 提到 info 让群主能扫日志直接看见「不是插件 bug,是 LLM 自己判定的」
+        logger.info(
+            f"[HERMES reactive] silent: LLM decided should_reply=false "
+            f"(group={group_id} user={user_id} explicit={is_explicit_trigger} "
+            f"topic_hint={result.structured.get('topic_hint')!r})"
+        )
         return result
 
     reply_text = str(decision.get("reply_text") or "").strip()
