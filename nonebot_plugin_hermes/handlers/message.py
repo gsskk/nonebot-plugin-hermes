@@ -72,6 +72,78 @@ def _msg_at_only_other_users(uni_msg: alconna.UniMessage, bot_self_id: str) -> b
     return not _is_bot_at(uni_msg, bot_self_id)
 
 
+# 单条昵称在 prompt 里的最大字符数。
+# 中文 12 字 / 英文 24 字符,覆盖正常昵称;超长名片(常被用来塞动作短语/
+# 系统消息伪装)会被截断成「前缀…」,降低被 LLM 当系统信号读的风险。
+_MAX_NICKNAME_LEN = 24
+
+
+def _sanitize_nickname(value) -> Optional[str]:
+    """清洗外部输入昵称,失败返 None。
+
+    防御目标(顺手卫生 + 阻挡 [user=…] 定界符伪装):
+    1. 控制字符 / 换行 / 零宽 → 全删,防止把多行片段塞进 prompt
+    2. `]` 全角化,防止把 [user=…]: 标签提前闭合伪装成系统标签
+    3. 长度 cap = _MAX_NICKNAME_LEN,超长截断 + 加省略号
+    """
+    if value is None:
+        return None
+    s = str(value)
+    s = "".join(ch for ch in s if ch.isprintable())  # Cc/Cf/Cs 全过滤,ASCII space 保留
+    s = s.replace("]", "］")  # 全角 `]`,与半角 `]` 视觉相近不破坏外观,但不闭合 [user=…] 标签
+    s = s.strip()
+    if not s:
+        return None
+    if len(s) > _MAX_NICKNAME_LEN:
+        s = s[:_MAX_NICKNAME_LEN] + "…"
+    return s
+
+
+def _extract_sender_nickname(event: Event, adapter_name: str) -> Optional[str]:
+    """从 event 抽真实昵称(群名片优先),失败回 None。所有命中字段都过 _sanitize_nickname。
+
+    保持 cross-adapter,不 import adapter-specific 类型,全靠 getattr 链——
+    各 adapter event 形状不一致,Python 重命名/缺失字段都吞掉。
+
+    覆盖的形状:
+    - OneBot v11/v12: event.sender.card(群名片) → event.sender.nickname
+    - QQ Official / Kook 等 .author: event.author.{global_name,nickname,username,name}
+    - Discord: event.member.nick(server 名片) → 同上 author 链兜底
+    - Telegram: event.from_.first_name + last_name → username
+    """
+    sender = getattr(event, "sender", None)
+    if sender is not None:
+        n = _sanitize_nickname(getattr(sender, "card", None)) or _sanitize_nickname(getattr(sender, "nickname", None))
+        if n:
+            return n
+
+    member = getattr(event, "member", None)
+    if member is not None:
+        n = _sanitize_nickname(getattr(member, "nick", None)) or _sanitize_nickname(getattr(member, "nickname", None))
+        if n:
+            return n
+
+    author = getattr(event, "author", None)
+    if author is not None:
+        for attr in ("global_name", "nickname", "username", "name"):
+            n = _sanitize_nickname(getattr(author, attr, None))
+            if n:
+                return n
+
+    from_user = getattr(event, "from_", None) or getattr(event, "from_user", None)
+    if from_user is not None:
+        first = _sanitize_nickname(getattr(from_user, "first_name", None))
+        last = _sanitize_nickname(getattr(from_user, "last_name", None))
+        if first or last:
+            # 合并后再过一次 sanitize,确保拼接结果也受长度上限约束
+            return _sanitize_nickname(" ".join(p for p in (first, last) if p))
+        n = _sanitize_nickname(getattr(from_user, "username", None))
+        if n:
+            return n
+
+    return None
+
+
 async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_name: str) -> List[str]:
     """从 UniMessage 中抽出图片 URL 列表(可直接 HTTP GET 拿字节的那种)。
 
@@ -180,6 +252,7 @@ async def handle_perception(bot: Bot, event: Event):
 
     msg_text = uni_msg.extract_plain_text().strip()
     image_urls = await _extract_image_urls(uni_msg, bot, adapter_name)
+    nickname = _extract_sender_nickname(event, adapter_name) or user_id
 
     # 文本太长截断
     max_len = plugin_config.hermes_perception_text_length
@@ -204,7 +277,7 @@ async def handle_perception(bot: Bot, event: Event):
                 adapter=adapter_name,
                 group_id=group_id,
                 user_id=user_id,
-                nickname=user_id,
+                nickname=nickname,
                 content=msg_text,
                 image_urls=image_urls,
                 is_bot=False,
@@ -276,10 +349,11 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
 
     image_urls = await _extract_image_urls(uni_msg, bot, adapter_name)
     image_urls.extend(replied_image_urls)
+    nickname = _extract_sender_nickname(event, adapter_name) or user_id
 
     logger.debug(
         f"[HERMES recv] adapter={adapter_name} target={target.id} private={target.private} "
-        f"user={user_id} is_tome={event.is_tome()} self_id={bot.self_id!r} "
+        f"user={user_id} nick={nickname!r} is_tome={event.is_tome()} self_id={bot.self_id!r} "
         f"at_targets={[str(s.target) for s in uni_msg[alconna.At]] if uni_msg.has(alconna.At) else []} "
         f"text_len={len(msg_text)} imgs={len(image_urls)}"
     )
@@ -352,6 +426,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             target=target,
             adapter_name=adapter_name,
             user_id=user_id,
+            nickname=nickname,
             group_id=group_id,
             text=msg_text,
             image_urls=image_urls,
@@ -366,6 +441,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
         target=target,
         adapter_name=adapter_name,
         user_id=user_id,
+        nickname=nickname,
         group_id=group_id,
         text=msg_text,
         image_urls=image_urls,
@@ -461,6 +537,7 @@ async def _run_reactive_turn(
     image_urls: List[str],
     is_explicit_trigger: bool,
     now_ms: int,
+    nickname: Optional[str] = None,
 ):
     """跑一发 reactive turn,返回 hermes_client.chat() 的 ChatResult,或 None 表示提前 return。
 
@@ -491,7 +568,7 @@ async def _run_reactive_turn(
     user_content = build_reactive_user_content(
         recent_messages=recent,
         current_user_id=user_id,
-        current_nickname=user_id,
+        current_nickname=nickname or user_id,
         current_text=text or "[图片]",
         current_image_urls=image_urls,
     )
@@ -608,6 +685,7 @@ async def _handle_passive_path(
     image_urls: List[str],
     is_private: bool,
     now_ms: int,
+    nickname: Optional[str] = None,
 ):
     """Passive 外壳:inflight 占位 → _run_passive_turn → 合并重燃。
 
@@ -624,7 +702,7 @@ async def _handle_passive_path(
         adapter=adapter_name,
         group_id=group_id,
         user_id=user_id,
-        nickname=user_id,
+        nickname=nickname or user_id,
         content=text,
         image_urls=list(image_urls),
         reply_to_ts=None,
@@ -685,6 +763,7 @@ async def _handle_reactive_path(
     image_urls: List[str],
     is_explicit_trigger: bool,
     now_ms: int,
+    nickname: Optional[str] = None,
 ):
     """Reactive 外壳:inflight 占位 → 调 _run_reactive_turn → finally 合并重燃。
 
@@ -734,7 +813,7 @@ async def _handle_reactive_path(
         adapter=adapter_name,
         group_id=group_id,
         user_id=user_id,
-        nickname=user_id,
+        nickname=nickname or user_id,
         content=text,
         image_urls=list(image_urls),
         reply_to_ts=None,
@@ -751,6 +830,7 @@ async def _handle_reactive_path(
             target=target,
             adapter_name=adapter_name,
             user_id=user_id,
+            nickname=nickname,
             group_id=group_id,
             text=text,
             image_urls=image_urls,
@@ -820,6 +900,7 @@ async def _refire(
                 target=target,
                 adapter_name=adapter_name,
                 user_id=trigger_msg.user_id,
+                nickname=trigger_msg.nickname,
                 group_id=group_id,
                 text=trigger_msg.content,
                 image_urls=list(trigger_msg.image_urls),

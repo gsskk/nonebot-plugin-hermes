@@ -116,10 +116,10 @@ def test_user_content_text_only_when_no_images():
     )
     assert isinstance(content, str)
     assert "<recent_messages>" in content
-    assert "alice: hi" in content
-    assert "bob: hello" in content
+    assert "[user=alice]: hi" in content
+    assert "[user=bob]: hello" in content
     assert "<current_message>" in content
-    assert "Charlie: how is it going?" in content
+    assert "[user=Charlie]: how is it going?" in content
 
 
 def test_user_content_multimodal_when_images_present():
@@ -139,7 +139,7 @@ def test_user_content_multimodal_when_images_present():
     assert content[0]["type"] == "text"
     assert "<recent_messages>" in content[0]["text"]
     assert "<current_message>" in content[0]["text"]
-    assert "Charlie: see this" in content[0]["text"]
+    assert "[user=Charlie]: see this" in content[0]["text"]
     # 当前图必须是最后一个 image_url(LLM 才知道用户问的是它)
     last_img = next((p for p in reversed(content) if p.get("type") == "image_url"), None)
     assert last_img is not None
@@ -156,7 +156,7 @@ def test_user_content_marks_bot_messages():
         current_image_urls=[],
     )
     assert isinstance(content, str)
-    assert "[bot] bot: hi alice" in content
+    assert "[bot] [user=bot]: hi alice" in content
 
 
 def test_user_content_empty_history_still_produces_block():
@@ -171,7 +171,7 @@ def test_user_content_empty_history_still_produces_block():
     )
     assert "<recent_messages>" in content
     assert "</recent_messages>" in content
-    assert "Alice: hi" in content
+    assert "[user=Alice]: hi" in content
 
 
 def test_passive_prompt_group_with_history_appends_recent_messages_block():
@@ -193,8 +193,8 @@ def test_passive_prompt_group_with_history_appends_recent_messages_block():
     assert "<recent_messages>" in sp
     assert "</recent_messages>" in sp
     # 旧→新 顺序:alice 行必须出现在 bob 行之前
-    alice_idx = sp.index("alice: hello")
-    bob_idx = sp.index("bob: hi all")
+    alice_idx = sp.index("[user=alice]: hello")
+    bob_idx = sp.index("[user=bob]: hi all")
     assert alice_idx < bob_idx
 
 
@@ -207,7 +207,7 @@ def test_passive_prompt_marks_bot_messages():
         group_id="g1",
         recent_messages=msgs,
     )
-    assert "[bot] bot: hi alice" in sp
+    assert "[bot] [user=bot]: hi alice" in sp
 
 
 def test_passive_prompt_empty_history_omits_block():
@@ -250,7 +250,7 @@ def test_user_content_empty_current_text_with_image_is_valid():
     )
     assert isinstance(content, list)
     assert content[0]["type"] == "text"
-    assert "Alice:" in content[0]["text"]  # speaker 仍存在,内容空
+    assert "[user=Alice]:" in content[0]["text"]  # speaker 仍存在,内容空
     assert content[-1]["type"] == "image_url"
     assert content[-1]["image_url"]["url"] == "http://x/photo.jpg"
 
@@ -286,12 +286,12 @@ def test_reactive_user_content_prefixes_history_lines_with_msg_id():
         current_image_urls=[],
     )
     assert isinstance(content, str)
-    assert "[m:1234] 小丑鱼: [图片]" in content
-    assert "[m:1235] 龙: 哈哈" in content
+    assert "[m:1234] [user=小丑鱼]: [图片]" in content
+    assert "[m:1235] [user=龙]: 哈哈" in content
     # current_message 块内不带 [m:N]
     current_block = content.split("<current_message>", 1)[1].split("</current_message>", 1)[0]
     assert "[m:" not in current_block
-    assert "ph: 评价下上图" in current_block
+    assert "[user=ph]: 评价下上图" in current_block
 
 
 def test_reactive_user_content_bot_messages_keep_bot_marker_and_get_msg_id():
@@ -303,7 +303,7 @@ def test_reactive_user_content_bot_messages_keep_bot_marker_and_get_msg_id():
         current_text="hi",
         current_image_urls=[],
     )
-    assert "[m:99] [bot] Bot: 收到" in content
+    assert "[m:99] [bot] [user=Bot]: 收到" in content
 
 
 def test_reactive_user_content_omits_prefix_when_id_is_none():
@@ -317,7 +317,7 @@ def test_reactive_user_content_omits_prefix_when_id_is_none():
         current_image_urls=[],
     )
     assert "[m:None]" not in content
-    assert "alice: hi" in content
+    assert "[user=alice]: hi" in content
 
 
 def test_passive_system_prompt_prefixes_history_lines_with_msg_id():
@@ -329,7 +329,7 @@ def test_passive_system_prompt_prefixes_history_lines_with_msg_id():
         group_id="g1",
         recent_messages=msgs,
     )
-    assert "[m:42] A: hi" in sp
+    assert "[m:42] [user=A]: hi" in sp
 
 
 def test_passive_system_prompt_omits_prefix_when_id_is_none():
@@ -342,4 +342,4 @@ def test_passive_system_prompt_omits_prefix_when_id_is_none():
         recent_messages=msgs,
     )
     assert "[m:None]" not in sp
-    assert "alice: hi" in sp
+    assert "[user=alice]: hi" in sp
