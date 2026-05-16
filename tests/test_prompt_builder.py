@@ -4,10 +4,28 @@ from __future__ import annotations
 
 from nonebot_plugin_hermes.core.message_buffer import BufferedMessage
 from nonebot_plugin_hermes.core.prompt_builder import (
+    _format_speaker_tag,
     build_passive_system_prompt,
     build_reactive_system_prompt,
     build_reactive_user_content,
 )
+
+
+def test_format_speaker_tag_real_nickname_includes_id():
+    """昵称与 user_id 不同 → 同时出 id=,LLM 可按 id 匹配 SOUL.md 身份。"""
+    assert _format_speaker_tag("肯尼", "u-test-1") == "[user=肯尼 id=u-test-1]"
+
+
+def test_format_speaker_tag_nickname_equals_user_id_omits_id():
+    """昵称就是裸 user_id(没抽到真实 nickname)→ 省 id= 避免重复。"""
+    assert _format_speaker_tag("12345", "12345") == "[user=12345]"
+
+
+def test_format_speaker_tag_none_nickname_uses_user_id_only():
+    """nickname=None / 空串 → 退回 [user=ID],无 id= 字段。"""
+    assert _format_speaker_tag(None, "12345") == "[user=12345]"
+    assert _format_speaker_tag("", "12345") == "[user=12345]"
+    assert _format_speaker_tag("   ", "12345") == "[user=12345]"
 
 
 def _msg(ts, sender="alice", content="hello", imgs=None, is_bot=False):
@@ -119,7 +137,7 @@ def test_user_content_text_only_when_no_images():
     assert "[user=alice]: hi" in content
     assert "[user=bob]: hello" in content
     assert "<current_message>" in content
-    assert "[user=Charlie]: how is it going?" in content
+    assert "[user=Charlie id=charlie]: how is it going?" in content
 
 
 def test_user_content_multimodal_when_images_present():
@@ -139,7 +157,7 @@ def test_user_content_multimodal_when_images_present():
     assert content[0]["type"] == "text"
     assert "<recent_messages>" in content[0]["text"]
     assert "<current_message>" in content[0]["text"]
-    assert "[user=Charlie]: see this" in content[0]["text"]
+    assert "[user=Charlie id=charlie]: see this" in content[0]["text"]
     # 当前图必须是最后一个 image_url(LLM 才知道用户问的是它)
     last_img = next((p for p in reversed(content) if p.get("type") == "image_url"), None)
     assert last_img is not None
@@ -171,7 +189,7 @@ def test_user_content_empty_history_still_produces_block():
     )
     assert "<recent_messages>" in content
     assert "</recent_messages>" in content
-    assert "[user=Alice]: hi" in content
+    assert "[user=Alice id=alice]: hi" in content
 
 
 def test_passive_prompt_group_with_history_appends_recent_messages_block():
@@ -250,7 +268,7 @@ def test_user_content_empty_current_text_with_image_is_valid():
     )
     assert isinstance(content, list)
     assert content[0]["type"] == "text"
-    assert "[user=Alice]:" in content[0]["text"]  # speaker 仍存在,内容空
+    assert "[user=Alice id=alice]:" in content[0]["text"]  # speaker 仍存在,内容空
     assert content[-1]["type"] == "image_url"
     assert content[-1]["image_url"]["url"] == "http://x/photo.jpg"
 
@@ -330,6 +348,60 @@ def test_passive_system_prompt_prefixes_history_lines_with_msg_id():
         recent_messages=msgs,
     )
     assert "[m:42] [user=A]: hi" in sp
+
+
+def test_reactive_user_content_history_carries_user_id_when_nickname_differs():
+    """历史行带真实昵称时,标签里要同时给出 id=,这样 LLM 能按 id 匹配 SOUL.md
+    的稳定身份信息(主人/白名单/角色设定等),不被改昵称/整活名片绕晕。"""
+    msgs = [
+        BufferedMessage(
+            ts=100,
+            adapter="ob11",
+            group_id="g1",
+            user_id="u-test-1",
+            nickname="肯尼",
+            content="hi",
+            image_urls=[],
+            reply_to_ts=None,
+            is_bot=False,
+            id=42,
+        )
+    ]
+    content = build_reactive_user_content(
+        recent_messages=msgs,
+        current_user_id="u-test-1",
+        current_nickname="肯尼",
+        current_text="还在吗",
+        current_image_urls=[],
+    )
+    assert isinstance(content, str)
+    assert "[m:42] [user=肯尼 id=u-test-1]: hi" in content
+    assert "[user=肯尼 id=u-test-1]: 还在吗" in content
+
+
+def test_passive_system_prompt_history_carries_user_id_when_nickname_differs():
+    msgs = [
+        BufferedMessage(
+            ts=100,
+            adapter="ob11",
+            group_id="g1",
+            user_id="u-test-1",
+            nickname="肯尼",
+            content="hi",
+            image_urls=[],
+            reply_to_ts=None,
+            is_bot=False,
+            id=42,
+        )
+    ]
+    sp = build_passive_system_prompt(
+        adapter="ob11",
+        is_private=False,
+        user_id="u2",
+        group_id="g1",
+        recent_messages=msgs,
+    )
+    assert "[m:42] [user=肯尼 id=u-test-1]: hi" in sp
 
 
 def test_passive_system_prompt_omits_prefix_when_id_is_none():
