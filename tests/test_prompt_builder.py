@@ -1,4 +1,14 @@
-"""prompt_builder 单元测试。"""
+"""prompt_builder 单元测试。
+
+约定(0.2.x 起):
+- reactive system prompt 是纯 decision_protocol(byte-stable);runtime_state
+  整体放在 user content 顶端。
+- passive system prompt 是纯 Message Context;recent_messages 整体放在
+  user content。
+
+system 端字节稳定是为 LLM 前缀缓存让路的核心原则——所有 per-turn 变化字段
+必须在 user 这一侧出现,否则缓存就在 system 出现 volatile 字节那一刻断掉。
+"""
 
 from __future__ import annotations
 
@@ -6,9 +16,13 @@ from nonebot_plugin_hermes.core.message_buffer import BufferedMessage
 from nonebot_plugin_hermes.core.prompt_builder import (
     _format_speaker_tag,
     build_passive_system_prompt,
+    build_passive_user_content,
     build_reactive_system_prompt,
     build_reactive_user_content,
 )
+
+
+# --- _format_speaker_tag ---
 
 
 def test_format_speaker_tag_real_nickname_includes_id():
@@ -28,6 +42,9 @@ def test_format_speaker_tag_none_nickname_uses_user_id_only():
     assert _format_speaker_tag("   ", "12345") == "[user=12345]"
 
 
+# --- helpers ---
+
+
 def _msg(ts, sender="alice", content="hello", imgs=None, is_bot=False):
     return BufferedMessage(
         ts=ts,
@@ -40,240 +57,6 @@ def _msg(ts, sender="alice", content="hello", imgs=None, is_bot=False):
         reply_to_ts=None,
         is_bot=is_bot,
     )
-
-
-def test_system_prompt_includes_runtime_state_and_decision_protocol():
-    sp = build_reactive_system_prompt(
-        adapter="ob11",
-        group_id="g1",
-        triggered_by="u42",
-        triggered_by_nickname="老张",
-        topic_hint="Rust async runtime",
-    )
-    assert "<runtime_state>" in sp
-    assert "adapter: ob11" in sp
-    assert "group_id: g1" in sp
-    assert "triggered_by: u42 (老张)" in sp
-    assert "Rust async runtime" in sp
-    assert "<decision_protocol>" in sp
-    assert "submit_decision" in sp
-
-
-def test_system_prompt_omits_topic_when_none():
-    """topic_hint=None 时 runtime_state 不出现 topic_hint 行。
-
-    注:本测试从 spec 故意偏离。spec 原 assertion `"topic_hint:" not in sp`
-    会误伤 decision_protocol 里 'topic_hint (string)' 这条字段说明
-    (模型必须知道字段名,不能删)。正确不变量是:topic_hint 不应出现在
-    runtime_state 段。原 spec 写得过宽,此处缩到正确范围。"""
-    sp = build_reactive_system_prompt(
-        adapter="ob11",
-        group_id="g1",
-        triggered_by="u42",
-        triggered_by_nickname=None,
-        topic_hint=None,
-    )
-    runtime_state = sp.split("</runtime_state>")[0]
-    assert "topic_hint:" not in runtime_state
-
-
-def test_decision_protocol_includes_recent_bot_self_guard():
-    """decision_protocol 必须显式提示「上一条是你自己且无新指向你的内容 → false」,
-    用于压制 reactive 模式下的连发凑话(模式 2)。"""
-    sp = build_reactive_system_prompt(
-        adapter="ob11",
-        group_id="g1",
-        triggered_by="u42",
-        triggered_by_nickname=None,
-        topic_hint=None,
-    )
-    decision = sp.split("<decision_protocol>")[1]
-    # 显式提到「[bot] 在最近消息末尾」+「无新指向你的内容 → false」
-    assert "[bot]" in decision
-    assert "recent_messages" in decision
-
-
-def test_decision_protocol_includes_no_repeat_guard():
-    """decision_protocol 必须显式提示「已回过同一问题且无新疑问/反对 → false」,
-    用于压制 reactive 模式下的重复凑话。"""
-    sp = build_reactive_system_prompt(
-        adapter="ob11",
-        group_id="g1",
-        triggered_by="u42",
-        triggered_by_nickname=None,
-        topic_hint=None,
-    )
-    decision = sp.split("<decision_protocol>")[1]
-    assert "重复凑话" in decision or "已回复过" in decision or "重复回答" in decision
-
-
-def test_decision_protocol_uses_topic_hint_field_name():
-    """字段名必须是 topic_hint(对齐 hermes_client _DECISION_HINT 与
-    ActiveSessionManager.update_topic),不能是 topic_tag 等别名,否则模型
-    输出哪个字段都成,parse 出来 active session 拿不到 hint。"""
-    sp = build_reactive_system_prompt(
-        adapter="ob11",
-        group_id="g1",
-        triggered_by="u42",
-        triggered_by_nickname=None,
-        topic_hint=None,
-    )
-    decision = sp.split("<decision_protocol>")[1]
-    assert "topic_hint" in decision
-    assert "topic_tag" not in decision
-
-
-def test_user_content_text_only_when_no_images():
-    msgs = [_msg(100, "alice", "hi"), _msg(200, "bob", "hello")]
-    content = build_reactive_user_content(
-        recent_messages=msgs,
-        current_user_id="charlie",
-        current_nickname="Charlie",
-        current_text="how is it going?",
-        current_image_urls=[],
-    )
-    assert isinstance(content, str)
-    assert "<recent_messages>" in content
-    assert "[user=alice]: hi" in content
-    assert "[user=bob]: hello" in content
-    assert "<current_message>" in content
-    assert "[user=Charlie id=charlie]: how is it going?" in content
-
-
-def test_user_content_multimodal_when_images_present():
-    msgs = [_msg(100, "alice", "hi", imgs=["http://x/a.png"])]
-    content = build_reactive_user_content(
-        recent_messages=msgs,
-        current_user_id="charlie",
-        current_nickname="Charlie",
-        current_text="see this",
-        current_image_urls=["http://y/b.png"],
-    )
-    assert isinstance(content, list)
-    types = [p.get("type") for p in content]
-    assert "text" in types
-    assert "image_url" in types
-    # 第一个 part 必须是 text,且包含 history + current_message 两个块
-    assert content[0]["type"] == "text"
-    assert "<recent_messages>" in content[0]["text"]
-    assert "<current_message>" in content[0]["text"]
-    assert "[user=Charlie id=charlie]: see this" in content[0]["text"]
-    # 当前图必须是最后一个 image_url(LLM 才知道用户问的是它)
-    last_img = next((p for p in reversed(content) if p.get("type") == "image_url"), None)
-    assert last_img is not None
-    assert last_img["image_url"]["url"] == "http://y/b.png"
-
-
-def test_user_content_marks_bot_messages():
-    msgs = [_msg(100, "alice", "hi"), _msg(200, "bot", "hi alice", is_bot=True)]
-    content = build_reactive_user_content(
-        recent_messages=msgs,
-        current_user_id="charlie",
-        current_nickname="Charlie",
-        current_text="?",
-        current_image_urls=[],
-    )
-    assert isinstance(content, str)
-    assert "[bot] [user=bot]: hi alice" in content
-
-
-def test_user_content_empty_history_still_produces_block():
-    """recent_messages=[] 时 <recent_messages> 块仍存在(空但格式齐全),
-    避免下游 prompt 解析(如未来 prompt cache key 计算)误判。"""
-    content = build_reactive_user_content(
-        recent_messages=[],
-        current_user_id="alice",
-        current_nickname="Alice",
-        current_text="hi",
-        current_image_urls=[],
-    )
-    assert "<recent_messages>" in content
-    assert "</recent_messages>" in content
-    assert "[user=Alice id=alice]: hi" in content
-
-
-def test_passive_prompt_group_with_history_appends_recent_messages_block():
-    """群聊 + 有 buffer 历史:Message Context 后追加 <recent_messages> 块,
-    历史按旧→新顺序;bot 自己的回复带 [bot] 前缀。这是 0.2 补回 0.1.6
-    群聊旁观历史注入的核心场景。"""
-    msgs = [_msg(200, "bob", "hi all"), _msg(100, "alice", "hello")]  # 新→旧 入参
-    sp = build_passive_system_prompt(
-        adapter="ob11",
-        is_private=False,
-        user_id="charlie",
-        group_id="g1",
-        recent_messages=msgs,
-    )
-    assert "Platform: ob11" in sp
-    assert "Chat Type: Group" in sp
-    assert "User ID: charlie" in sp
-    assert "Group ID: g1" in sp
-    assert "<recent_messages>" in sp
-    assert "</recent_messages>" in sp
-    # 旧→新 顺序:alice 行必须出现在 bob 行之前
-    alice_idx = sp.index("[user=alice]: hello")
-    bob_idx = sp.index("[user=bob]: hi all")
-    assert alice_idx < bob_idx
-
-
-def test_passive_prompt_marks_bot_messages():
-    msgs = [_msg(100, "alice", "hi"), _msg(200, "bot", "hi alice", is_bot=True)]
-    sp = build_passive_system_prompt(
-        adapter="ob11",
-        is_private=False,
-        user_id="charlie",
-        group_id="g1",
-        recent_messages=msgs,
-    )
-    assert "[bot] [user=bot]: hi alice" in sp
-
-
-def test_passive_prompt_empty_history_omits_block():
-    """recent_messages=[] 时不追加 <recent_messages> 块——passive 路径下
-    塞个空块只会让 prompt 变长却没信息;与 reactive 的「保持格式齐全」诉求不同。"""
-    sp = build_passive_system_prompt(
-        adapter="ob11",
-        is_private=False,
-        user_id="charlie",
-        group_id="g1",
-        recent_messages=[],
-    )
-    assert "<recent_messages>" not in sp
-    assert "Group ID: g1" in sp
-
-
-def test_passive_prompt_private_omits_group_id():
-    """私聊场景调用方一般不会传 history,但若误传也别在 prompt 里漏出
-    Group ID 字段——和 hermes_client 默认拼装行为对齐。"""
-    sp = build_passive_system_prompt(
-        adapter="ob11",
-        is_private=True,
-        user_id="charlie",
-        group_id=None,
-        recent_messages=[],
-    )
-    assert "Chat Type: Private" in sp
-    assert "Group ID" not in sp
-
-
-def test_user_content_empty_current_text_with_image_is_valid():
-    """图片消息无文字描述(用户只发图)是常见场景,空 current_text + 图片应正确产出
-    多模态 parts。"""
-    content = build_reactive_user_content(
-        recent_messages=[],
-        current_user_id="alice",
-        current_nickname="Alice",
-        current_text="",
-        current_image_urls=["http://x/photo.jpg"],
-    )
-    assert isinstance(content, list)
-    assert content[0]["type"] == "text"
-    assert "[user=Alice id=alice]:" in content[0]["text"]  # speaker 仍存在,内容空
-    assert content[-1]["type"] == "image_url"
-    assert content[-1]["image_url"]["url"] == "http://x/photo.jpg"
-
-
-# --- [m:<id>] 前缀:跨 turn 稳定标识符约定 ---
 
 
 def _msg_with_id(ts, sender, content, msg_id, is_bot=False, imgs=None):
@@ -290,6 +73,205 @@ def _msg_with_id(ts, sender, content, msg_id, is_bot=False, imgs=None):
     )
 
 
+def _reactive_user_kwargs(**overrides):
+    """build_reactive_user_content 的默认入参,便于按需 override。"""
+    defaults = dict(
+        adapter="ob11",
+        group_id="g1",
+        triggered_by="u42",
+        triggered_by_nickname=None,
+        topic_hint=None,
+        recent_messages=[],
+        current_user_id="charlie",
+        current_nickname="Charlie",
+        current_text="hello",
+        current_image_urls=[],
+    )
+    defaults.update(overrides)
+    return defaults
+
+
+# --- reactive system prompt(纯 decision_protocol,byte-stable)---
+
+
+def test_reactive_system_prompt_is_only_decision_protocol():
+    """runtime_state 已搬到 user content,system 不应再含任何 per-turn 字段。"""
+    sp = build_reactive_system_prompt()
+    assert "<decision_protocol>" in sp
+    assert "submit_decision" in sp
+    assert "<runtime_state>" not in sp
+    assert "adapter:" not in sp
+    assert "group_id:" not in sp
+    assert "triggered_by:" not in sp
+
+
+def test_reactive_system_prompt_is_byte_stable_across_calls():
+    """system 无任何动态字段,两次调用结果必须字节完全相同——前缀缓存的前提。"""
+    assert build_reactive_system_prompt() == build_reactive_system_prompt()
+
+
+def test_decision_protocol_includes_recent_bot_self_guard():
+    """decision_protocol 必须显式提示「上一条是你自己且无新指向你的内容 → false」,
+    用于压制 reactive 模式下的连发凑话(模式 2)。"""
+    sp = build_reactive_system_prompt()
+    decision = sp.split("<decision_protocol>")[1]
+    assert "[bot]" in decision
+    assert "recent_messages" in decision
+
+
+def test_decision_protocol_includes_no_repeat_guard():
+    """decision_protocol 必须显式提示「已回过同一问题且无新疑问/反对 → false」,
+    用于压制 reactive 模式下的重复凑话。"""
+    sp = build_reactive_system_prompt()
+    decision = sp.split("<decision_protocol>")[1]
+    assert "重复凑话" in decision or "已回复过" in decision or "重复回答" in decision
+
+
+def test_decision_protocol_uses_topic_hint_field_name():
+    """字段名必须是 topic_hint(对齐 hermes_client _DECISION_HINT 与
+    ActiveSessionManager.update_topic),不能是 topic_tag 等别名。"""
+    sp = build_reactive_system_prompt()
+    decision = sp.split("<decision_protocol>")[1]
+    assert "topic_hint" in decision
+    assert "topic_tag" not in decision
+
+
+# --- reactive user content(runtime_state + recent_messages + current_message)---
+
+
+def test_reactive_user_content_includes_runtime_state_block():
+    """runtime_state 从 system 搬过来后,所有字段必须出现在 user content 顶端。"""
+    content = build_reactive_user_content(
+        **_reactive_user_kwargs(
+            triggered_by="u42",
+            triggered_by_nickname="老张",
+            topic_hint="Rust async runtime",
+        )
+    )
+    assert isinstance(content, str)
+    assert "<runtime_state>" in content
+    assert "mode: reactive" in content
+    assert "adapter: ob11" in content
+    assert "group_id: g1" in content
+    assert "triggered_by: u42 (老张)" in content
+    assert "topic_hint: Rust async runtime" in content
+
+
+def test_reactive_user_content_omits_topic_when_none():
+    """topic_hint=None 时 runtime_state 段不出现 topic_hint 行。
+
+    注:把检查范围限定在 runtime_state 段内部——decision_protocol 在 system,
+    user content 这边查 'topic_hint:' 不会误命中。"""
+    content = build_reactive_user_content(**_reactive_user_kwargs(topic_hint=None))
+    assert isinstance(content, str)
+    runtime_block = content.split("</runtime_state>")[0]
+    assert "topic_hint:" not in runtime_block
+
+
+def test_reactive_user_content_block_order():
+    """user content 内部顺序:runtime_state → recent_messages → current_message。
+    顺序不该乱,LLM 解析靠这个层次。"""
+    content = build_reactive_user_content(**_reactive_user_kwargs(recent_messages=[_msg(100, "alice", "hi")]))
+    assert isinstance(content, str)
+    rt_idx = content.index("<runtime_state>")
+    rm_idx = content.index("<recent_messages>")
+    cm_idx = content.index("<current_message>")
+    assert rt_idx < rm_idx < cm_idx
+
+
+def test_user_content_text_only_when_no_images():
+    msgs = [_msg(100, "alice", "hi"), _msg(200, "bob", "hello")]
+    content = build_reactive_user_content(
+        **_reactive_user_kwargs(
+            recent_messages=msgs,
+            current_user_id="charlie",
+            current_nickname="Charlie",
+            current_text="how is it going?",
+        )
+    )
+    assert isinstance(content, str)
+    assert "<recent_messages>" in content
+    assert "[user=alice]: hi" in content
+    assert "[user=bob]: hello" in content
+    assert "<current_message>" in content
+    assert "[user=Charlie id=charlie]: how is it going?" in content
+
+
+def test_user_content_multimodal_when_images_present():
+    msgs = [_msg(100, "alice", "hi", imgs=["http://x/a.png"])]
+    content = build_reactive_user_content(
+        **_reactive_user_kwargs(
+            recent_messages=msgs,
+            current_user_id="charlie",
+            current_nickname="Charlie",
+            current_text="see this",
+            current_image_urls=["http://y/b.png"],
+        )
+    )
+    assert isinstance(content, list)
+    types = [p.get("type") for p in content]
+    assert "text" in types
+    assert "image_url" in types
+    assert content[0]["type"] == "text"
+    assert "<runtime_state>" in content[0]["text"]
+    assert "<recent_messages>" in content[0]["text"]
+    assert "<current_message>" in content[0]["text"]
+    assert "[user=Charlie id=charlie]: see this" in content[0]["text"]
+    last_img = next((p for p in reversed(content) if p.get("type") == "image_url"), None)
+    assert last_img is not None
+    assert last_img["image_url"]["url"] == "http://y/b.png"
+
+
+def test_user_content_marks_bot_messages():
+    msgs = [_msg(100, "alice", "hi"), _msg(200, "bot", "hi alice", is_bot=True)]
+    content = build_reactive_user_content(
+        **_reactive_user_kwargs(
+            recent_messages=msgs,
+            current_user_id="charlie",
+            current_nickname="Charlie",
+            current_text="?",
+        )
+    )
+    assert isinstance(content, str)
+    assert "[bot] [user=bot]: hi alice" in content
+
+
+def test_user_content_empty_history_still_produces_block():
+    """recent_messages=[] 时 <recent_messages> 块仍存在(空但格式齐全),
+    保持 prompt 结构稳定,LLM 解析层次不被打破。"""
+    content = build_reactive_user_content(
+        **_reactive_user_kwargs(
+            recent_messages=[],
+            current_user_id="alice",
+            current_nickname="Alice",
+            current_text="hi",
+        )
+    )
+    assert isinstance(content, str)
+    assert "<recent_messages>" in content
+    assert "</recent_messages>" in content
+    assert "[user=Alice id=alice]: hi" in content
+
+
+def test_user_content_empty_current_text_with_image_is_valid():
+    """图片消息无文字描述(用户只发图)是常见场景,空 current_text + 图片应正确产出
+    多模态 parts。"""
+    content = build_reactive_user_content(
+        **_reactive_user_kwargs(
+            recent_messages=[],
+            current_user_id="alice",
+            current_nickname="Alice",
+            current_text="",
+            current_image_urls=["http://x/photo.jpg"],
+        )
+    )
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert "[user=Alice id=alice]:" in content[0]["text"]
+    assert content[-1]["type"] == "image_url"
+    assert content[-1]["image_url"]["url"] == "http://x/photo.jpg"
+
+
 def test_reactive_user_content_prefixes_history_lines_with_msg_id():
     """每条 <recent_messages> 行有 [m:<id>] 前缀,current_message 没有。"""
     msgs = [
@@ -297,16 +279,16 @@ def test_reactive_user_content_prefixes_history_lines_with_msg_id():
         _msg_with_id(200, "小丑鱼", "[图片]", msg_id=1234, imgs=["http://x/a.jpg"]),
     ]
     content = build_reactive_user_content(
-        recent_messages=msgs,
-        current_user_id="ph",
-        current_nickname="ph",
-        current_text="评价下上图",
-        current_image_urls=[],
+        **_reactive_user_kwargs(
+            recent_messages=msgs,
+            current_user_id="ph",
+            current_nickname="ph",
+            current_text="评价下上图",
+        )
     )
     assert isinstance(content, str)
     assert "[m:1234] [user=小丑鱼]: [图片]" in content
     assert "[m:1235] [user=龙]: 哈哈" in content
-    # current_message 块内不带 [m:N]
     current_block = content.split("<current_message>", 1)[1].split("</current_message>", 1)[0]
     assert "[m:" not in current_block
     assert "[user=ph]: 评价下上图" in current_block
@@ -315,44 +297,33 @@ def test_reactive_user_content_prefixes_history_lines_with_msg_id():
 def test_reactive_user_content_bot_messages_keep_bot_marker_and_get_msg_id():
     msgs = [_msg_with_id(100, "Bot", "收到", msg_id=99, is_bot=True)]
     content = build_reactive_user_content(
-        recent_messages=msgs,
-        current_user_id="alice",
-        current_nickname="Alice",
-        current_text="hi",
-        current_image_urls=[],
+        **_reactive_user_kwargs(
+            recent_messages=msgs,
+            current_user_id="alice",
+            current_nickname="Alice",
+            current_text="hi",
+        )
     )
     assert "[m:99] [bot] [user=Bot]: 收到" in content
 
 
 def test_reactive_user_content_omits_prefix_when_id_is_none():
     """id=None(transient,从未入库)时不应在 prompt 里出现 [m:None]。"""
-    msgs = [_msg(100, "alice", "hi")]  # 老 helper 不传 id → None
+    msgs = [_msg(100, "alice", "hi")]
     content = build_reactive_user_content(
-        recent_messages=msgs,
-        current_user_id="bob",
-        current_nickname="Bob",
-        current_text="hello",
-        current_image_urls=[],
+        **_reactive_user_kwargs(
+            recent_messages=msgs,
+            current_user_id="bob",
+            current_nickname="Bob",
+            current_text="hello",
+        )
     )
     assert "[m:None]" not in content
     assert "[user=alice]: hi" in content
 
 
-def test_passive_system_prompt_prefixes_history_lines_with_msg_id():
-    msgs = [_msg_with_id(100, "A", "hi", msg_id=42)]
-    sp = build_passive_system_prompt(
-        adapter="ob11",
-        is_private=False,
-        user_id="u2",
-        group_id="g1",
-        recent_messages=msgs,
-    )
-    assert "[m:42] [user=A]: hi" in sp
-
-
 def test_reactive_user_content_history_carries_user_id_when_nickname_differs():
-    """历史行带真实昵称时,标签里要同时给出 id=,这样 LLM 能按 id 匹配 SOUL.md
-    的稳定身份信息(主人/白名单/角色设定等),不被改昵称/整活名片绕晕。"""
+    """历史行带真实昵称时标签里要同时给出 id=,LLM 能按 id 匹配 SOUL.md 稳定身份。"""
     msgs = [
         BufferedMessage(
             ts=100,
@@ -368,18 +339,147 @@ def test_reactive_user_content_history_carries_user_id_when_nickname_differs():
         )
     ]
     content = build_reactive_user_content(
-        recent_messages=msgs,
-        current_user_id="u-test-1",
-        current_nickname="肯尼",
-        current_text="还在吗",
-        current_image_urls=[],
+        **_reactive_user_kwargs(
+            recent_messages=msgs,
+            current_user_id="u-test-1",
+            current_nickname="肯尼",
+            current_text="还在吗",
+        )
     )
     assert isinstance(content, str)
     assert "[m:42] [user=肯尼 id=u-test-1]: hi" in content
     assert "[user=肯尼 id=u-test-1]: 还在吗" in content
 
 
-def test_passive_system_prompt_history_carries_user_id_when_nickname_differs():
+# --- passive system prompt(纯 Message Context)---
+
+
+def test_passive_system_prompt_only_message_context_for_group():
+    """recent_messages 已搬到 user content,passive system 必须 byte-stable per session。"""
+    sp = build_passive_system_prompt(
+        adapter="ob11",
+        is_private=False,
+        user_id="charlie",
+        group_id="g1",
+    )
+    assert "Platform: ob11" in sp
+    assert "Chat Type: Group" in sp
+    assert "User ID: charlie" in sp
+    assert "Group ID: g1" in sp
+    assert "<recent_messages>" not in sp
+
+
+def test_passive_system_prompt_private_omits_group_id():
+    """私聊场景调用方一般不会传 history,但若误传也别在 prompt 里漏出
+    Group ID 字段——和 hermes_client 默认拼装行为对齐。"""
+    sp = build_passive_system_prompt(
+        adapter="ob11",
+        is_private=True,
+        user_id="charlie",
+        group_id=None,
+    )
+    assert "Chat Type: Private" in sp
+    assert "Group ID" not in sp
+
+
+def test_passive_system_prompt_matches_hermes_client_default():
+    """passive system 必须与 hermes_client.chat 的默认 Message Context 拼装字节一致——
+    handler 统一走本函数,等价于 chat() 默认行为(便于把 user content override 接上)。"""
+    # 重建一份 chat() 默认会生成的 Message Context(对齐 hermes_client.chat 实现)。
+    expected = "Message Context:\nPlatform: ob11\nChat Type: Group\nUser ID: charlie\nGroup ID: g1"
+    sp = build_passive_system_prompt(
+        adapter="ob11",
+        is_private=False,
+        user_id="charlie",
+        group_id="g1",
+    )
+    assert sp == expected
+
+
+# --- passive user content ---
+
+
+def test_passive_user_content_includes_history_block_when_recent_present():
+    """群聊 + 有 buffer 历史:user content 头部追加 <recent_messages> 块,
+    历史按旧→新顺序;bot 自己的回复带 [bot] 前缀。"""
+    msgs = [_msg(200, "bob", "hi all"), _msg(100, "alice", "hello")]  # 新→旧 入参
+    content = build_passive_user_content(
+        recent_messages=msgs,
+        current_text="who's there?",
+        current_image_urls=[],
+    )
+    assert isinstance(content, str)
+    assert "<recent_messages>" in content
+    assert "</recent_messages>" in content
+    # 旧→新顺序
+    alice_idx = content.index("[user=alice]: hello")
+    bob_idx = content.index("[user=bob]: hi all")
+    assert alice_idx < bob_idx
+    assert "who's there?" in content
+
+
+def test_passive_user_content_marks_bot_messages():
+    msgs = [_msg(100, "alice", "hi"), _msg(200, "bot", "hi alice", is_bot=True)]
+    content = build_passive_user_content(
+        recent_messages=msgs,
+        current_text="?",
+        current_image_urls=[],
+    )
+    assert isinstance(content, str)
+    assert "[bot] [user=bot]: hi alice" in content
+
+
+def test_passive_user_content_empty_history_returns_plain_text():
+    """recent_messages=[] 时退化为纯当前文本,与 chat() 默认拼装字节一致——
+    意味着 handler 总是走 user_content_override 也不会有行为差。"""
+    content = build_passive_user_content(
+        recent_messages=[],
+        current_text="hello",
+        current_image_urls=[],
+    )
+    assert content == "hello"
+
+
+def test_passive_user_content_empty_history_with_images_returns_multimodal_parts():
+    content = build_passive_user_content(
+        recent_messages=[],
+        current_text="see this",
+        current_image_urls=["http://x/a.jpg"],
+    )
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "see this"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"] == "http://x/a.jpg"
+
+
+def test_passive_user_content_history_with_images_combines_both():
+    msgs = [_msg(100, "alice", "hi")]
+    content = build_passive_user_content(
+        recent_messages=msgs,
+        current_text="look",
+        current_image_urls=["http://x/a.jpg"],
+    )
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    text = content[0]["text"]
+    assert "<recent_messages>" in text
+    assert "[user=alice]: hi" in text
+    assert "look" in text
+    assert content[-1]["type"] == "image_url"
+
+
+def test_passive_user_content_prefixes_history_lines_with_msg_id():
+    msgs = [_msg_with_id(100, "A", "hi", msg_id=42)]
+    content = build_passive_user_content(
+        recent_messages=msgs,
+        current_text="?",
+        current_image_urls=[],
+    )
+    assert isinstance(content, str)
+    assert "[m:42] [user=A]: hi" in content
+
+
+def test_passive_user_content_history_carries_user_id_when_nickname_differs():
     msgs = [
         BufferedMessage(
             ts=100,
@@ -394,24 +494,22 @@ def test_passive_system_prompt_history_carries_user_id_when_nickname_differs():
             id=42,
         )
     ]
-    sp = build_passive_system_prompt(
-        adapter="ob11",
-        is_private=False,
-        user_id="u2",
-        group_id="g1",
+    content = build_passive_user_content(
         recent_messages=msgs,
+        current_text="?",
+        current_image_urls=[],
     )
-    assert "[m:42] [user=肯尼 id=u-test-1]: hi" in sp
+    assert isinstance(content, str)
+    assert "[m:42] [user=肯尼 id=u-test-1]: hi" in content
 
 
-def test_passive_system_prompt_omits_prefix_when_id_is_none():
+def test_passive_user_content_omits_prefix_when_id_is_none():
     msgs = [_msg(100, "alice", "hi")]
-    sp = build_passive_system_prompt(
-        adapter="ob11",
-        is_private=False,
-        user_id="u2",
-        group_id="g1",
+    content = build_passive_user_content(
         recent_messages=msgs,
+        current_text="?",
+        current_image_urls=[],
     )
-    assert "[m:None]" not in sp
-    assert "[user=alice]: hi" in sp
+    assert isinstance(content, str)
+    assert "[m:None]" not in content
+    assert "[user=alice]: hi" in content

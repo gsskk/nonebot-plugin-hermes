@@ -24,6 +24,7 @@ from ..core.message_buffer import BufferedMessage
 from ..core.outbound import send_text_with_media
 from ..core.prompt_builder import (
     build_passive_system_prompt,
+    build_passive_user_content,
     build_reactive_system_prompt,
     build_reactive_user_content,
 )
@@ -474,25 +475,33 @@ async def _run_passive_turn(
     # 「@bot 时让 LLM 看到群里旁观历史」。before_ts=now_ms 排除 perception 在
     # 同一事件 priority=1 时刚写入的当前消息,避免历史里出现重复。
     # 私聊不注入(0.1.6 起 perception 在私聊就是 no-op,Hermes session 已覆盖)。
-    system_prompt = None
+    # 历史从 0.2.x 起放进 user content 而非 system,以维持 system 字节稳定。
+    recent: List[BufferedMessage] = []
     if not is_private and group_id and plugin_config.hermes_perception_enabled and _mcp.message_buffer is not None:
-        recent = _mcp.message_buffer.get_recent(
-            adapter=adapter_name,
-            group_id=group_id,
-            limit=plugin_config.hermes_perception_buffer,
-            before_ts=now_ms,
-        )
-        system_prompt = build_passive_system_prompt(
-            adapter=adapter_name,
-            is_private=is_private,
-            user_id=user_id,
-            group_id=group_id,
-            recent_messages=recent,
+        recent = list(
+            _mcp.message_buffer.get_recent(
+                adapter=adapter_name,
+                group_id=group_id,
+                limit=plugin_config.hermes_perception_buffer,
+                before_ts=now_ms,
+            )
         )
 
+    system_prompt = build_passive_system_prompt(
+        adapter=adapter_name,
+        is_private=is_private,
+        user_id=user_id,
+        group_id=group_id,
+    )
+    user_content = build_passive_user_content(
+        recent_messages=recent,
+        current_text=text or " ",
+        current_image_urls=image_urls,
+    )
+
     result = await hermes_client.chat(
-        text=text or " ",
-        image_urls=image_urls,
+        text="",
+        image_urls=[],
         session_key=session_key,
         user_id=user_id,
         group_id=group_id,
@@ -501,6 +510,7 @@ async def _run_passive_turn(
         mode="passive",
         expect_structured=False,
         system_prompt=system_prompt,
+        user_content_override=user_content,
     )
 
     # 防御:同一 Hermes session 之前跑过 reactive 时学到 submit_decision 契约,
@@ -558,14 +568,13 @@ async def _run_reactive_turn(
         limit=plugin_config.hermes_perception_buffer,
     )
 
-    system_prompt = build_reactive_system_prompt(
+    system_prompt = build_reactive_system_prompt()
+    user_content = build_reactive_user_content(
         adapter=adapter_name,
         group_id=group_id,
         triggered_by=session.triggered_by,
         triggered_by_nickname=None,
         topic_hint=session.topic_hint,
-    )
-    user_content = build_reactive_user_content(
         recent_messages=recent,
         current_user_id=user_id,
         current_nickname=nickname or user_id,
