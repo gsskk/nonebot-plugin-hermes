@@ -635,10 +635,16 @@ async def test_post_reply_cooldown_disabled_when_zero(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reactive_turn_marks_bot_replied_after_send(monkeypatch):
-    """B.2: 一发成功的 reactive 回复 send 后,ActiveSession.last_bot_reply_at 被写入。"""
+    """B.2: 一发成功的 reactive 回复 send 后,ActiveSession.last_bot_reply_at 被写入。
+
+    last_bot_reply_at 是 send 完的 wall clock,不是 entry now_ms ──
+    见 test_mark_bot_replied_uses_wall_clock_after_slow_chat 的注释。
+    本测试 mock _now_ms 钉死 send 时的 wall clock,直接断言。
+    """
     from nonebot_plugin_hermes.handlers import message as handler_mod
 
     now = 8_400_000
+    send_wall_clock = now + 50  # 模拟 send 比 entry 晚 50ms
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
     assert _mcp.active_sessions.get("ob11", "g1").last_bot_reply_at == 0
 
@@ -647,6 +653,7 @@ async def test_reactive_turn_marks_bot_replied_after_send(monkeypatch):
 
     monkeypatch.setattr(handler_mod.hermes_client, "chat", AsyncMock(side_effect=fake_chat))
     monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+    monkeypatch.setattr(handler_mod, "_now_ms", lambda: send_wall_clock)
 
     target = _FakeTarget(id="g1", private=False)
     bot = _fake_bot()
@@ -663,7 +670,7 @@ async def test_reactive_turn_marks_bot_replied_after_send(monkeypatch):
         now_ms=now,
     )
 
-    assert _mcp.active_sessions.get("ob11", "g1").last_bot_reply_at == now
+    assert _mcp.active_sessions.get("ob11", "g1").last_bot_reply_at == send_wall_clock
 
 
 @pytest.mark.asyncio
@@ -830,6 +837,46 @@ async def test_refire_respects_post_reply_cooldown(monkeypatch):
 
     assert len(chat_calls) == 1, (
         f"refire should be blocked by cooldown (last_bot_reply_at written mid-T1), got {len(chat_calls)} chat calls"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mark_bot_replied_uses_wall_clock_after_slow_chat(monkeypatch):
+    """chat() 任意长耗时(上游重试 / 压缩 / 慢工具)后,last_bot_reply_at 必须是
+    send 完成时的 wall clock,不是 _run_reactive_turn 的入参 now_ms。 复用 stale
+    入参会让 cooldown 闸门算出的 elapsed 失真,放过本该窗内挡住的 refire。
+    """
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    entry_ms = 1_000_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=entry_ms)
+
+    async def slow_chat(**kwargs):
+        return _make_chat_result(text="ok")  # should_reply=True
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", slow_chat)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    # 模拟 chat 跑了 60s, wall clock 跳到 entry + 60s
+    fake_send_time = entry_ms + 60_000
+    monkeypatch.setattr(handler_mod, "_now_ms", lambda: fake_send_time)
+
+    await handler_mod._run_reactive_turn(
+        bot=_fake_bot(),
+        target=_FakeTarget(id="g1", private=False),
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="hi",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=entry_ms,  # entry 时的 wall clock(早 60s)
+    )
+
+    sess = _mcp.active_sessions.get("ob11", "g1")
+    assert sess.last_bot_reply_at == fake_send_time, (
+        f"send 完后 last_bot_reply_at 应该用 wall clock {fake_send_time}, "
+        f"实际 {sess.last_bot_reply_at}(看起来复用了 entry now_ms,会让后续 refire 误以为'很久之前回复过')"
     )
 
 

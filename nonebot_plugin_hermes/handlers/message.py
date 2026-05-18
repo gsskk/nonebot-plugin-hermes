@@ -729,12 +729,18 @@ async def _run_reactive_turn(
         f"ok={sent} text_len={len(reply_text)} at_user={at_user}"
     )
 
-    # 把 bot 自己的回复回写 MessageBuffer。复用入参 now_ms,避免 send 耗时
-    # 后两次 _now_ms() 调用之间出现毫秒级偏差。
+    # 用 send 完成时的 wall clock,不复用入参 now_ms。
+    # 入参 now_ms 是 _handle_reactive_path 进函数那一刻抓的, chat() + send 可能耗时
+    # 任意长(上游重试 / 上下文压缩 / 工具调用累加),复用入参会让 last_bot_reply_at
+    # 远早于真实 send 时间, 让下游 cooldown 闸门(_in_post_reply_cooldown)算出来的
+    # elapsed 失真,把窗内的 refire 误判成窗外放过去。
+    # 调一次 _now_ms() 拿到 reply_now_ms,三个写操作复用这一个快照,既校正 stale
+    # 入参,又避免多次读时钟在三个字段间引入毫秒级偏差。
     if sent and _mcp.message_buffer is not None:
+        reply_now_ms = _now_ms()
         _mcp.message_buffer.append(
             BufferedMessage(
-                ts=now_ms,
+                ts=reply_now_ms,
                 adapter=adapter_name,
                 group_id=group_id,
                 user_id=str(bot.self_id),
@@ -746,9 +752,10 @@ async def _run_reactive_turn(
         )
         # 注:若 should_exit_active=True,session 已在上方 end(),touch / mark_bot_replied
         # 都是安全 no-op(两者文档统一:session 缺失则 no-op)。
-        _mcp.active_sessions.touch(adapter_name, group_id, now_ms=now_ms)
-        # B.2: 记下「bot 刚回过」时间戳,供 _handle_reactive_path 入口的 cooldown 闸门判定
-        _mcp.active_sessions.mark_bot_replied(adapter_name, group_id, now_ms=now_ms)
+        _mcp.active_sessions.touch(adapter_name, group_id, now_ms=reply_now_ms)
+        # B.2: 记下「bot 刚回过」时间戳,供 _handle_reactive_path 入口 + _refire 入口的
+        # cooldown 闸门判定。
+        _mcp.active_sessions.mark_bot_replied(adapter_name, group_id, now_ms=reply_now_ms)
 
     return result
 
