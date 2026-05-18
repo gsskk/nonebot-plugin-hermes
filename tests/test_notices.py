@@ -239,3 +239,12 @@ async def test_nickname_fallback_to_user_id(monkeypatch, _bot, _route_mock):
     assert _route_mock.await_count == 1
     kwargs = _route_mock.call_args.kwargs
     assert "777" in kwargs["text"]
+
+
+def test_notices_module_registered_on_handlers_import():
+    """handlers/__init__.py import notices → notice_handler 已注册到 NoneBot。"""
+    from nonebot_plugin_hermes import handlers as h_pkg
+    from nonebot_plugin_hermes.handlers import notices as nmod
+
+    assert hasattr(nmod, "notice_handler")
+    assert "notices" in dir(h_pkg)
