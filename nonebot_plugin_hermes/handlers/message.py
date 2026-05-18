@@ -767,6 +767,32 @@ async def _handle_passive_path(
                 )
 
 
+def _in_post_reply_cooldown(adapter_name: str, group_id: str, now_ms: int) -> bool:
+    """B: 判断 (adapter, group_id) 是否处于 bot 上次回复后的冷却窗内。
+
+    输入路径 (`_handle_reactive_path`) 和重燃路径 (`_refire`) 共用,确保:
+      - 通过 reactive submit_decision 发出的回复 (_run_reactive_turn 末段写 mark_bot_replied)
+      - 通过 MCP push_message 发出的回复 (push_message_impl 写 mark_bot_replied)
+    两条路径都把后续非显式触发的旁观消息压在窗内,避免「同主题二次答复」。
+
+    冷却仅对**非显式触发**生效——显式 @bot 必须立刻进 chat;调用方自行判断
+    `is_explicit_trigger` 后再询问本 helper。
+
+    冷却窗禁用 (`hermes_reactive_post_reply_cooldown_sec == 0`) 或 session 不存在
+    /已过期、未记录过 last_bot_reply_at → 返回 False。
+    """
+    assert _mcp.active_sessions is not None
+
+    cooldown_sec = plugin_config.hermes_reactive_post_reply_cooldown_sec
+    if cooldown_sec <= 0:
+        return False
+    sess = _mcp.active_sessions.get_if_active(adapter_name, group_id, now_ms)
+    if sess is None or not sess.last_bot_reply_at:
+        return False
+    elapsed_ms = now_ms - sess.last_bot_reply_at
+    return 0 <= elapsed_ms < cooldown_sec * 1000
+
+
 async def _handle_reactive_path(
     *,
     bot: Bot,
@@ -804,23 +830,23 @@ async def _handle_reactive_path(
     # 新消息直接静默。压「我刚说完别人接话→我又凑一句」模式 2。
     # 显式 @bot 触发不受影响(is_explicit_trigger=True 直接旁路)。
     # 写在 inflight try_enter 之前,避免占用 slot 又立刻退出造成 pending 抖动。
-    cooldown_sec = plugin_config.hermes_reactive_post_reply_cooldown_sec
-    if in_active and not is_explicit_trigger and cooldown_sec > 0:
+    if in_active and not is_explicit_trigger:
+        # debug 日志保留入口处,便于运维排查;helper 自己不打日志(refire 路径也会用)
         sess = _mcp.active_sessions.get_if_active(adapter_name, group_id, now_ms)
+        cooldown_sec = plugin_config.hermes_reactive_post_reply_cooldown_sec
         logger.debug(
             f"[HERMES reactive] cooldown_check group={group_id} user={user_id} "
             f"sess_exists={sess is not None} "
             f"last_bot_reply_at={sess.last_bot_reply_at if sess else 'n/a'} "
             f"now_ms={now_ms} window_ms={cooldown_sec * 1000}"
         )
-        if sess is not None and sess.last_bot_reply_at:
-            elapsed_ms = now_ms - sess.last_bot_reply_at
-            if 0 <= elapsed_ms < cooldown_sec * 1000:
-                logger.debug(
-                    f"[HERMES reactive] skip: post-reply cooldown "
-                    f"(group={group_id} elapsed_ms={elapsed_ms} window_ms={cooldown_sec * 1000})"
-                )
-                return
+        if _in_post_reply_cooldown(adapter_name, group_id, now_ms):
+            elapsed_ms = now_ms - (sess.last_bot_reply_at if sess else 0)
+            logger.debug(
+                f"[HERMES reactive] skip: post-reply cooldown "
+                f"(group={group_id} elapsed_ms={elapsed_ms} window_ms={cooldown_sec * 1000})"
+            )
+            return
 
     key = (adapter_name, f"group:{group_id}")
     current_buffered = BufferedMessage(
@@ -906,6 +932,21 @@ async def _refire(
     # 比预期早 N 秒过期、bot 回复时间戳倒退。trigger_msg.ts 只在 finally 的
     # pending.ts 比对里用,那是消息到达时序而非「当前是几点」。
     refire_now_ms = _now_ms()
+
+    # B: refire 路径同款 post-reply cooldown 闸门。
+    # 重燃总是 is_explicit_trigger=False(passive 旁观),所以一律按非显式触发处理。
+    # 关键场景:初发 turn 自己没回(submit_decision=silent)但期间 MCP push_message
+    # 把 last_bot_reply_at 写了 → 仅靠入口处的闸门挡不住,因为 pending 是上一次
+    # 入口处放进来的(进 pending 时还没写 mark)。在这里再判一次,把这条路径补严。
+    if (
+        mode == "reactive"
+        and group_id is not None
+        and _in_post_reply_cooldown(adapter_name, str(group_id), refire_now_ms)
+    ):
+        logger.debug(f"[HERMES reactive] refire skipped by post-reply cooldown (key={key} depth={depth})")
+        _mcp.inflight.exit(key)
+        return
+
     should_refire = False
     try:
         if mode == "reactive":

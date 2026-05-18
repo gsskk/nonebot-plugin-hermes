@@ -4,17 +4,30 @@
   - (adapter, group_id) 必须有活跃 reactive session
   - BotRegistry 必须有该 (adapter, group_id) 的 Target
 不满足任一条件返回 422 等价错误(由 FastMCP 序列化为 isError=true)。
+
+成功路径的副作用,与 reactive submit_decision 回复路径(_run_reactive_turn 末段)等价:
+  1. mark_bot_replied — 写 ActiveSession.last_bot_reply_at,供 post-reply cooldown 闸门
+     在后续 reactive turn / refire 入口判定
+  2. message_buffer.append(is_bot=True) — 让后续 _run_reactive_turn 拉到的
+     <recent_messages> 里能看见 bot 这条 push 出去的话,LLM 不会"以为自己没说"
+两件都做才能避免「Hermes 用 push_message 当主回复 + 后续 refire 又答一遍同主题」
+的重复回复事件(2026-05-18)。
 """
 
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING, Optional
 
 from nonebot import get_bot, logger
 from pydantic import BaseModel, Field
 
+from ...core.message_buffer import BufferedMessage
 from ...core.outbound import send_text_with_media
 from ..auth import PushContextError, validate_push_context
+
+if TYPE_CHECKING:
+    from ...core.message_buffer import MessageBuffer
 
 
 class PushMessageInput(BaseModel):
@@ -36,6 +49,7 @@ async def push_message_impl(
     *,
     active_sessions,
     bot_registry,
+    message_buffer: Optional["MessageBuffer"] = None,
 ) -> PushMessageResult:
     if not inp.text and not inp.image_urls:
         return PushMessageResult(ok=False, error="text and image_urls both empty")
@@ -86,4 +100,21 @@ async def push_message_impl(
     # 慢 send(图片上传等)情况下 TTL 续期会比 wall clock 略短(<10s 量级,
     # 300s TTL 下可忽略)。如未来需要精确续期,在此重新读 time.time()。
     active_sessions.touch(inp.adapter, inp.group_id, now_ms=now_ms)
+
+    # 与 reactive 回复路径对齐 — 写 last_bot_reply_at(供 cooldown 闸门),
+    # 把 push 的内容注入 buffer(供后续 turn 的 <recent_messages> 看见 bot 已答)
+    active_sessions.mark_bot_replied(inp.adapter, inp.group_id, now_ms=now_ms)
+    if message_buffer is not None:
+        message_buffer.append(
+            BufferedMessage(
+                ts=now_ms,
+                adapter=inp.adapter,
+                group_id=inp.group_id,
+                user_id=entry.bot_self_id,
+                nickname="Bot",
+                content=inp.text,
+                image_urls=list(inp.image_urls),
+                is_bot=True,
+            )
+        )
     return PushMessageResult(ok=True)

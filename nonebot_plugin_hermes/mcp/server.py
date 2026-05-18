@@ -104,6 +104,7 @@ def build_mcp_app(
             inp,
             active_sessions=active_sessions,
             bot_registry=bot_registry,
+            message_buffer=message_buffer,
         )
 
     @mcp.tool()

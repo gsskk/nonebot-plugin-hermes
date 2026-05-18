@@ -70,8 +70,15 @@ def _make_chat_result(text: str = "ok", transport_error: bool = False, structure
 
 @pytest.mark.asyncio
 async def test_reactive_burst_coalesces_to_two_chat_calls(monkeypatch):
-    """同一 group 上 5 条 burst,chat 实际被调 2 次(初发 + 一次合并重燃)。"""
+    """同一 group 上 5 条 burst,chat 实际被调 2 次(初发 + 一次合并重燃)。
+
+    cooldown 默认 8s 会在 refire 入口拦住第二发(初发后 mark_bot_replied 立即触发),
+    本测试聚焦 coalesce 机制本身,显式关 cooldown 隔离两件事。
+    """
+    from nonebot_plugin_hermes.config import plugin_config
     from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 0)
 
     # 用 wall-clock,因为 _refire 内部读 _now_ms() 做 is_active 校验
     now = int(time.time() * 1000)
@@ -293,8 +300,15 @@ async def test_text_only_passive_in_window_does_call_chat(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_refire_depth_caps_at_max(monkeypatch):
-    """持续 burst:链尾最多重燃 MAX_REFIRE_DEPTH 次,触顶后 warn + drop pending。"""
+    """持续 burst:链尾最多重燃 MAX_REFIRE_DEPTH 次,触顶后 warn + drop pending。
+
+    每次 chat 都返回 should_reply=true 会写 last_bot_reply_at,默认 cooldown 会切断
+    refire 链。本测试聚焦 depth cap 机制,显式关 cooldown 以隔离。
+    """
+    from nonebot_plugin_hermes.config import plugin_config
     from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 0)
 
     # 用 wall-clock,因为 _refire 内部读 _now_ms() 做 is_active 校验
     now = int(time.time() * 1000)
@@ -650,6 +664,82 @@ async def test_reactive_turn_marks_bot_replied_after_send(monkeypatch):
     )
 
     assert _mcp.active_sessions.get("ob11", "g1").last_bot_reply_at == now
+
+
+@pytest.mark.asyncio
+async def test_refire_respects_post_reply_cooldown(monkeypatch):
+    """2026-05-18 重复回答事件回归:T1 跑期间 mark_bot_replied 被(外部,如 MCP
+    push_message)写入,T2 已被存为 pending → T1 完成后 _refire 起 T2,但 refire
+    入口必须复用同款 cooldown 闸门, 不调 chat。
+
+    没有这道闸门:T1 通过 push_message 在 agent loop 里答了一遍,T2 refire 又调一
+    次 chat 答同主题,产生第二条 247 字回复(原始事件 16:06:39 那一条)。
+    """
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 8)
+
+    # 用 wall-clock,因为 _refire 内部读 _now_ms()
+    now = int(time.time() * 1000)
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    chat_calls: List[dict] = []
+
+    async def chat_then_external_mark(**kwargs):
+        chat_calls.append(kwargs)
+        # 模拟 T1 在 chat 跑期间 Hermes 通过 push_message 工具调用,引发外部 mark_bot_replied
+        # (类似 push_message_impl 现在的副作用)
+        if len(chat_calls) == 1:
+            await asyncio.sleep(0.05)
+            _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 30)
+            # T1 自己的 submit_decision 返 silent(should_reply=false),
+            # 触发 _run_reactive_turn 早返;_refire 才会成为唯一可能产生第二次 chat 的路径。
+            return _make_chat_result(
+                structured={"should_reply": False, "reply_text": "", "should_exit_active": False},
+            )
+        # 若闸门没生效,T2 refire 会落到这里再次调 chat
+        return _make_chat_result(text="dup-reply")
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_then_external_mark)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    main = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="u1",
+            group_id="g1",
+            text="@bot 问题",
+            image_urls=[],
+            is_explicit_trigger=True,
+            now_ms=now,
+        )
+    )
+    await asyncio.sleep(0.01)
+    follow = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="u2",
+            group_id="g1",
+            text="跟话",
+            image_urls=[],
+            is_explicit_trigger=False,
+            now_ms=now + 10,
+        )
+    )
+    await asyncio.gather(main, follow)
+    await asyncio.sleep(0.3)
+
+    assert len(chat_calls) == 1, (
+        f"refire should be blocked by cooldown (last_bot_reply_at written mid-T1), got {len(chat_calls)} chat calls"
+    )
 
 
 @pytest.mark.asyncio
