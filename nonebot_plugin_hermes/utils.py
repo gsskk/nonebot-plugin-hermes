@@ -4,9 +4,17 @@ from nonebot.adapters import Event
 from .config import plugin_config
 
 
-def get_adapter_name(target: alconna.Target) -> str:
-    """从 Target 中提取适配器名称"""
-    adapter = getattr(target, "adapter", "") or ""
+def get_adapter_name(source) -> str:
+    """提取并归一化 adapter 名。
+
+    支持两种输入:
+      - `alconna.Target` (`.adapter` 是 str) — 消息处理路径主用
+      - `nonebot.adapters.Bot` (`.adapter` 是 Adapter 实例,有 classmethod `get_name()`)
+        — notice handler 路径用,因为还没有 alconna 消息上下文构造 Target
+    """
+    adapter = getattr(source, "adapter", "") or ""
+    if hasattr(adapter, "get_name"):
+        adapter = adapter.get_name()
     return adapter.lower().replace(" ", "").replace(".", "") or "unknown"
 
 

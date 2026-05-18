@@ -3,3 +3,4 @@
 
 from . import commands  # noqa: F401
 from . import message  # noqa: F401
+from . import notices  # noqa: F401

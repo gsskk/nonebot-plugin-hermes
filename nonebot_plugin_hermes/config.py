@@ -92,6 +92,16 @@ class Config(BaseModel):
     hermes_active_sweep_interval_sec: int = 30
     """expire_active_sessions cron 频率(秒)"""
 
+    # --- Notice 事件触发 (Phase A) ---
+    hermes_poke_trigger_enabled: bool = False
+    """OneBot v11: 被戳一戳时触发对话(私聊/群无差别),等价 @。
+    其他适配器无效,缺省全关 = 老用户行为零变化。"""
+
+    hermes_greet_on_join: bool = False
+    """OneBot v11: 群里有人加入时,在 active_session 开启的群触发一次 reactive turn
+    让 Hermes 自决是否欢迎(decision_protocol 的 noop 是合法选择)。
+    active_session 关时不触发——passive 是 1:1 Q&A 语义,不适用欢迎场景。"""
+
     hermes_reactive_post_reply_cooldown_sec: int = 8
     """reactive 模式下,bot 刚回复完群里 N 秒内,非显式 @ 触发的新消息直接静默。
     用来阻断「我刚说完别人接话→我又凑一句」类型的过触发。
