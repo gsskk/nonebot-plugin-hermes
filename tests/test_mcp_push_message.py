@@ -236,15 +236,14 @@ async def test_push_accepts_image_only_message():
 # Side-effects on success: mark_bot_replied + buffer append
 # ---------------------------------------------------------------------------
 #
-# 这两个 case 是 2026-05-18 "重复回答" 事件的回归测试。Hermes 在 reactive turn 内
-# 调 push_message 时,plugin 必须把它当成"bot 在群里发了一句"来记账,否则:
-#   1. cooldown 闸门读不到 last_bot_reply_at,后续非显式触发的旁观消息会被白白
-#      送进 LLM 决策,产生与 push 内容同主题的二次回复(见 _refire 路径)
-#   2. 后续 _run_reactive_turn 的 <recent_messages> 里看不见 bot 已答,LLM 也无从
-#      自决 should_reply=false
+# push_message 成功后必须把它当成"bot 在群里发了一句"来记账, 与
+# _run_reactive_turn 末段写 last_bot_reply_at / append BufferedMessage(is_bot=True)
+# 等价。 否则:
+#   1. cooldown 闸门读不到 last_bot_reply_at,后续非显式触发会被放过去送进 LLM 决策
+#   2. 后续 turn 拉到的 <recent_messages> 看不见 bot 已答,LLM 无从自决 should_reply=false
 #
-# 这里只钉死 push_message_impl 自己的副作用契约;_refire 入口的 cooldown 闸门
-# 在 test_message_handler_coalesce.py 里有独立回归测试。
+# 这里只钉死 push_message_impl 自己的副作用契约;_refire 入口、_run_reactive_turn
+# 末段的 cooldown 闸门在 test_message_handler_coalesce.py 里有独立测试。
 
 
 @pytest.mark.asyncio

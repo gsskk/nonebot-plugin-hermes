@@ -5,13 +5,13 @@
   - BotRegistry 必须有该 (adapter, group_id) 的 Target
 不满足任一条件返回 422 等价错误(由 FastMCP 序列化为 isError=true)。
 
-成功路径的副作用,与 reactive submit_decision 回复路径(_run_reactive_turn 末段)等价:
-  1. mark_bot_replied — 写 ActiveSession.last_bot_reply_at,供 post-reply cooldown 闸门
+成功路径的副作用, 与 reactive submit_decision 回复路径(_run_reactive_turn 末段)等价:
+  1. mark_bot_replied — 写 ActiveSession.last_bot_reply_at, 供 post-reply cooldown 闸门
      在后续 reactive turn / refire 入口判定
   2. message_buffer.append(is_bot=True) — 让后续 _run_reactive_turn 拉到的
-     <recent_messages> 里能看见 bot 这条 push 出去的话,LLM 不会"以为自己没说"
-两件都做才能避免「Hermes 用 push_message 当主回复 + 后续 refire 又答一遍同主题」
-的重复回复事件(2026-05-18)。
+     <recent_messages> 里能看见 bot 这条 push 出去的话, LLM 不会"以为自己没说"
+两件都做才能避免 Hermes 用 push_message 当主回复后, 后续 refire / 同 turn submit_decision
+又答一遍同主题。
 """
 
 from __future__ import annotations

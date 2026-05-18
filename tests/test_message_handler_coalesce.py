@@ -675,13 +675,10 @@ async def test_reactive_turn_marks_bot_replied_after_send(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_reactive_turn_suppresses_submit_reply_after_mid_turn_push(monkeypatch):
-    """v0.3.2 回归: 同一 chat() agent loop 内,Hermes 先调 push_message(写
-    mark_bot_replied),又返 should_reply=True 同主题答案 → 群里收到两条几乎同样的
-    回复。_run_reactive_turn 在 send submit_decision 之前应识别"本 turn 内
+    """同一 chat() agent loop 内,Hermes 先调 push_message(写 mark_bot_replied),
+    又返 should_reply=True 同主题答案 → 群里收到两条几乎同样的回复。
+    _run_reactive_turn 在 send submit_decision 之前应识别"本 turn 内
     last_bot_reply_at 已被推进",抑制第二条。
-
-    2026-05-18 17:48:38/47 事件原型:同 chat call 双答(push 一条 + submit 一条),
-    与 16:04 那次"跨 chat call 双答"是同类不同场景。
     """
     from nonebot_plugin_hermes.handlers import message as handler_mod
 
@@ -725,8 +722,8 @@ async def test_run_reactive_turn_suppresses_submit_reply_after_mid_turn_push(mon
 
 @pytest.mark.asyncio
 async def test_run_reactive_turn_still_sends_when_no_mid_turn_push(monkeypatch):
-    """控制组:turn 内没有外部 mark_bot_replied → should_reply=True 应正常发送。
-    防止 v0.3.2 闸门误杀正常 reactive 回复。
+    """控制组:turn 内没有外部 mark_bot_replied → should_reply=True 应正常发送,
+    防止同 turn 防重复闸门误杀正常 reactive 回复。
     """
     from nonebot_plugin_hermes.handlers import message as handler_mod
 
@@ -766,12 +763,9 @@ async def test_run_reactive_turn_still_sends_when_no_mid_turn_push(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_refire_respects_post_reply_cooldown(monkeypatch):
-    """2026-05-18 重复回答事件回归:T1 跑期间 mark_bot_replied 被(外部,如 MCP
-    push_message)写入,T2 已被存为 pending → T1 完成后 _refire 起 T2,但 refire
-    入口必须复用同款 cooldown 闸门, 不调 chat。
-
-    没有这道闸门:T1 通过 push_message 在 agent loop 里答了一遍,T2 refire 又调一
-    次 chat 答同主题,产生第二条 247 字回复(原始事件 16:06:39 那一条)。
+    """T1 跑期间 mark_bot_replied 被(外部, 如 MCP push_message)写入, T2 已被存为
+    pending → T1 完成后 _refire 起 T2, refire 入口必须复用同款 cooldown 闸门,
+    不调 chat()。 否则 T1 在 agent loop 里已经答了, T2 refire 又答一遍同主题。
     """
     from nonebot_plugin_hermes.config import plugin_config
     from nonebot_plugin_hermes.handlers import message as handler_mod
@@ -882,8 +876,8 @@ async def test_mark_bot_replied_uses_wall_clock_after_slow_chat(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reactive_transport_error_sends_friendly_fallback(monkeypatch):
-    """2026-05-18 18:51 事件回归: Hermes 上游 502 返服务端错误信息原文,
-    plugin 不该把英文错误信息当 raw_text 发到群里, 应该走 config 里配的友好兜底文本。
+    """Hermes 上游 5xx / transport error 时 raw_text 是服务端错误信息原文,
+    plugin 不该把它当 LLM 输出转发到群里, 应该走 config 里的友好兜底文本。
     """
     from nonebot_plugin_hermes.config import plugin_config
     from nonebot_plugin_hermes.core.hermes_client import ChatResult
