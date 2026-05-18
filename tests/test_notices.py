@@ -71,7 +71,7 @@ def _route_mock(monkeypatch):
 
     route_mock = AsyncMock()
     monkeypatch.setattr(nmod, "route_synthesized_input", route_mock)
-    monkeypatch.setattr(nmod, "get_adapter_name", lambda _b: "OneBot V11")
+    monkeypatch.setattr(nmod, "get_adapter_name", lambda _b: "onebotv11")
     monkeypatch.setattr(plugin_config, "hermes_allow_groups", set())
     monkeypatch.setattr(plugin_config, "hermes_allow_users", set())
     return route_mock

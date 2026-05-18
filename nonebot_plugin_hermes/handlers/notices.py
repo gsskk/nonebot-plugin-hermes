@@ -39,7 +39,7 @@ async def dispatch(bot: Bot, event: Event):
         return
 
     adapter_name = get_adapter_name(bot)
-    if adapter_name != "OneBot V11":
+    if adapter_name != "onebotv11":
         return
 
     try:
@@ -68,7 +68,7 @@ async def _handle_poke(bot: Bot, event) -> None:
     user_id = str(event.user_id)
     group_id = str(event.group_id) if event.group_id else None
 
-    target = _build_target(adapter_name="OneBot V11", user_id=user_id, group_id=group_id)
+    target = _build_target(adapter_name="onebotv11", user_id=user_id, group_id=group_id)
     if not check_isolation(event, target):
         return
 
@@ -77,7 +77,7 @@ async def _handle_poke(bot: Bot, event) -> None:
     await route_synthesized_input(
         bot=bot,
         target=target,
-        adapter_name="OneBot V11",
+        adapter_name="onebotv11",
         user_id=user_id,
         group_id=group_id,
         nickname=nickname,
@@ -96,7 +96,7 @@ async def _handle_member_join(bot: Bot, event) -> None:
     user_id = str(event.user_id)
     group_id = str(event.group_id)
 
-    target = _build_target(adapter_name="OneBot V11", user_id=user_id, group_id=group_id)
+    target = _build_target(adapter_name="onebotv11", user_id=user_id, group_id=group_id)
     if not check_isolation(event, target):
         return
 
@@ -105,7 +105,7 @@ async def _handle_member_join(bot: Bot, event) -> None:
     await route_synthesized_input(
         bot=bot,
         target=target,
-        adapter_name="OneBot V11",
+        adapter_name="onebotv11",
         user_id=user_id,
         group_id=group_id,
         nickname=nickname,
