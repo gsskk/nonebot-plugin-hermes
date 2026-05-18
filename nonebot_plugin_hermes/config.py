@@ -97,6 +97,13 @@ class Config(BaseModel):
     用来阻断「我刚说完别人接话→我又凑一句」类型的过触发。
     0 = 关闭(回退到旧行为)。显式 @bot 不受影响,任何时候都会立刻进入决策。"""
 
+    hermes_transport_error_fallback_text: str = "嗯…我这边遇到点状况,稍后再问一次"
+    """Hermes 上游返 5xx / 传输错误时, 替代 LLM raw_text 的兜底文本。
+    没有这条兜底, 服务端英文错误信息(如 "Model generated invalid tool call: ...")
+    会被原文当 raw_text 发到群里,体验差也泄露内部信息。
+    空串 → 不发任何文本(等价于 silent)。仅在 reactive 显式触发 / passive 路径生效——
+    非显式触发本来就静默,不受影响。"""
+
     # --- M1: 反向 MCP 通道 ---
     hermes_mcp_enabled: bool = False
     """是否启动内嵌 FastMCP server(False 时 Hermes 反向调用全失败,出向不影响)"""

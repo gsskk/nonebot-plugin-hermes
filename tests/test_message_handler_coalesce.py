@@ -834,6 +834,179 @@ async def test_refire_respects_post_reply_cooldown(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reactive_transport_error_sends_friendly_fallback(monkeypatch):
+    """2026-05-18 18:51 事件回归: Hermes 上游 502 返服务端错误信息原文,
+    plugin 不该把英文错误信息当 raw_text 发到群里, 应该走 config 里配的友好兜底文本。
+    """
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.core.hermes_client import ChatResult
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_transport_error_fallback_text", "嗯…我这边遇到点状况")
+
+    now = 10_000_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    async def chat_502(**kwargs):
+        # 模拟 Hermes 返 502,body 是服务端英文错误信息(走 hermes_client 后变成
+        # raw_text + parse_failed=True + is_transport_error=True)
+        return ChatResult(
+            raw_text="Model generated invalid tool call: mcp_nonebot_bridge_push_message",
+            media_urls=[],
+            structured=None,
+            parse_failed=True,
+            is_transport_error=True,
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_502)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="@bot ?",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now,
+    )
+
+    send_mock.assert_called_once()
+    kwargs = send_mock.call_args.kwargs
+    assert kwargs["text"] == "嗯…我这边遇到点状况"
+    assert kwargs["at_user_id"] == "u1"
+
+
+@pytest.mark.asyncio
+async def test_reactive_transport_error_silent_when_fallback_empty(monkeypatch):
+    """空 fallback_text → 完全静默, 不发任何内容(用户偏好"宁静"时的逃生口)。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.core.hermes_client import ChatResult
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_transport_error_fallback_text", "")
+
+    now = 10_100_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    async def chat_502(**kwargs):
+        return ChatResult(
+            raw_text="upstream error",
+            media_urls=[],
+            structured=None,
+            parse_failed=True,
+            is_transport_error=True,
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_502)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    await handler_mod._handle_reactive_path(
+        bot=bot if (bot := _fake_bot()) else None,
+        target=_FakeTarget(id="g1", private=False),
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="@bot ?",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now,
+    )
+
+    send_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reactive_parse_failed_non_transport_still_sends_raw_text(monkeypatch):
+    """回归: parse_failed=True 但 is_transport_error=False 时(LLM 真说了点啥但
+    structured 解不出来), 仍维持原 raw_text 兜底,不被新闸门误伤。
+    """
+    from nonebot_plugin_hermes.core.hermes_client import ChatResult
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 10_200_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    async def chat_malformed(**kwargs):
+        # LLM 自己输出了文本但 JSON5 解析失败 ── raw_text 是 LLM 的真实文本,有用
+        return ChatResult(
+            raw_text="嗯应该是这样吧, 但我也不太确定",
+            media_urls=[],
+            structured=None,
+            parse_failed=True,
+            is_transport_error=False,
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_malformed)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    await handler_mod._handle_reactive_path(
+        bot=_fake_bot(),
+        target=_FakeTarget(id="g1", private=False),
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="@bot ?",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now,
+    )
+
+    send_mock.assert_called_once()
+    kwargs = send_mock.call_args.kwargs
+    assert kwargs["text"] == "嗯应该是这样吧, 但我也不太确定"
+
+
+@pytest.mark.asyncio
+async def test_passive_transport_error_sends_friendly_fallback(monkeypatch):
+    """passive 私聊路径同款保护: 上游 transport_error → 友好兜底, 不发原始 raw_text。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.core.hermes_client import ChatResult
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_transport_error_fallback_text", "稍后再问一次")
+
+    async def chat_502(**kwargs):
+        return ChatResult(
+            raw_text="Internal Server Error",
+            media_urls=[],
+            structured=None,
+            parse_failed=False,
+            is_transport_error=True,
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_502)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    await handler_mod._handle_passive_path(
+        bot=_fake_bot(),
+        target=_FakeTarget(id="u1", private=True),
+        adapter_name="ob11",
+        user_id="u1",
+        group_id=None,
+        text="hi",
+        image_urls=[],
+        is_private=True,
+        now_ms=11_000_000,
+    )
+
+    send_mock.assert_called_once()
+    kwargs = send_mock.call_args.kwargs
+    assert kwargs["text"] == "稍后再问一次"
+    # 私聊不 @
+    assert kwargs["at_user_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_refire_when_active_session_expired(monkeypatch):
     """重燃时 session 已过期 → _run_reactive_turn 返回 None,registry 干净 exit,不抛。"""
     from nonebot_plugin_hermes.handlers import message as handler_mod

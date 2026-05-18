@@ -513,6 +513,27 @@ async def _run_passive_turn(
         user_content_override=user_content,
     )
 
+    # 上游 transport_error 同款保护(见 _run_reactive_turn 同名分支注释)。
+    # passive 路径下私聊总是显式对话,群聊已通过触发判断进得来,两边都该有可见反馈;
+    # 配空 fallback_text 时静默,保留逃生口。
+    if result.is_transport_error:
+        fallback_text = plugin_config.hermes_transport_error_fallback_text
+        logger.warning(
+            f"[HERMES passive] transport error fallback "
+            f"(group={group_id}, is_private={is_private}, "
+            f"fallback={'silent' if not fallback_text else 'friendly_text'}); "
+            f"upstream raw_text suppressed (len={len(result.raw_text or '')})"
+        )
+        if fallback_text:
+            await send_text_with_media(
+                bot=bot,
+                target=target,
+                text=fallback_text,
+                media_urls=[],
+                at_user_id=None if is_private else user_id,
+            )
+        return result
+
     # 防御:同一 Hermes session 之前跑过 reactive 时学到 submit_decision 契约,
     # 切回 passive 后仍可能吐 JSON。检测并抠 reply_text;不命中则用原 raw_text。
     reply_text = result.raw_text
@@ -614,6 +635,28 @@ async def _run_reactive_turn(
     )
 
     if result.parse_failed or result.structured is None:
+        # 上游 transport_error(5xx / 网络断 / 流被掐):raw_text 是服务端错误信息原文
+        # (如 "Model generated invalid tool call: ..."),原文转发会把内部错误丢到群里
+        # 既泄密又难看。换成 config 里的友好兜底文本;空串则静默。
+        # parse_failed 但非 transport(LLM 真的回了点啥但结构错):原样转发 raw_text,
+        # 仍可能是用户想要的回答。
+        if result.is_transport_error and is_explicit_trigger:
+            fallback_text = plugin_config.hermes_transport_error_fallback_text
+            logger.warning(
+                f"[HERMES reactive] transport error fallback "
+                f"(group={group_id}, fallback={'silent' if not fallback_text else 'friendly_text'}); "
+                f"upstream raw_text suppressed (len={len(result.raw_text or '')})"
+            )
+            if fallback_text:
+                await send_text_with_media(
+                    bot=bot,
+                    target=target,
+                    text=fallback_text,
+                    media_urls=[],
+                    at_user_id=user_id,
+                )
+            return result
+
         logger.warning(
             f"[HERMES reactive] structured parse failed (group={group_id}, "
             f"transport_error={result.is_transport_error}); fallback="
