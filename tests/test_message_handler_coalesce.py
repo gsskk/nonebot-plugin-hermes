@@ -667,6 +667,97 @@ async def test_reactive_turn_marks_bot_replied_after_send(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_reactive_turn_suppresses_submit_reply_after_mid_turn_push(monkeypatch):
+    """v0.3.2 回归: 同一 chat() agent loop 内,Hermes 先调 push_message(写
+    mark_bot_replied),又返 should_reply=True 同主题答案 → 群里收到两条几乎同样的
+    回复。_run_reactive_turn 在 send submit_decision 之前应识别"本 turn 内
+    last_bot_reply_at 已被推进",抑制第二条。
+
+    2026-05-18 17:48:38/47 事件原型:同 chat call 双答(push 一条 + submit 一条),
+    与 16:04 那次"跨 chat call 双答"是同类不同场景。
+    """
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 9_000_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    async def chat_pushes_then_replies(**kwargs):
+        # 模拟 agent loop 内调 push_message 的副作用:写 mark_bot_replied
+        _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 100)
+        # 紧接着又返 should_reply=True 同主题答案
+        return _make_chat_result(
+            structured={
+                "should_reply": True,
+                "reply_text": "duplicate body",
+                "should_exit_active": False,
+            },
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_pushes_then_replies)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="@bot 分析这图",
+        image_urls=[],
+        is_explicit_trigger=True,  # 显式触发,普通 cooldown 不生效;本闸门必须独立生效
+        now_ms=now,
+    )
+
+    # 测试 mock 里的"push" 没真调 send,所以零次 send 才表示 reactive 那条被抑制了
+    send_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_reactive_turn_still_sends_when_no_mid_turn_push(monkeypatch):
+    """控制组:turn 内没有外部 mark_bot_replied → should_reply=True 应正常发送。
+    防止 v0.3.2 闸门误杀正常 reactive 回复。
+    """
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 9_100_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    async def chat_replies_only(**kwargs):
+        return _make_chat_result(
+            structured={
+                "should_reply": True,
+                "reply_text": "normal reply",
+                "should_exit_active": False,
+            },
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_replies_only)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="@bot",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now,
+    )
+
+    send_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_refire_respects_post_reply_cooldown(monkeypatch):
     """2026-05-18 重复回答事件回归:T1 跑期间 mark_bot_replied 被(外部,如 MCP
     push_message)写入,T2 已被存为 pending → T1 完成后 _refire 起 T2,但 refire

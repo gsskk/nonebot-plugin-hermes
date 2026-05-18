@@ -562,6 +562,13 @@ async def _run_reactive_turn(
     if session is None:
         return None  # 防御:窗口刚刚过期 / 被外部 end()
 
+    # B.3: 快照本 turn 入口时的 last_bot_reply_at,供 chat() 返回后判定 agent loop
+    # 期间是否有外部(MCP push_message)推过 bot 自己的回复。若发生,即使 LLM 返
+    # should_reply=True 也必须抑制本路 send,否则同 turn 内双答。
+    # 2026-05-18 17:48 事件原型:Hermes 在 reactive agent loop 内既调 push_message
+    # 又在 submit_decision 里把同样答案再吐了一遍,plugin 接下来都发了一遍 → 双答。
+    last_bot_reply_at_at_entry = session.last_bot_reply_at
+
     recent = _mcp.message_buffer.get_recent(
         adapter=adapter_name,
         group_id=group_id,
@@ -649,6 +656,20 @@ async def _run_reactive_turn(
 
     reply_text = str(decision.get("reply_text") or "").strip()
     if not reply_text:
+        return result
+
+    # B.3: 同 turn 内防重复闸门 — 若 chat() agent loop 期间 last_bot_reply_at
+    # 已被推进(即 push_message 在中途答过一次), 抑制本路 submit_decision 的 send。
+    # 与入口 cooldown 不同, 这里对显式触发也生效:同 turn 双答属纯重复,与触发性质无关。
+    # 注: 直接读 `session.last_bot_reply_at` 而非重新查 active_sessions ──
+    # mark_bot_replied 是对同一 dataclass 实例原地写, session 变量持有的就是那个实例。
+    # 不查 active_sessions 也回避了 TTL 边界判定与 ended-and-retriggered 罕见竞态。
+    if session.last_bot_reply_at > last_bot_reply_at_at_entry:
+        logger.info(
+            f"[HERMES reactive] suppress submit_decision reply: push_message fired mid-turn "
+            f"(group={group_id} user={user_id} explicit={is_explicit_trigger} "
+            f"reply_text_len={len(reply_text)})"
+        )
         return result
 
     # 群里明确说话给某人 → at;主动插话 → 不 at
