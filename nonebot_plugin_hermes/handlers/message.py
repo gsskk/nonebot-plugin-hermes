@@ -1068,3 +1068,81 @@ async def _refire(
             )
         else:
             _mcp.inflight.exit(key)
+
+
+async def route_synthesized_input(
+    *,
+    bot: Bot,
+    target,
+    adapter_name: str,
+    user_id: str,
+    group_id: Optional[str],
+    nickname: Optional[str],
+    text: str,
+    allow_passive: bool,
+    now_ms: int,
+):
+    """合成消息的统一入口,供 notice handler 复用既有 message routing。
+
+    派发规则:
+      - private (target.private=True) → 仅 allow_passive=True 才走 passive,否则跳过
+      - group + active_session 开 → 触发 active session 并走 reactive
+        (synth 始终算 is_explicit_trigger=True)
+      - group + active_session 关 → 仅 allow_passive=True 才走 passive
+
+    `allow_passive` 控制无 active session 时的兜底:
+      - 戳一戳: True (任何 mode 都开口)
+      - 入群: False (仅 active 开时通过 reactive 让 Hermes 自决,否则不打扰)
+    """
+    if target.private:
+        if not allow_passive:
+            return
+        await _handle_passive_path(
+            bot=bot,
+            target=target,
+            adapter_name=adapter_name,
+            user_id=user_id,
+            nickname=nickname,
+            group_id=None,
+            text=text,
+            image_urls=[],
+            is_private=True,
+            now_ms=now_ms,
+        )
+        return
+
+    # 群聊
+    if not plugin_config.hermes_active_session_enabled:
+        if not allow_passive:
+            return
+        await _handle_passive_path(
+            bot=bot,
+            target=target,
+            adapter_name=adapter_name,
+            user_id=user_id,
+            nickname=nickname,
+            group_id=group_id,
+            text=text,
+            image_urls=[],
+            is_private=False,
+            now_ms=now_ms,
+        )
+        return
+
+    # 群 + active_session 开 → 显式触发 + reactive
+    # (与 handle_message 显式触发同语义: 先 trigger,再 _handle_reactive_path)
+    assert _mcp.active_sessions is not None
+    _mcp.active_sessions.trigger(adapter_name, group_id or "", user_id, now_ms=now_ms)
+    logger.info(f"[HERMES notice] synthesized reactive trigger: {adapter_name}/{group_id} by {user_id}")
+    await _handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name=adapter_name,
+        user_id=user_id,
+        nickname=nickname,
+        group_id=group_id,
+        text=text,
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now_ms,
+    )
