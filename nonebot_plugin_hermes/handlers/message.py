@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
 from typing import List, Optional
 
 import nonebot_plugin_alconna as alconna
@@ -143,6 +144,50 @@ def _extract_sender_nickname(event: Event, adapter_name: str) -> Optional[str]:
             return n
 
     return None
+
+
+@asynccontextmanager
+async def _ack_scope(bot: Bot, event: Event, *, adapter_name: str, is_explicit_trigger: bool):
+    """B-0: OneBot v11 NapCat emoji ack 回执 (set 进 / clear 出)。
+
+    适用条件 (全部满足):
+      - hermes_ack_feedback_enabled = True
+      - is_explicit_trigger = True (仅用户主动 @ bot, bystander/notice 不贴)
+      - adapter_name = 'onebotv11'
+      - event.message_id 可取
+
+    silently-fail 路径: 任何 API 错误吞掉, 绝不阻塞真实回复。
+    set 失败 → 不尝试 clear (避免无意义错误日志); set 成功 → clear 在 finally 内,
+    chat() 抛异常 / 取消 / Ctrl-C 都会触发清理。
+
+    notice 触发的 synthesized 路径 (戳一戳/入群) 不进入本 scope——它们没有'原消息'可贴。
+    """
+    enabled = plugin_config.hermes_ack_feedback_enabled and is_explicit_trigger and adapter_name == "onebotv11"
+    if not enabled:
+        yield
+        return
+
+    msg_id = getattr(event, "message_id", None)
+    if msg_id is None:
+        yield
+        return
+
+    emoji_id = plugin_config.hermes_ack_emoji_id
+    set_ok = False
+    try:
+        await bot.call_api("set_msg_emoji_like", message_id=msg_id, emoji_id=emoji_id, set=True)
+        set_ok = True
+    except Exception as e:
+        logger.debug(f"[HERMES ack] set failed (msg_id={msg_id} emoji_id={emoji_id}): {e}")
+
+    try:
+        yield
+    finally:
+        if set_ok:
+            try:
+                await bot.call_api("set_msg_emoji_like", message_id=msg_id, emoji_id=emoji_id, set=False)
+            except Exception as e:
+                logger.debug(f"[HERMES ack] clear failed (msg_id={msg_id}): {e}")
 
 
 async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_name: str) -> List[str]:
@@ -466,10 +511,26 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             f"{'reactive' if plugin_config.hermes_active_session_enabled else 'passive'}"
         )
 
-    # --- 调用 Hermes ---
-    if target.private or not plugin_config.hermes_active_session_enabled:
-        # 原 v0.1.6 等价路径:passive 模式,raw_text 直接当回复
-        await _handle_passive_path(
+    # --- 调用 Hermes (用 _ack_scope 包住, 显式触发会在用户消息上贴 emoji 回执) ---
+    async with _ack_scope(bot, event, adapter_name=adapter_name, is_explicit_trigger=is_explicit_trigger):
+        if target.private or not plugin_config.hermes_active_session_enabled:
+            # 原 v0.1.6 等价路径:passive 模式,raw_text 直接当回复
+            await _handle_passive_path(
+                bot=bot,
+                target=target,
+                adapter_name=adapter_name,
+                user_id=user_id,
+                nickname=nickname,
+                group_id=group_id,
+                text=msg_text,
+                image_urls=image_urls,
+                is_private=target.private,
+                now_ms=now,
+            )
+            return
+
+        # 群聊 + 活跃态启用 → reactive 决策
+        await _handle_reactive_path(
             bot=bot,
             target=target,
             adapter_name=adapter_name,
@@ -478,24 +539,9 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             group_id=group_id,
             text=msg_text,
             image_urls=image_urls,
-            is_private=target.private,
+            is_explicit_trigger=is_explicit_trigger,
             now_ms=now,
         )
-        return
-
-    # 群聊 + 活跃态启用 → reactive 决策
-    await _handle_reactive_path(
-        bot=bot,
-        target=target,
-        adapter_name=adapter_name,
-        user_id=user_id,
-        nickname=nickname,
-        group_id=group_id,
-        text=msg_text,
-        image_urls=image_urls,
-        is_explicit_trigger=is_explicit_trigger,
-        now_ms=now,
-    )
 
 
 async def _run_passive_turn(
