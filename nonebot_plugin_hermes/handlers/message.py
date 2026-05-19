@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
 from typing import List, Optional
 
 import nonebot_plugin_alconna as alconna
@@ -145,6 +146,50 @@ def _extract_sender_nickname(event: Event, adapter_name: str) -> Optional[str]:
     return None
 
 
+@asynccontextmanager
+async def _ack_scope(bot: Bot, event: Event, *, adapter_name: str, is_explicit_trigger: bool):
+    """B-0: OneBot v11 NapCat emoji ack 回执 (set 进 / clear 出)。
+
+    适用条件 (全部满足):
+      - hermes_ack_feedback_enabled = True
+      - is_explicit_trigger = True (仅用户主动 @ bot, bystander/notice 不贴)
+      - adapter_name = 'onebotv11'
+      - event.message_id 可取
+
+    silently-fail 路径: 任何 API 错误吞掉, 绝不阻塞真实回复。
+    set 失败 → 不尝试 clear (避免无意义错误日志); set 成功 → clear 在 finally 内,
+    chat() 抛异常 / 取消 / Ctrl-C 都会触发清理。
+
+    notice 触发的 synthesized 路径 (戳一戳/入群) 不进入本 scope——它们没有'原消息'可贴。
+    """
+    enabled = plugin_config.hermes_ack_feedback_enabled and is_explicit_trigger and adapter_name == "onebotv11"
+    if not enabled:
+        yield
+        return
+
+    msg_id = getattr(event, "message_id", None)
+    if msg_id is None:
+        yield
+        return
+
+    emoji_id = plugin_config.hermes_ack_emoji_id
+    set_ok = False
+    try:
+        await bot.call_api("set_msg_emoji_like", message_id=msg_id, emoji_id=emoji_id, set=True)
+        set_ok = True
+    except Exception as e:
+        logger.debug(f"[HERMES ack] set failed (msg_id={msg_id} emoji_id={emoji_id}): {e}")
+
+    try:
+        yield
+    finally:
+        if set_ok:
+            try:
+                await bot.call_api("set_msg_emoji_like", message_id=msg_id, emoji_id=emoji_id, set=False)
+            except Exception as e:
+                logger.debug(f"[HERMES ack] clear failed (msg_id={msg_id}): {e}")
+
+
 async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_name: str) -> List[str]:
     """从 UniMessage 中抽出图片 URL 列表(可直接 HTTP GET 拿字节的那种)。
 
@@ -165,6 +210,9 @@ async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_nam
         return urls
     adapter_lc = (adapter_name or "").lower()
     for img in uni_msg[alconna.Image]:
+        # B-0: QQ 大表情包不进 vision URL list (语义价值极低、白烧 vision token)
+        if getattr(img, "sticker", False):
+            continue
         url = getattr(img, "url", None)
         if url and isinstance(url, str) and url.startswith(("http://", "https://")):
             urls.append(url)
@@ -182,6 +230,36 @@ async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_nam
             f"[image] skipped image segment with no resolvable URL (adapter={adapter_lc} id={file_id[:24]}...)"
         )
     return urls
+
+
+def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
+    """扫描非文本/普通图段,返回占位文本列表 (顺序近似按段类型聚合)。
+
+    覆盖:
+      - Image.sticker=True (QQ 大表情包) → [表情包]
+      - Voice → [语音]
+      - Video → [视频]
+      - Emoji (QQ face 段) → [表情:<name>] 或 [表情] (name 缺失时)
+
+    与现有 [图片] 占位策略一致——仅追加到 msg_text 末尾,不试图与文本段 interleave。
+    普通 (非 sticker) Image 不在本函数处理,沿用 _extract_image_urls + [图片] 占位流。
+    """
+    placeholders: List[str] = []
+    if uni_msg.has(alconna.Image):
+        for img in uni_msg[alconna.Image]:
+            if getattr(img, "sticker", False):
+                placeholders.append("[表情包]")
+    if uni_msg.has(alconna.Voice):
+        for _v in uni_msg[alconna.Voice]:
+            placeholders.append("[语音]")
+    if uni_msg.has(alconna.Video):
+        for _v in uni_msg[alconna.Video]:
+            placeholders.append("[视频]")
+    if uni_msg.has(alconna.Emoji):
+        for face in uni_msg[alconna.Emoji]:
+            name = getattr(face, "name", None)
+            placeholders.append(f"[表情:{name}]" if name else "[表情]")
+    return placeholders
 
 
 # Telegram `bot.get_file(file_id)` → URL 短期缓存。
@@ -263,6 +341,12 @@ async def handle_perception(bot: Bot, event: Event):
     if image_urls and plugin_config.hermes_perception_image_mode != "none":
         placeholder = " [图片]"
         msg_text = (msg_text + placeholder) if msg_text else placeholder.strip()
+
+    # B-0: 非文本段占位 (sticker/voice/video/emoji)
+    nontext_placeholders = _collect_nontext_placeholders(uni_msg)
+    if nontext_placeholders:
+        suffix = " ".join(nontext_placeholders)
+        msg_text = (msg_text + " " + suffix) if msg_text else suffix
 
     if not msg_text and not image_urls:
         return
@@ -352,6 +436,14 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     image_urls.extend(replied_image_urls)
     nickname = _extract_sender_nickname(event, adapter_name) or user_id
 
+    # B-0: 非文本段占位拼到 msg_text 末尾。注意这里**不重复**对 replied_message 做
+    # collect: 引用消息已通过 replied_text 走 (引用:...) 前缀进来,
+    # 引用里的 voice/video 用户感知较低,且会让占位重复堆叠。
+    nontext_placeholders = _collect_nontext_placeholders(uni_msg)
+    if nontext_placeholders:
+        suffix = " ".join(nontext_placeholders)
+        msg_text = (msg_text + " " + suffix).strip() if msg_text else suffix
+
     logger.debug(
         f"[HERMES recv] adapter={adapter_name} target={target.id} private={target.private} "
         f"user={user_id} nick={nickname!r} is_tome={event.is_tome()} self_id={bot.self_id!r} "
@@ -419,10 +511,26 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             f"{'reactive' if plugin_config.hermes_active_session_enabled else 'passive'}"
         )
 
-    # --- 调用 Hermes ---
-    if target.private or not plugin_config.hermes_active_session_enabled:
-        # 原 v0.1.6 等价路径:passive 模式,raw_text 直接当回复
-        await _handle_passive_path(
+    # --- 调用 Hermes (用 _ack_scope 包住, 显式触发会在用户消息上贴 emoji 回执) ---
+    async with _ack_scope(bot, event, adapter_name=adapter_name, is_explicit_trigger=is_explicit_trigger):
+        if target.private or not plugin_config.hermes_active_session_enabled:
+            # 原 v0.1.6 等价路径:passive 模式,raw_text 直接当回复
+            await _handle_passive_path(
+                bot=bot,
+                target=target,
+                adapter_name=adapter_name,
+                user_id=user_id,
+                nickname=nickname,
+                group_id=group_id,
+                text=msg_text,
+                image_urls=image_urls,
+                is_private=target.private,
+                now_ms=now,
+            )
+            return
+
+        # 群聊 + 活跃态启用 → reactive 决策
+        await _handle_reactive_path(
             bot=bot,
             target=target,
             adapter_name=adapter_name,
@@ -431,24 +539,9 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             group_id=group_id,
             text=msg_text,
             image_urls=image_urls,
-            is_private=target.private,
+            is_explicit_trigger=is_explicit_trigger,
             now_ms=now,
         )
-        return
-
-    # 群聊 + 活跃态启用 → reactive 决策
-    await _handle_reactive_path(
-        bot=bot,
-        target=target,
-        adapter_name=adapter_name,
-        user_id=user_id,
-        nickname=nickname,
-        group_id=group_id,
-        text=msg_text,
-        image_urls=image_urls,
-        is_explicit_trigger=is_explicit_trigger,
-        now_ms=now,
-    )
 
 
 async def _run_passive_turn(
