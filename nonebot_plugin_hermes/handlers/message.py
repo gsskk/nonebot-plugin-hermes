@@ -165,6 +165,9 @@ async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_nam
         return urls
     adapter_lc = (adapter_name or "").lower()
     for img in uni_msg[alconna.Image]:
+        # B-0: QQ 大表情包不进 vision URL list (语义价值极低、白烧 vision token)
+        if getattr(img, "sticker", False):
+            continue
         url = getattr(img, "url", None)
         if url and isinstance(url, str) and url.startswith(("http://", "https://")):
             urls.append(url)
@@ -182,6 +185,36 @@ async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_nam
             f"[image] skipped image segment with no resolvable URL (adapter={adapter_lc} id={file_id[:24]}...)"
         )
     return urls
+
+
+def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
+    """扫描非文本/普通图段,返回占位文本列表 (顺序近似按段类型聚合)。
+
+    覆盖:
+      - Image.sticker=True (QQ 大表情包) → [表情包]
+      - Voice → [语音]
+      - Video → [视频]
+      - Emoji (QQ face 段) → [表情:<name>] 或 [表情] (name 缺失时)
+
+    与现有 [图片] 占位策略一致——仅追加到 msg_text 末尾,不试图与文本段 interleave。
+    普通 (非 sticker) Image 不在本函数处理,沿用 _extract_image_urls + [图片] 占位流。
+    """
+    placeholders: List[str] = []
+    if uni_msg.has(alconna.Image):
+        for img in uni_msg[alconna.Image]:
+            if getattr(img, "sticker", False):
+                placeholders.append("[表情包]")
+    if uni_msg.has(alconna.Voice):
+        for _v in uni_msg[alconna.Voice]:
+            placeholders.append("[语音]")
+    if uni_msg.has(alconna.Video):
+        for _v in uni_msg[alconna.Video]:
+            placeholders.append("[视频]")
+    if uni_msg.has(alconna.Emoji):
+        for face in uni_msg[alconna.Emoji]:
+            name = getattr(face, "name", None)
+            placeholders.append(f"[表情:{name}]" if name else "[表情]")
+    return placeholders
 
 
 # Telegram `bot.get_file(file_id)` → URL 短期缓存。
@@ -263,6 +296,12 @@ async def handle_perception(bot: Bot, event: Event):
     if image_urls and plugin_config.hermes_perception_image_mode != "none":
         placeholder = " [图片]"
         msg_text = (msg_text + placeholder) if msg_text else placeholder.strip()
+
+    # B-0: 非文本段占位 (sticker/voice/video/emoji)
+    nontext_placeholders = _collect_nontext_placeholders(uni_msg)
+    if nontext_placeholders:
+        suffix = " ".join(nontext_placeholders)
+        msg_text = (msg_text + " " + suffix) if msg_text else suffix
 
     if not msg_text and not image_urls:
         return
@@ -351,6 +390,14 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     image_urls = await _extract_image_urls(uni_msg, bot, adapter_name)
     image_urls.extend(replied_image_urls)
     nickname = _extract_sender_nickname(event, adapter_name) or user_id
+
+    # B-0: 非文本段占位拼到 msg_text 末尾。注意这里**不重复**对 replied_message 做
+    # collect: 引用消息已通过 replied_text 走 (引用:...) 前缀进来,
+    # 引用里的 voice/video 用户感知较低,且会让占位重复堆叠。
+    nontext_placeholders = _collect_nontext_placeholders(uni_msg)
+    if nontext_placeholders:
+        suffix = " ".join(nontext_placeholders)
+        msg_text = (msg_text + " " + suffix).strip() if msg_text else suffix
 
     logger.debug(
         f"[HERMES recv] adapter={adapter_name} target={target.id} private={target.private} "
