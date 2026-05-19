@@ -12,4 +12,4 @@ def test_ack_feedback_defaults_false():
 def test_ack_emoji_id_default():
     from nonebot_plugin_hermes.config import plugin_config
 
-    assert plugin_config.hermes_ack_emoji_id == "424"
+    assert plugin_config.hermes_ack_emoji_id == 341

@@ -309,7 +309,7 @@ T+5s  用户 B:  @bot 评价下上图
 | `HERMES_POKE_TRIGGER_ENABLED` | `false` | OneBot v11:被戳一戳时触发对话（私聊 / 群都生效,等价于被 @）。其他适配器静默忽略 |
 | `HERMES_GREET_ON_JOIN` | `false` | OneBot v11:有人加入群且 `HERMES_ACTIVE_SESSION_ENABLED=true` 时,触发一次 reactive turn 让 Hermes 自决是否欢迎(`noop` 是合法返回)。active 关时不触发 |
 | `HERMES_ACK_FEEDBACK_ENABLED` | `false` | 用户消息上显示 ack 回执(B-0 实装 OneBot v11 NapCat emoji)。B-0.5 规划扩 TG/Discord 私聊 typing |
-| `HERMES_ACK_EMOJI_ID` | `424` | B-0 OneBot v11 路径下贴的 QQ 表情 id |
+| `HERMES_ACK_EMOJI_ID` | `341` | B-0 OneBot v11 路径下贴的 QQ 表情 id(默认 341 = /打招呼;`373` /忙 = 打字动物;`129` /挥手 = 经典挥手) |
 | `HERMES_BUFFER_PER_GROUP_CAP` | `200` | ⚠️ **0.3 起空转**——MessageBuffer 改为 SQLite 后端,无内存 per-group 上限;消息淘汰由 `HERMES_STORAGE_MESSAGE_*` 控制。下一个 major 版本会移除 |
 | `HERMES_BUFFER_TOTAL_GROUPS_CAP` | `50` | ⚠️ **0.3 起空转**——同上,SQLite 后端无 LRU,改为 retention + 行数上限 |
 | `HERMES_MCP_ENABLED` | `false` | 启动内嵌 FastMCP server（M1 反向通道） |

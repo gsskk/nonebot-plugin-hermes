@@ -104,14 +104,34 @@ class Config(BaseModel):
 
     # --- Phase B-0: ack 反馈 + 非文本段感知 ---
     hermes_ack_feedback_enabled: bool = False
-    """is_explicit_trigger=True 的消息发生时,给一个'已收到'视觉回执。
-    B-0 实装: OneBot v11 (NapCat/LLOneBot) 贴 emoji,chat 完成后撤销。
-    其他适配器或缺少扩展时 silently no-op。开关名通用,B-0.5 规划里要扩
-    Telegram/Discord 私聊 typing 状态,避免改名 breaking。"""
+    """显式触发 (用户主动 @ bot 或私聊) 时给一个'已收到'视觉回执。
+    B-0 实装: OneBot v11 **群聊** (NapCat/LLOneBot/LuckyLilliaBot) 贴 emoji,
+    chat 完成后撤销。其他适配器或场景 silently no-op。
 
-    hermes_ack_emoji_id: str = "424"
-    """B-0 OneBot v11 路径下贴的 QQ 表情 id。默认 424 ('看见')。
-    完整列表见 NapCat / OneBot face_id 表。仅 OneBot 路径用到。"""
+    开关名通用,B-0.5 规划里要扩 Telegram/Discord 私聊 typing 状态,避免改名 breaking。
+
+    **已知限制**:
+      - 私聊不贴 emoji: QQ NT 协议下 set_msg_emoji_like 仅支持群聊
+        (LuckyLilliaBot/NapCat 在私聊调用都会 raise '只支持群聊消息')
+      - emoji 撤销依赖 OneBot 实现端较新版本:
+          NapCat: 全版本支持 (用 set=False)
+          LuckyLilliaBot / 较新 LLOneBot: 支持 (unset_msg_emoji_like 或 set=False)
+          老 LLOneBot: 两条路径都不支持, emoji 永久留在消息上 (启动后 WARN-once 告知)
+    若 emoji 不撤销但你不想 disable, 接受'永久已读痕迹'即可——不影响主流程。"""
+
+    hermes_ack_emoji_id: int = 341
+    """B-0 OneBot v11 路径下贴的 QQ 表情 id。默认 341 (/打招呼) ——
+    动画"hi 打招呼",bot 收到 @ 的最自然反馈。
+    其他推荐:
+      - 373 (/忙):一只小动物在打字,typing-indicator 风格
+      - 129 (/挥手):经典小表情版的挥手,跨版本更稳但视觉平淡
+    注意:341/373 是 QQ NT 超表情 (EMCode 10000+),NapCat 内部有个
+    `length > 3 ? type=2 : type=1` 启发式,3 位 id 会被当经典型——
+    实测多数 NapCat 版本仍能正常 render,但跨版本不保证。
+    若实测视觉异常,可换经典型小表情 (EMCode < 300,如 129)。
+    NapCat schema 接受 Number | String,走 int 是为了 .env 直接写数字
+    (HERMES_ACK_EMOJI_ID=237 不用引号),pydantic-settings 不会撞类型错。
+    完整列表见 NapCat face_config.json。仅 OneBot 路径用到。"""
 
     hermes_reactive_post_reply_cooldown_sec: int = 8
     """reactive 模式下,bot 刚回复完群里 N 秒内,非显式 @ 触发的新消息直接静默。
