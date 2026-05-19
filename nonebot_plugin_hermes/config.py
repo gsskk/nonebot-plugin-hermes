@@ -102,6 +102,17 @@ class Config(BaseModel):
     让 Hermes 自决是否欢迎(decision_protocol 的 noop 是合法选择)。
     active_session 关时不触发——passive 是 1:1 Q&A 语义,不适用欢迎场景。"""
 
+    # --- Phase B-0: ack 反馈 + 非文本段感知 ---
+    hermes_ack_feedback_enabled: bool = False
+    """is_explicit_trigger=True 的消息发生时,给一个'已收到'视觉回执。
+    B-0 实装: OneBot v11 (NapCat/LLOneBot) 贴 emoji,chat 完成后撤销。
+    其他适配器或缺少扩展时 silently no-op。开关名通用,B-0.5 规划里要扩
+    Telegram/Discord 私聊 typing 状态,避免改名 breaking。"""
+
+    hermes_ack_emoji_id: str = "424"
+    """B-0 OneBot v11 路径下贴的 QQ 表情 id。默认 424 ('看见')。
+    完整列表见 NapCat / OneBot face_id 表。仅 OneBot 路径用到。"""
+
     hermes_reactive_post_reply_cooldown_sec: int = 8
     """reactive 模式下,bot 刚回复完群里 N 秒内,非显式 @ 触发的新消息直接静默。
     用来阻断「我刚说完别人接话→我又凑一句」类型的过触发。
