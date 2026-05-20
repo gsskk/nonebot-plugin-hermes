@@ -997,7 +997,7 @@ async def _handle_passive_path(
         _mcp.inflight.try_enter(
             key,
             current_buffered,
-            is_explicit_trigger=True,  # passive 进得来即显式 (spec § 2.2 注释)
+            is_explicit_trigger=True,  # passive 路径只在 (private OR active_session=off) 触发, 二者都需要 user 显式说话
             original_msg_id=event_msg_id,
             now_ms=now_ms,
         )
@@ -1216,6 +1216,7 @@ async def _refire(
     assert _mcp.inflight is not None
 
     if depth > MAX_REFIRE_DEPTH:
+        _mcp.inflight.exit(key)  # release slot first to avoid race with concurrent arrivals
         if is_explicit_trigger:
             logger.warning(
                 f"[HERMES] refire depth cap reached for explicit @ "
@@ -1224,7 +1225,6 @@ async def _refire(
             await _emit_busy_notice(bot, adapter_name, original_msg_id)
         else:
             logger.warning(f"[HERMES] refire depth exceeded ({depth}); dropping pending {key}")
-        _mcp.inflight.exit(key)
         return
 
     # now_ms 用 wall-clock 而不是 trigger_msg.ts:_run_*_turn 内部用它做

@@ -532,6 +532,109 @@ async def test_refire_transport_error_explicit_sends_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_inflight_explicit_at_protected_from_bystander_overwrite(monkeypatch):
+    """user-A explicit @ in pending → user-B bystander not overwriting → refire runs user-A, not user-B.
+
+    Scenario:
+      - seed request enters in-flight (chat() running for 0.1 s)
+      - user-A explicit @bot queues in pending
+      - user-B and user-C bystanders arrive → pending_kept (explicit not overwritten)
+      - seed chat completes → refire processes user-A's payload (NOT user-B or user-C)
+    """
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 0)
+
+    now = int(time.time() * 1000)
+    _mcp.active_sessions.trigger("ob11", "g1", "seed", now_ms=now)
+
+    chat_args: List[dict] = []
+
+    async def slow_chat(**kwargs):
+        chat_args.append(kwargs)
+        await asyncio.sleep(0.1)
+        return _make_chat_result(text=f"reply-{len(chat_args)}")
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", slow_chat)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    # 0. seed explicit @bot occupies the in-flight slot (chat() runs 0.1 s)
+    t_seed = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="seed-user",
+            group_id="g1",
+            text="seed message",
+            image_urls=[],
+            is_explicit_trigger=True,
+            now_ms=now,
+        )
+    )
+    await asyncio.sleep(0.01)
+
+    # 1. user-A explicit @bot enters in pending
+    t1 = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="user-A",
+            group_id="g1",
+            text="A asks something",
+            image_urls=[],
+            is_explicit_trigger=True,
+            now_ms=now + 1,
+        )
+    )
+    await asyncio.sleep(0.005)
+    # 2. user-B bystander tries to overwrite pending
+    t2 = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="user-B",
+            group_id="g1",
+            text="B just chats",
+            image_urls=[],
+            is_explicit_trigger=False,
+            now_ms=now + 2,
+        )
+    )
+    # 3. user-C bystander tries again to overwrite pending
+    await asyncio.sleep(0.005)
+    t3 = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="user-C",
+            group_id="g1",
+            text="C just chats too",
+            image_urls=[],
+            is_explicit_trigger=False,
+            now_ms=now + 3,
+        )
+    )
+    await asyncio.gather(t_seed, t1, t2, t3)
+    await asyncio.sleep(0.3)
+
+    # Two chat calls: seed entered + refire processes user-A's pending (not B or C)
+    assert len(chat_args) == 2, f"expected 2 chat calls (seed + refire), got {len(chat_args)}"
+    # Refire's chat call must be on behalf of user-A — the explicit pending protected from overwrite
+    assert chat_args[1].get("user_id") == "user-A", (
+        f"refire used wrong user: {chat_args[1].get('user_id')!r} (expected 'user-A' — "
+        f"bystander pending must not have overwritten explicit)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_refire_transport_error_bystander_no_fallback(monkeypatch):
     """refire 路径 chat 返 transport_error + pending 是 bystander → 不发 fallback(原行为)。"""
     from nonebot_plugin_hermes.config import plugin_config
