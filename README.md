@@ -42,6 +42,7 @@
 - 🧪 **历史图片召回 (0.3+, 实验性)**：SQLite 持久化消息日志 + 文件系统图字节缓存 + MCP 工具 `get_message_images`，让 Hermes 在用户说"上图"/"刚才那张"时按消息 id 精确取回历史图字节
 - 🧪 **OneBot v11 Notice 触发 (0.3.3+, 实验性)**：戳一戳作为第二种 @ 等价触发；有人入群时让 Hermes 自决要不要欢迎（noop 合法，不做模板欢迎语）
 - 🧪 **消息段感知扩展 (0.3.4+, 实验性)**：语音/视频/QQ 表情/sticker 占位文本注入 LLM 视野;sticker 自动跳过 vision API。OneBot v11 NapCat 显式 @ 时贴 emoji 回执(`HERMES_ACK_FEEDBACK_ENABLED=true`)
+- ✅ **合并转发处理 (0.4.0+)**：群里收到合并转发消息时展开为有限长度摘要；bot 自身长回复在 OneBot v11 群里转为合并转发避免截断
 
 ## 快速开始
 
