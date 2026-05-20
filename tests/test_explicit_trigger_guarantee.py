@@ -43,10 +43,12 @@ def _fake_bot(self_id: str = "999"):
 def _make_chat_result(text: str = "ok", transport_error: bool = False, structured=None):
     from nonebot_plugin_hermes.core.hermes_client import ChatResult
 
+    if structured is None and not transport_error:
+        structured = {"should_reply": True, "reply_text": text, "should_exit_active": False}
     return ChatResult(
         raw_text=text,
         media_urls=[],
-        structured=structured or {"should_reply": True, "reply_text": text, "should_exit_active": False},
+        structured=structured,
         parse_failed=False,
         is_transport_error=transport_error,
     )
@@ -461,3 +463,131 @@ async def test_refire_depth_cap_explicit_no_msg_id_warn_only(monkeypatch):
 
     bot.call_api.assert_not_awaited()
     assert any("busy_notice" in m and "no-op" in m for m in warn_messages)
+
+
+@pytest.mark.asyncio
+async def test_refire_transport_error_explicit_sends_fallback(monkeypatch):
+    """refire 路径 chat 返 transport_error + pending 是 explicit → 发 fallback_text。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 0)
+    monkeypatch.setattr(plugin_config, "hermes_transport_error_fallback_text", "我这边遇到点状况,稍后再问一次")
+
+    now = int(time.time() * 1000)
+    _mcp.active_sessions.trigger("ob11", "g1", "user-A", now_ms=now)
+
+    chat_call = {"count": 0}
+
+    async def chat_first_ok_then_transport_err(**kwargs):
+        chat_call["count"] += 1
+        await asyncio.sleep(0.05)
+        if chat_call["count"] == 1:
+            return _make_chat_result(text="first ok")
+        return _make_chat_result(text="ignored upstream error noise", transport_error=True)
+
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_first_ok_then_transport_err)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    t1 = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="user-A",
+            group_id="g1",
+            text="hello",
+            image_urls=[],
+            is_explicit_trigger=True,
+            now_ms=now,
+            event_msg_id=1001,
+        )
+    )
+    await asyncio.sleep(0.01)
+    t2 = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="user-B",
+            group_id="g1",
+            text="me too",
+            image_urls=[],
+            is_explicit_trigger=True,
+            now_ms=now + 1,
+            event_msg_id=1002,
+        )
+    )
+    await asyncio.gather(t1, t2)
+    await asyncio.sleep(0.3)
+
+    # send 应该被调 2 次:第一发正常回 "first ok",第二发 fallback_text
+    assert send_mock.await_count == 2
+    last_call = send_mock.await_args_list[-1]
+    assert last_call.kwargs.get("text") == "我这边遇到点状况,稍后再问一次"
+
+
+@pytest.mark.asyncio
+async def test_refire_transport_error_bystander_no_fallback(monkeypatch):
+    """refire 路径 chat 返 transport_error + pending 是 bystander → 不发 fallback(原行为)。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 0)
+    monkeypatch.setattr(plugin_config, "hermes_transport_error_fallback_text", "fallback text")
+
+    now = int(time.time() * 1000)
+    _mcp.active_sessions.trigger("ob11", "g1", "user-A", now_ms=now)
+
+    chat_call = {"count": 0}
+
+    async def chat_first_ok_then_transport_err(**kwargs):
+        chat_call["count"] += 1
+        await asyncio.sleep(0.05)
+        if chat_call["count"] == 1:
+            return _make_chat_result(text="first ok")
+        return _make_chat_result(text="x", transport_error=True)
+
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_first_ok_then_transport_err)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    t1 = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="user-A",
+            group_id="g1",
+            text="hello",
+            image_urls=[],
+            is_explicit_trigger=True,
+            now_ms=now,
+        )
+    )
+    await asyncio.sleep(0.01)
+    t2 = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="user-B",
+            group_id="g1",
+            text="bystander chatter",
+            image_urls=[],
+            is_explicit_trigger=False,
+            now_ms=now + 1,
+        )
+    )
+    await asyncio.gather(t1, t2)
+    await asyncio.sleep(0.3)
+
+    # send 应该只被调 1 次:第一发回 "first ok",bystander 失败静默
+    assert send_mock.await_count == 1
