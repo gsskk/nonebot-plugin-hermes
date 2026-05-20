@@ -545,3 +545,52 @@ async def test_wiring_full_block_used_when_no_prior_text(monkeypatch):
     assert msg_text_perception == summary
     # main result is exactly the full block
     assert msg_text_main == forward_full2
+
+
+# ---------------------------------------------------------------------------
+# OneBot implementation-shape compatibility
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extract_handles_content_key_shape(monkeypatch):
+    """NapCat / LuckyLilliaBot use `content` not `message` as the segments key.
+
+    Observed real-world shape (LuckyLilliaBot, 2026-05):
+      {"sender": {"nickname": "..."}, "content": [...], "time": ...,
+       "message_format": "array", "message_type": "..."}
+
+    A regression that drops the `content` fallback would make _node_summary return
+    None for every node → empty lines → fetch_failed self-closing tag. This test
+    pins the dual-shape contract.
+    """
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
+    from nonebot_plugin_hermes.config import plugin_config
+    import nonebot_plugin_alconna as alconna
+
+    monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
+    monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 800)
+
+    # Nodes use `content` (not `message`) and have the extra metadata fields
+    # that LuckyLilliaBot ships with.
+    nodes = [
+        {
+            "sender": {"nickname": f"User{i}"},
+            "content": [{"type": "text", "data": {"text": f"Hello {i}"}}],
+            "time": 1700000000 + i,
+            "message_format": "array",
+            "message_type": "private",
+        }
+        for i in range(3)
+    ]
+    bot = MagicMock()
+    bot.call_api = AsyncMock(return_value={"messages": nodes})
+
+    msg = _make_uni_msg(alconna.Reference(id="napcat_shape"))
+    result = await _extract_forward_full(msg, bot, adapter_name="onebotv11")
+
+    assert result is not None, "content-key shape should not fall through to fetch_failed"
+    assert 'count="3"' in result
+    for i in range(3):
+        assert f"User{i}: Hello {i}" in result
+    assert "fetch_failed" not in result

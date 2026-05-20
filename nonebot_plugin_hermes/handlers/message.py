@@ -374,16 +374,21 @@ def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
 def _node_summary(node: dict) -> Optional[str]:
     """将 OneBot get_forward_msg 返回的单条节点转成单行摘要。
 
-    节点结构:
-      {"sender": {"nickname": "...", "card": "..."}, "name": "...",
-       "message": [{"type": "text", "data": {"text": "..."}}, ...]}
+    节点结构在不同 OneBot 实现端之间不完全统一,主要存在两种:
+      A) flat + content (NapCat / LuckyLilliaBot 现行):
+         {"sender": {"nickname": "...", "card": "..."}, "content": [...segments...],
+          "time": ..., "message_format": "array", "message_type": "..."}
+      B) flat + message (旧 go-cqhttp / 部分 LLOneBot 版本):
+         {"sender": {...}, "name": "...", "message": [...segments...]}
+    本函数对二者都接;优先取 content,缺则取 message。
 
     空内容节点返回 None(调用方跳过,避免裸 'Unknown: ' 行)。
     """
     sender = node.get("sender", {})
     nickname = sender.get("nickname") or sender.get("card") or node.get("name") or "Unknown"
     parts: List[str] = []
-    for seg in node.get("message", []):
+    segs = node.get("content") or node.get("message") or []
+    for seg in segs:
         seg_type = seg.get("type", "")
         data = seg.get("data", {}) if isinstance(seg.get("data"), dict) else {}
         if seg_type == "text":
@@ -443,7 +448,11 @@ async def _extract_forward_full(
 
     try:
         resp = await bot.call_api("get_forward_msg", id=ref_id)
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            f"[HERMES forward] get_forward_msg failed adapter={adapter_name} "
+            f"ref_id={ref_id}: {type(exc).__name__}: {exc}"
+        )
         return '<forwarded_messages count="?" status="fetch_failed"/>'
 
     nodes: list = []
