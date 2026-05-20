@@ -4,12 +4,15 @@
 in-flight 时新消息只更新 pending 单元,等当前一发完成后再合并跑一次。
 
 线程安全:**否**。预设单线程 asyncio 事件循环,与 ActiveSessionManager 一致。
+
+Pending 优先级:explicit-trigger 不被 bystander 覆盖,以保证 @bot 一旦排进
+pending 就一定能在前一发完成后被 _refire 跑到 chat()。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Literal, Optional, Tuple
+from typing import Dict, Literal, Optional, Tuple, Union
 
 from .message_buffer import BufferedMessage
 
@@ -20,9 +23,24 @@ MAX_REFIRE_DEPTH = 3
 
 
 @dataclass
+class PendingEntry:
+    """In-flight 期间排队的消息及触发元数据。
+
+    pending 不再裸存 BufferedMessage——单独抽 PendingEntry 是为了跨 turn 边界
+    保留两个 plumbing 决策所需要的事实:
+      - 这条排队消息原本是不是 explicit-trigger
+      - 它的原始 adapter 侧 message_id(用于失败时贴 emoji notice)
+    """
+
+    msg: BufferedMessage
+    is_explicit_trigger: bool
+    original_msg_id: Optional[Union[str, int]] = None
+
+
+@dataclass
 class InflightSlot:
     started_at: int
-    pending: Optional[BufferedMessage] = None
+    pending: Optional[PendingEntry] = None
 
 
 class InflightRegistry:
@@ -31,6 +49,13 @@ class InflightRegistry:
     Key 约定:
       - 群: ("adapter", "group:" + group_id)
       - 私聊: ("adapter", "private:" + user_id)
+
+    Pending 覆盖规则:
+      - 空 pending → 写入,返回 'pending_set'
+      - 已存 bystander pending,新到 explicit → 覆盖升级,返回 'pending_set'
+      - 已存 bystander pending,新到 bystander → latest wins 覆盖,返回 'pending_set'
+      - 已存 explicit pending,新到 explicit → latest wins 覆盖,返回 'pending_set'
+      - 已存 explicit pending,新到 bystander → 不覆盖,返回 'pending_kept'
 
     不持有任何 asyncio.Task 引用 —— 重燃由 caller 用 create_task 自己接手,
     registry 只负责「现在有没有人在跑」+「跑完后是否要再跑一次」两个状态。
@@ -43,26 +68,37 @@ class InflightRegistry:
         self,
         key: Tuple[str, str],
         current_msg: BufferedMessage,
+        *,
+        is_explicit_trigger: bool,
+        original_msg_id: Optional[Union[str, int]],
         now_ms: int,
-    ) -> Literal["entered", "pending_set"]:
+    ) -> Literal["entered", "pending_set", "pending_kept"]:
         """无 slot → 占位 started_at=now_ms,返回 'entered'。
-        有 slot → 把 current_msg 写进 pending(覆盖旧 pending),返回 'pending_set'。
+        有 slot 且 pending 是 explicit 而新到 bystander → 'pending_kept'。
+        其它情况 → 写 pending,返回 'pending_set'。
         """
         slot = self._slots.get(key)
         if slot is None:
             self._slots[key] = InflightSlot(started_at=now_ms)
             return "entered"
-        slot.pending = current_msg
+        # explicit 不被 bystander 覆盖,保护用户明示意图
+        if not is_explicit_trigger and slot.pending is not None and slot.pending.is_explicit_trigger:
+            return "pending_kept"
+        slot.pending = PendingEntry(
+            msg=current_msg,
+            is_explicit_trigger=is_explicit_trigger,
+            original_msg_id=original_msg_id,
+        )
         return "pending_set"
 
-    def take_pending(self, key: Tuple[str, str]) -> Optional[BufferedMessage]:
+    def take_pending(self, key: Tuple[str, str]) -> Optional[PendingEntry]:
         """Destructive read。无 slot 或 pending 为 None 都返回 None。"""
         slot = self._slots.get(key)
         if slot is None:
             return None
-        msg = slot.pending
+        entry = slot.pending
         slot.pending = None
-        return msg
+        return entry
 
     def exit(self, key: Tuple[str, str]) -> None:
         """释放 slot。pending 仍在的话由调用方自行先 take_pending。

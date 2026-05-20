@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import nonebot_plugin_alconna as alconna
 from nonebot import logger, on_message
@@ -255,6 +255,37 @@ async def _ack_scope(
                                 f"(unset_msg_emoji_like 1404; set=False 也可能空转)。emoji 将永久标记。"
                                 f"建议: 升级 LLOneBot / 改用 NapCat / 设 HERMES_ACK_FEEDBACK_ENABLED=false。"
                             )
+
+
+async def _emit_busy_notice(
+    bot: Bot,
+    adapter_name: str,
+    original_msg_id: Optional[Union[str, int]],
+) -> None:
+    """Depth-cap 触顶丢 explicit pending 时, 在原消息上贴 busy emoji, 不撤销。
+
+    限制:
+      - adapter 非 onebotv11 / msg_id 缺失 → no-op + WARN 日志
+      - emoji API 报错 → swallow + DEBUG 日志, 不文本兜底
+
+    与 _ack_scope 的区别: ack 走"工作中→撤销"两阶段,busy 是"工作不下去→留印记"一次性,
+    生命周期不耦合, emoji_id 也不同 (busy 默认 hermes_busy_emoji_id = 97 /擦汗,
+    ack 默认 341 /打招呼)。
+    """
+    if adapter_name != "onebotv11" or original_msg_id is None:
+        logger.warning(
+            f"[HERMES busy_notice] no-op: adapter={adapter_name} "
+            f"msg_id={original_msg_id} (only onebotv11 group supports emoji notice)"
+        )
+        return
+    try:
+        await bot.call_api(
+            "set_msg_emoji_like",
+            message_id=original_msg_id,
+            emoji_id=plugin_config.hermes_busy_emoji_id,
+        )
+    except Exception as e:
+        logger.debug(f"[HERMES busy_notice] emit failed (msg_id={original_msg_id}): {e}")
 
 
 async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_name: str) -> List[str]:
@@ -599,6 +630,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
                 image_urls=image_urls,
                 is_private=target.private,
                 now_ms=now,
+                event_msg_id=getattr(event, "message_id", None),
             )
             return
 
@@ -614,6 +646,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             image_urls=image_urls,
             is_explicit_trigger=is_explicit_trigger,
             now_ms=now,
+            event_msg_id=getattr(event, "message_id", None),
         )
 
 
@@ -936,6 +969,7 @@ async def _handle_passive_path(
     is_private: bool,
     now_ms: int,
     nickname: Optional[str] = None,
+    event_msg_id: Optional[Union[str, int]] = None,
 ):
     """Passive 外壳:inflight 占位 → _run_passive_turn → 合并重燃。
 
@@ -959,7 +993,16 @@ async def _handle_passive_path(
         is_bot=False,
     )
 
-    if _mcp.inflight.try_enter(key, current_buffered, now_ms) == "pending_set":
+    if (
+        _mcp.inflight.try_enter(
+            key,
+            current_buffered,
+            is_explicit_trigger=True,  # passive 路径只在 (private OR active_session=off) 触发, 二者都需要 user 显式说话
+            original_msg_id=event_msg_id,
+            now_ms=now_ms,
+        )
+        != "entered"
+    ):
         return
 
     should_refire = False
@@ -984,14 +1027,16 @@ async def _handle_passive_path(
         if not should_refire:
             _mcp.inflight.exit(key)
         else:
-            pending = _mcp.inflight.take_pending(key)
-            if pending is None or pending.ts <= current_buffered.ts:
+            pending_entry = _mcp.inflight.take_pending(key)
+            if pending_entry is None or pending_entry.msg.ts <= current_buffered.ts:
                 _mcp.inflight.exit(key)
             else:
                 asyncio.create_task(
                     _refire(
                         key=key,
-                        trigger_msg=pending,
+                        trigger_msg=pending_entry.msg,
+                        is_explicit_trigger=pending_entry.is_explicit_trigger,
+                        original_msg_id=pending_entry.original_msg_id,
                         depth=1,
                         mode="passive",
                         bot=bot,
@@ -1040,6 +1085,7 @@ async def _handle_reactive_path(
     is_explicit_trigger: bool,
     now_ms: int,
     nickname: Optional[str] = None,
+    event_msg_id: Optional[Union[str, int]] = None,
 ):
     """Reactive 外壳:inflight 占位 → 调 _run_reactive_turn → finally 合并重燃。
 
@@ -1096,7 +1142,16 @@ async def _handle_reactive_path(
         is_bot=False,
     )
 
-    if _mcp.inflight.try_enter(key, current_buffered, now_ms) == "pending_set":
+    if (
+        _mcp.inflight.try_enter(
+            key,
+            current_buffered,
+            is_explicit_trigger=is_explicit_trigger,
+            original_msg_id=event_msg_id,
+            now_ms=now_ms,
+        )
+        != "entered"
+    ):
         return
 
     should_refire = False
@@ -1122,14 +1177,16 @@ async def _handle_reactive_path(
         if not should_refire:
             _mcp.inflight.exit(key)
         else:
-            pending = _mcp.inflight.take_pending(key)
-            if pending is None or pending.ts <= current_buffered.ts:
+            pending_entry = _mcp.inflight.take_pending(key)
+            if pending_entry is None or pending_entry.msg.ts <= current_buffered.ts:
                 _mcp.inflight.exit(key)
             else:
                 asyncio.create_task(
                     _refire(
                         key=key,
-                        trigger_msg=pending,
+                        trigger_msg=pending_entry.msg,
+                        is_explicit_trigger=pending_entry.is_explicit_trigger,
+                        original_msg_id=pending_entry.original_msg_id,
                         depth=1,
                         mode="reactive",
                         bot=bot,
@@ -1144,6 +1201,8 @@ async def _refire(
     *,
     key,
     trigger_msg: BufferedMessage,
+    is_explicit_trigger: bool,
+    original_msg_id: Optional[Union[str, int]],
     depth: int,
     mode: str,
     bot: Bot,
@@ -1157,8 +1216,15 @@ async def _refire(
     assert _mcp.inflight is not None
 
     if depth > MAX_REFIRE_DEPTH:
-        logger.warning(f"[HERMES] refire depth exceeded ({depth}); dropping pending {key}")
-        _mcp.inflight.exit(key)
+        _mcp.inflight.exit(key)  # release slot first to avoid race with concurrent arrivals
+        if is_explicit_trigger:
+            logger.warning(
+                f"[HERMES] refire depth cap reached for explicit @ "
+                f"(key={key} depth={depth} msg_id={original_msg_id}); emitting busy notice"
+            )
+            await _emit_busy_notice(bot, adapter_name, original_msg_id)
+        else:
+            logger.warning(f"[HERMES] refire depth exceeded ({depth}); dropping pending {key}")
         return
 
     # now_ms 用 wall-clock 而不是 trigger_msg.ts:_run_*_turn 内部用它做
@@ -1169,13 +1235,14 @@ async def _refire(
     refire_now_ms = _now_ms()
 
     # B: refire 路径同款 post-reply cooldown 闸门。
-    # 重燃总是 is_explicit_trigger=False(passive 旁观),所以一律按非显式触发处理。
+    # 仅对非显式触发生效——explicit pending(如 @bot)须穿透 cooldown 直达 chat()。
     # 关键场景:初发 turn 自己没回(submit_decision=silent)但期间 MCP push_message
     # 把 last_bot_reply_at 写了 → 仅靠入口处的闸门挡不住,因为 pending 是上一次
     # 入口处放进来的(进 pending 时还没写 mark)。在这里再判一次,把这条路径补严。
     if (
         mode == "reactive"
         and group_id is not None
+        and not is_explicit_trigger
         and _in_post_reply_cooldown(adapter_name, str(group_id), refire_now_ms)
     ):
         logger.debug(f"[HERMES reactive] refire skipped by post-reply cooldown (key={key} depth={depth})")
@@ -1195,7 +1262,7 @@ async def _refire(
                 group_id=group_id,
                 text=trigger_msg.content,
                 image_urls=list(trigger_msg.image_urls),
-                is_explicit_trigger=False,  # 重燃总是 passive 旁观;显式触发已是初发那一发
+                is_explicit_trigger=is_explicit_trigger,
                 now_ms=refire_now_ms,
             )
         else:
@@ -1218,12 +1285,14 @@ async def _refire(
         if not should_refire:
             _mcp.inflight.exit(key)
             return
-        pending = _mcp.inflight.take_pending(key)
-        if pending and pending.ts > trigger_msg.ts:
+        pending_entry = _mcp.inflight.take_pending(key)
+        if pending_entry and pending_entry.msg.ts > trigger_msg.ts:
             asyncio.create_task(
                 _refire(
                     key=key,
-                    trigger_msg=pending,
+                    trigger_msg=pending_entry.msg,
+                    is_explicit_trigger=pending_entry.is_explicit_trigger,
+                    original_msg_id=pending_entry.original_msg_id,
                     depth=depth + 1,
                     mode=mode,
                     bot=bot,

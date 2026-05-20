@@ -145,6 +145,18 @@ class Config(BaseModel):
     空串 → 不发任何文本(等价于 silent)。仅在 reactive 显式触发 / passive 路径生效——
     非显式触发本来就静默,不受影响。"""
 
+    hermes_busy_emoji_id: int = 97
+    """depth-cap 触顶丢 explicit @ 时贴在原消息上的 emoji_id,仅 OneBot v11 群聊路径生效。
+    默认 97 = QQ 经典表情 /擦汗,语义"忙不过来"。
+    与 hermes_ack_emoji_id(默认 341 /打招呼)的"已收到"反向情绪,视觉上明显区分。
+
+    本字段独立于 hermes_ack_feedback_enabled 控制:即使关掉 ack 反馈,
+    busy notice 仍是丢单时唯一的用户可见信号,默认开启。
+
+    EMCode 解析:9x 段是经典型小表情(NapCat heuristics 把 length<=3 判为
+    type=1 经典表情),跨 OneBot 实现端 (NapCat / LLOneBot / Lagrange) 兼容性好。
+    完整 emoji_id 表见各实现端 face_config / sysface_config。"""
+
     # --- M1: 反向 MCP 通道 ---
     hermes_mcp_enabled: bool = False
     """是否启动内嵌 FastMCP server(False 时 Hermes 反向调用全失败,出向不影响)"""
