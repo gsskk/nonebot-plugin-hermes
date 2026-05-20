@@ -324,6 +324,20 @@ T+5s  用户 B:  @bot 评价下上图
 | `HERMES_IMAGE_FETCH_TIMEOUT_S` | `10` | 单图 HTTP 抓取超时秒数 |
 | `HERMES_IMAGE_FETCH_MAX_ATTEMPTS` | `2` | 单图总尝试次数(1=不重试,2=一次重试,以此类推) |
 
+### Busy notice(显式 @ 被 plumbing 丢单时的可见信号)
+
+当 `_refire` 链触顶 `MAX_REFIRE_DEPTH=3`(同群短时间内塞了 ≥ 4 条 explicit @ 而上游 Hermes 跟不上)时,最新一条 explicit @ 会被 plumbing 丢掉。此时插件会在那条原消息上贴 `HERMES_BUSY_EMOJI_ID`(默认 97 = QQ 经典表情 /擦汗),**不撤销**,作为"我看见了但确实忙不过来"的视觉信号。
+
+与 ack-feedback emoji(`HERMES_ACK_EMOJI_ID`,默认 341 /打招呼)是不同语义:
+- ack-feedback:chat() 期间常驻,完成后撤销,表示"工作中"
+- busy notice:depth-cap 触顶时常驻,**不撤销**,表示"工作不下去"
+
+默认值刻意取互相区分明显的表情;改默认值前请验证 OneBot 实现端的 emoji_id 映射表。
+
+仅 OneBot v11 群聊路径生效;其它 adapter(Telegram / Discord)或 msg_id 缺失时降级为 WARN 日志,不会文本兜底,避免在 burst 上下文里加噪声。
+
+同样有一类失败路径有 user-visible 兜底:上游 Hermes 5xx / 网络断时,refire 路径上的 explicit @ 会发 `HERMES_TRANSPORT_ERROR_FALLBACK_TEXT`(默认"嗯…我这边遇到点状况,稍后再问一次")。设为空串可关闭文本兜底。
+
 ## 限制
 
 由于通过 HTTP API 与 Hermes 通信（而非原生 Gateway Adapter），以下功能不可用：
