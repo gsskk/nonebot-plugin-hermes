@@ -2,13 +2,8 @@
 name: nonebot-bridge
 description: |
   Adapter for chatting in third-party group/private chats via the nonebot-plugin-hermes bridge.
-  Use this skill when you need to push messages back to a chat group, list which groups
-  currently expect your replies, or pull recent group context.
-
-  Activates when:
-    - You see a system message with `mode: reactive` indicating you are inside a 5-minute
-      active window in a group chat.
-    - You receive a tool result mentioning `nonebot-bridge`.
+  Activates when you see `mode: reactive` in a system message, or a tool result mentions
+  `nonebot-bridge`. Use to push messages to a chat group, list active groups, or pull context.
 
 tools:
   - push_message
@@ -28,21 +23,20 @@ allows you to send messages back via the `push_message` tool.
   freely insert messages into that group via either:
   1. Returning a `submit_decision` tool call in your normal chat completion response (the
      plugin will send it for you). **This is the preferred path** — it preserves the agent loop.
-  2. Calling `push_message` directly. Use this only for **delayed** replies that don't
-     fit the request/response shape (e.g., "let me think about that for a minute…
-     [later] here's my answer").
+  2. Calling `push_message` directly. Use only for **delayed** replies that don't fit the
+     request/response shape (e.g., "let me think… [later] here's my answer").
 
 ## Tools
 
 ### `push_message(adapter, group_id, text, image_urls?)`
 
 Send one message into a group. Constraints:
-- The (adapter, group_id) must currently be in an **active reactive session**. If not, the
-  call returns `ok=false` with `error="no active reactive session"`. Do not retry —
-  the user has not invited you in.
+- The (adapter, group_id) must currently be in an **active reactive session**. If not,
+  returns `ok=false` with `error="no active reactive session"`. Do not retry — the user
+  has not invited you in.
 - The (adapter, group_id) must be **known** (the bot has seen at least one message in that
-  group since process start). On a fresh nonebot restart, groups become known again as
-  members talk; you may see `error="unknown target"` for the first ~minute after a restart.
+  group since process start). A fresh nonebot restart causes `error="unknown target"` until
+  members talk again.
 
 ### `list_active_sessions(adapter?)`
 
@@ -52,15 +46,14 @@ welcome.
 
 ### `get_recent_messages(adapter, group_id, limit?, before_ts?)`
 
-Pull the latest `limit` messages from a group buffer (capped at 50). **This is expensive** —
-each call burns context. Prefer the `<recent_messages>` block already inlined in your
-reactive prompt. Use this only when you need to look further back than ~20 messages.
+Pull the latest `limit` messages from a group buffer (capped at 50). Prefer the
+`<recent_messages>` block already inlined in your reactive prompt — this tool is expensive
+(burns context) and should only be used when you need to look further back than ~20 messages.
 
 Each returned message carries:
-- `id` — DB primary key, stable across turns; pair with `get_message_images` to fetch
-  image bytes
-- `image_count` — number of images attached to that message (0 = text only)
-- text/user/ts/is_bot — as before
+- `id` — DB primary key, stable across turns; pair with `get_message_images` to fetch images
+- `image_count` — number of images attached (0 = text only)
+- `text / user / ts / is_bot` — as before
 
 ### `get_message_images(message_ids, adapter?, group_id?)`
 
@@ -114,46 +107,58 @@ ever see them. Set the bar **high**:
 
 When the user asks you to do something (look up data, search, fetch info):
 
-- **Try first.** If your tools can actually attempt it (web search, lookups, etc.),
-  run them and put the real result into `reply_text`.
+- **Try first.** If your tools can actually attempt it, run them and put the real result
+  into `reply_text`.
 - **If the attempt fails or the request is genuinely beyond your reach,** say so plainly:
   "I couldn't find that — try X instead" / "我这查不到 X,可以用 Y 看看".
 - **Do not** say "let me check" / "稍等" / "I'll look it up" / "我去看看" without making
   a real attempt. In reactive mode, once `reply_text` is sent the turn ends — these
-  phrases dangle a promise you cannot keep, and the user gets nothing.
-- Rule of thumb: act first, talk after. If you can't, say so directly and stop.
+  phrases dangle a promise you cannot keep.
+- Act first, talk after. If you can't, say so directly and stop.
 
 ## Historical media recall
 
 When the user refers to a past image (e.g. "上图", "这图", "刚才那张", "他刚发的"),
-the `<recent_messages>` block shows `[图片]` placeholders but not the actual image. To
-see the image content, follow this two-step protocol:
+the `<recent_messages>` block shows `[图片]` placeholders but not the actual image.
+Two-step protocol:
 
-1. **Identify the message.** Read `<recent_messages>` and find which message the user
-   means. Each line starts with `[m:<id>]` — that id is the DB primary key, stable
-   across turns. Heuristics:
+1. **Identify the message.** Each line in `<recent_messages>` starts with `[m:<id>]` —
+   that id is the DB primary key, stable across turns. Heuristics:
    - "上图" / "这图" / "刚才那张" → most recent line where the message has an image
    - "我刚发的" → most recent image-bearing message from the current speaker
    - "他刚发的" → most recent image-bearing message from the user named in context
 2. **Fetch the bytes.** Call `get_message_images(message_ids=[<id>])`. The returned
    ImageContent blocks become real visual input on your next LLM turn.
 
-### The `[m:<id>]` convention
+The `[m:<id>]` id is **stable** across turns — the same image always has the same label,
+unlike positional schemes (#1, #2, …) which shift when new messages arrive. Use it to
+anchor cross-turn references ("I analyzed m:1234 last turn, user is asking about it again").
 
-The id prefix in `<recent_messages>` is **stable** — the same image always has the
-same `[m:<id>]` label across turns, unlike positional schemes (#1, #2, …) which would
-shift when new messages arrive. You can use it in your internal reasoning to anchor
-cross-turn references ("I analyzed m:1234 last turn, user is now asking about it again").
-
-The `<current_message>` block does NOT carry an `[m:<id>]` — the current turn hasn't
-been persisted yet. Only past messages have stable ids.
+The `<current_message>` block does NOT carry `[m:<id>]` — the current turn hasn't been
+persisted yet. Only past messages have stable ids.
 
 ### When to skip the tool
 
 - The user did not reference an image — don't fetch (token cost).
-- `image_count == 0` on every recent message — there's nothing to look at, tell the
-  user directly.
-- Identical image has already been fetched in this turn — reuse the previous result.
+- `image_count == 0` on every recent message — tell the user directly, nothing to look at.
+- Identical image already fetched this turn — reuse the previous result.
+
+## Forwarded message blocks
+
+Group messages may contain `<forwarded_messages count="N">...</forwarded_messages>`
+blocks, or self-closing summary / fetch-failed variants of the same tag. These blocks
+are transcript snapshots of a "merged forward" message the user shared:
+
+- `[图片] [语音] [视频] [文件:...]` placeholders **inside** the block have **no
+  retrievable URL**. Do not call `get_message_images` or any other media-recall tool
+  against media that only appears inside a forwarded block — the tool cannot return
+  forwarded media.
+- Placeholders **outside** any forwarded block follow the normal retrieval rules.
+- `status="fetch_failed"` means a merged-forward message exists but the plugin could
+  not expand it. Treat it as "the user shared a chat log, contents unknown."
+- The self-closing `preview="..."` form is a compact summary of a forwarded block
+  that appeared in an earlier turn. Contents are deliberately minimised; do not ask
+  the user to re-share for more detail.
 
 ## What NOT to do
 
@@ -165,3 +170,5 @@ been persisted yet. Only past messages have stable ids.
 - Don't assume `reply_to_msg_id` works — M1 does not implement it.
 - Don't call `get_message_images` speculatively for every reactive turn — only when the
   user's text actually references a past image. Each call costs bytes + an extra LLM turn.
+- Don't call `get_message_images` against placeholders that appear inside a
+  `<forwarded_messages>` block — those have no fetchable URL.
