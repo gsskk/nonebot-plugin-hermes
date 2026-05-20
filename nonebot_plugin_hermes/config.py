@@ -196,5 +196,22 @@ class Config(BaseModel):
     hermes_image_fetch_max_attempts: int = 2
     """单图总尝试次数(1=不重试,2=一次重试,以此类推)"""
 
+    # --- Phase B-1: 合并转发处理 ---
+    hermes_forward_extract_max_nodes: int = 10
+    """合并转发消息最多展开的节点数。超出标注 '...另有 N 条已省略'。
+    默认 10:常见'图集 / 聊天记录'类型转发,前 10 条已足够让 LLM 判断主题,
+    更多会显著膨胀 system prompt 中的 <recent_messages> 段。"""
+
+    hermes_forward_extract_max_chars: int = 800
+    """合并转发展开文本的总字符上限(节点数之外的第二道闸)。
+    超出按字符截断并标注 '...因字符上限截断'。
+    防止 10 个节点里每条都是长文的退化场景。"""
+
+    hermes_long_reply_forward: bool = True
+    """超长回复在群聊(OneBot v11)下使用合并转发发送完整内容。
+    False 走回原截断行为(hermes_max_length + 截断 suffix)。
+    私聊永远走截断(send_private_forward_msg 实现端覆盖差)。
+    非 onebotv11 适配器亦不受此开关影响,沿用截断。"""
+
 
 plugin_config = get_plugin_config(Config)

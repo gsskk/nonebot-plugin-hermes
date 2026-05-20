@@ -338,6 +338,7 @@ def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
       - Voice → [语音]
       - Video → [视频]
       - Emoji (QQ face 段) → [表情:<name>] 或 [表情] (name 缺失时)
+      - File → [文件:<name>] 或 [文件:未命名] (name 缺失时)
 
     与现有 [图片] 占位策略一致——仅追加到 msg_text 末尾,不试图与文本段 interleave。
     普通 (非 sticker) Image 不在本函数处理,沿用 _extract_image_urls + [图片] 占位流。
@@ -357,6 +358,10 @@ def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
         for face in uni_msg[alconna.Emoji]:
             name = getattr(face, "name", None)
             placeholders.append(f"[表情:{name}]" if name else "[表情]")
+    if uni_msg.has(alconna.File):
+        for f in uni_msg[alconna.File]:
+            name = getattr(f, "name", None) or "未命名"
+            placeholders.append(f"[文件:{name}]")
     return placeholders
 
 
