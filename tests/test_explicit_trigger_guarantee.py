@@ -254,3 +254,66 @@ async def test_refire_cooldown_still_blocks_bystander_pending(monkeypatch):
 
     # bystander refire 应该被 cooldown 吞掉,只有第一发 chat
     assert len(chat_args) == 1, f"bystander 不应被 refire 跑,但 chat 调用了 {len(chat_args)} 次"
+
+
+@pytest.mark.asyncio
+async def test_emit_busy_notice_onebotv11_calls_set_emoji():
+    """onebotv11 + msg_id 存在 → 调 set_msg_emoji_like with hermes_busy_emoji_id。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    bot = _fake_bot()
+    await handler_mod._emit_busy_notice(bot, "onebotv11", 12345)
+
+    bot.call_api.assert_awaited_once_with(
+        "set_msg_emoji_like",
+        message_id=12345,
+        emoji_id=plugin_config.hermes_busy_emoji_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_emit_busy_notice_no_op_for_non_onebotv11(monkeypatch):
+    """adapter 非 onebotv11 → 不调 API,WARN 日志。"""
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    warn_messages: list[str] = []
+    monkeypatch.setattr(handler_mod.logger, "warning", lambda msg, *a, **kw: warn_messages.append(str(msg)))
+
+    bot = _fake_bot()
+    await handler_mod._emit_busy_notice(bot, "telegram", 12345)
+
+    bot.call_api.assert_not_awaited()
+    assert any("busy_notice" in m and "no-op" in m for m in warn_messages)
+
+
+@pytest.mark.asyncio
+async def test_emit_busy_notice_no_op_when_msg_id_none(monkeypatch):
+    """msg_id 缺失 → 不调 API,WARN 日志。"""
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    warn_messages: list[str] = []
+    monkeypatch.setattr(handler_mod.logger, "warning", lambda msg, *a, **kw: warn_messages.append(str(msg)))
+
+    bot = _fake_bot()
+    await handler_mod._emit_busy_notice(bot, "onebotv11", None)
+
+    bot.call_api.assert_not_awaited()
+    assert any("busy_notice" in m and "no-op" in m for m in warn_messages)
+
+
+@pytest.mark.asyncio
+async def test_emit_busy_notice_swallows_api_error(monkeypatch):
+    """API 抛错 → swallow + DEBUG 日志,不冒泡。"""
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    debug_messages: list[str] = []
+    monkeypatch.setattr(handler_mod.logger, "debug", lambda msg, *a, **kw: debug_messages.append(str(msg)))
+
+    bot = _fake_bot()
+    bot.call_api.side_effect = RuntimeError("emoji api down")
+
+    # 不抛异常即测试成功
+    await handler_mod._emit_busy_notice(bot, "onebotv11", 12345)
+
+    assert any("busy_notice" in m and "emit failed" in m for m in debug_messages)

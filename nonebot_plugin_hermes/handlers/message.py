@@ -257,6 +257,37 @@ async def _ack_scope(
                             )
 
 
+async def _emit_busy_notice(
+    bot: Bot,
+    adapter_name: str,
+    original_msg_id: Optional[Union[str, int]],
+) -> None:
+    """Depth-cap 触顶丢 explicit pending 时, 在原消息上贴 busy emoji, 不撤销。
+
+    限制:
+      - adapter 非 onebotv11 / msg_id 缺失 → no-op + WARN 日志
+      - emoji API 报错 → swallow + DEBUG 日志, 不文本兜底
+
+    与 _ack_scope 的区别: ack 走"工作中→撤销"两阶段,busy 是"工作不下去→留印记"一次性,
+    生命周期不耦合, emoji_id 也不同 (busy 默认 hermes_busy_emoji_id = 97 /擦汗,
+    ack 默认 341 /打招呼)。
+    """
+    if adapter_name != "onebotv11" or original_msg_id is None:
+        logger.warning(
+            f"[HERMES busy_notice] no-op: adapter={adapter_name} "
+            f"msg_id={original_msg_id} (only onebotv11 group supports emoji notice)"
+        )
+        return
+    try:
+        await bot.call_api(
+            "set_msg_emoji_like",
+            message_id=original_msg_id,
+            emoji_id=plugin_config.hermes_busy_emoji_id,
+        )
+    except Exception as e:
+        logger.debug(f"[HERMES busy_notice] emit failed (msg_id={original_msg_id}): {e}")
+
+
 async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_name: str) -> List[str]:
     """从 UniMessage 中抽出图片 URL 列表(可直接 HTTP GET 拿字节的那种)。
 
