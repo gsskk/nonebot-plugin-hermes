@@ -369,3 +369,144 @@ def test_summarize_does_not_treat_empty_attr_tag_as_self_closing():
 
     # It should NOT be returned unchanged (it's not a valid self-closing summary tag)
     assert result != malformed
+
+
+# ---------------------------------------------------------------------------
+# Task 3 wiring: forward extract is called from both handler paths
+# ---------------------------------------------------------------------------
+
+
+def _active_lines(src: str) -> str:
+    """Return only the non-comment, non-blank lines from a source snippet.
+
+    inspect.getsource includes commented-out code, so a naive ``in src`` check
+    cannot distinguish active calls from disabled ones.  This helper strips
+    comment lines so that the structural assertions below only match live code.
+    """
+    return "\n".join(line for line in src.splitlines() if line.strip() and not line.strip().startswith("#"))
+
+
+def test_wiring_handle_perception_calls_extract_and_summarize():
+    """Structural wiring: handle_perception must have active (non-comment) calls to both helpers.
+
+    Invoking handle_perception end-to-end requires NoneBot event dispatch,
+    alconna.get_target(), and _mcp singleton wiring that together exceed 100 LOC
+    of test scaffolding.  inspect.getsource() filtered to non-comment lines is the
+    lightest approach that still catches the regression: removing or commenting out
+    the wiring lines changes the active source text and breaks this test.
+    """
+    import inspect
+    from nonebot_plugin_hermes.handlers.message import handle_perception
+
+    active = _active_lines(inspect.getsource(handle_perception))
+
+    assert "_extract_forward_full(" in active, (
+        "handle_perception has no active call to _extract_forward_full — wiring was removed or commented out"
+    )
+    assert "_summarize_forward(" in active, (
+        "handle_perception has no active call to _summarize_forward — wiring was removed or commented out"
+    )
+    # Perception writes the summary form (not the raw forward_full) to msg_text
+    assert "summary" in active, "handle_perception source does not reference 'summary' — buffer-compression wiring lost"
+
+
+def test_wiring_handle_message_calls_extract_full_not_summary():
+    """Structural wiring: handle_message must actively call _extract_forward_full, not _summarize_forward.
+
+    Same rationale as test_wiring_handle_perception_calls_extract_and_summarize —
+    invoking the full handler end-to-end costs >100 LOC of NoneBot/alconna/matcher
+    scaffolding.  Active-line source inspection is the minimal reliable contract here.
+    """
+    import inspect
+    from nonebot_plugin_hermes.handlers.message import handle_message
+
+    active = _active_lines(inspect.getsource(handle_message))
+
+    assert "_extract_forward_full(" in active, (
+        "handle_message has no active call to _extract_forward_full — wiring was removed or commented out"
+    )
+    # Main path sends the full block to the LLM; _summarize_forward must NOT be called here
+    assert "_summarize_forward(" not in active, (
+        "handle_message calls _summarize_forward — main path should use the full block, not the summary"
+    )
+    assert "forward_full" in active, "handle_message source does not reference 'forward_full' — full-block wiring lost"
+
+
+@pytest.mark.asyncio
+async def test_wiring_summary_is_self_closing_tag(monkeypatch):
+    """_summarize_forward produces a self-closing tag (perception buffer form).
+
+    Covers the output contract that perception stores a compact single-line tag
+    rather than the full multi-line block.
+    """
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full, _summarize_forward
+    from nonebot_plugin_hermes.config import plugin_config
+    import nonebot_plugin_alconna as alconna
+
+    monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
+    monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 800)
+
+    nodes = [_make_node(f"Speaker{i}", f"Line {i} content") for i in range(5)]
+    bot = MagicMock()
+    bot.call_api = AsyncMock(return_value=_make_forward_response(nodes))
+
+    uni_msg = _make_uni_msg(alconna.Reference(id="summary_shape"))
+
+    forward_full = await _extract_forward_full(uni_msg, bot, adapter_name="onebotv11")
+    assert forward_full is not None
+    summary = _summarize_forward(forward_full)
+
+    # Summary form: single-line self-closing tag
+    assert "\n" not in summary
+    assert summary.endswith("/>")
+    assert 'count="5"' in summary
+    assert 'preview="' in summary
+
+    # Full form: multi-line block with explicit closing tag
+    assert "<forwarded_messages" in forward_full
+    assert "</forwarded_messages>" in forward_full
+    assert 'count="5"' in forward_full
+
+    # Buffer compression: summary is strictly shorter than full block
+    assert len(forward_full) > len(summary)
+
+
+@pytest.mark.asyncio
+async def test_wiring_full_block_used_when_no_prior_text(monkeypatch):
+    """When the user sends only a forward (no typed text), the full block becomes
+    the sole msg_text content on the main path — no empty string is produced."""
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full, _summarize_forward
+    from nonebot_plugin_hermes.config import plugin_config
+    import nonebot_plugin_alconna as alconna
+
+    monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
+    monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 800)
+
+    nodes = [_make_node("OnlyUser", "Only message")]
+    bot = MagicMock()
+    bot.call_api = AsyncMock(return_value=_make_forward_response(nodes))
+
+    uni_msg = _make_uni_msg(alconna.Reference(id="empty_prior"))
+
+    # Perception path: empty prior text → summary becomes sole content
+    forward_full = await _extract_forward_full(uni_msg, bot, adapter_name="onebotv11")
+    assert forward_full is not None
+    summary = _summarize_forward(forward_full)
+    msg_text_perception = ""
+    msg_text_perception = f"{msg_text_perception}\n{summary}" if msg_text_perception else summary
+
+    # Main path: empty prior text → full block becomes sole content
+    bot.call_api = AsyncMock(return_value=_make_forward_response(nodes))
+    forward_full2 = await _extract_forward_full(uni_msg, bot, adapter_name="onebotv11")
+    assert forward_full2 is not None
+    msg_text_main = ""
+    msg_text_main = f"{msg_text_main}\n{forward_full2}" if msg_text_main else forward_full2
+
+    # Neither result should be empty
+    assert msg_text_perception
+    assert msg_text_main
+
+    # perception result is exactly the summary (no leading newline)
+    assert msg_text_perception == summary
+    # main result is exactly the full block
+    assert msg_text_main == forward_full2

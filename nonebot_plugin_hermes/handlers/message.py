@@ -612,6 +612,12 @@ async def handle_perception(bot: Bot, event: Event):
         suffix = " ".join(nontext_placeholders)
         msg_text = (msg_text + " " + suffix) if msg_text else suffix
 
+    # B-1.1: 合并转发提取 (perception 入站存 summary 版,避免 buffer 膨胀)
+    forward_full = await _extract_forward_full(uni_msg, bot, adapter_name=adapter_name)
+    if forward_full is not None:
+        summary = _summarize_forward(forward_full)
+        msg_text = f"{msg_text}\n{summary}" if msg_text else summary
+
     if not msg_text and not image_urls:
         return
 
@@ -707,6 +713,13 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     if nontext_placeholders:
         suffix = " ".join(nontext_placeholders)
         msg_text = (msg_text + " " + suffix).strip() if msg_text else suffix
+
+    # B-1.1: 合并转发提取 (main path 用 full 版,LLM 当前 turn 看到展开后的转发内容)
+    # 在 keyword-stripping 之前追加:keyword 前缀作用于 msg_text 开头的手打文本,
+    # 转发块拼在末尾,startswith(kw) 仍能匹配前缀,strip 后转发块完整保留。
+    forward_full = await _extract_forward_full(uni_msg, bot, adapter_name=adapter_name)
+    if forward_full is not None:
+        msg_text = f"{msg_text}\n{forward_full}" if msg_text else forward_full
 
     logger.debug(
         f"[HERMES recv] adapter={adapter_name} target={target.id} private={target.private} "
