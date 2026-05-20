@@ -424,6 +424,11 @@ async def _extract_forward_full(
     仅支持 onebotv11/onebotv12。其他适配器返回 None(调用方自行降级)。
     调用 get_forward_msg 失败时返回自闭合 fetch_failed 标签,不抛出。
     """
+    # TODO(B-1.3): onebotv12 uses the same `get_forward_msg` API name based on OneBot
+    # spec convergence, but this has not been verified against a live v12 deployment.
+    # If the v12 API name differs, the call below will raise and we'll return the
+    # fetch_failed self-closing tag — degraded but non-crashing. Verify with a real
+    # v12 adapter and either confirm or branch the call.
     if adapter_name not in {"onebotv11", "onebotv12"}:
         return None
 
@@ -462,7 +467,10 @@ async def _extract_forward_full(
             continue
         next_len = total_chars + len(summary) + (1 if lines else 0)
         if next_len > max_chars and lines:
-            # Only truncate on chars if we already have at least one line
+            # Char-limit truncation requires at least one line already collected — better to
+            # overshoot max_chars with a single huge first node than to emit a content-less
+            # wrapper. Rare in practice (a 2KB single node under an 800-char cap), but the
+            # policy is "always show something."
             lines.append("[...因字符上限截断]")
             omitted = 0  # char path doesn't report a numeric "other N"
             break

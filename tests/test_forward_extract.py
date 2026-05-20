@@ -150,6 +150,41 @@ async def test_extract_truncates_at_max_chars(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_extract_oversized_first_node_bypasses_char_limit(monkeypatch):
+    """Single node with massive text (2000 chars) under max_chars=100 cap.
+
+    The "always show something" policy: if the very first node exceeds max_chars,
+    we keep it anyway rather than emit an empty <forwarded_messages> block.
+    This is rare in practice but intentional — oversized single-node forwarding
+    case bypasses the char limit.  Verify the policy with this regression test.
+    """
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
+    from nonebot_plugin_hermes.config import plugin_config
+    import nonebot_plugin_alconna as alconna
+
+    monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
+    monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 100)
+
+    # Single node with very long text (2000 chars)
+    huge_text = "大" * 2000
+    nodes = [_make_node("OverlongUser", huge_text)]
+    bot = MagicMock()
+    bot.call_api = AsyncMock(return_value=_make_forward_response(nodes))
+
+    msg = _make_uni_msg(alconna.Reference(id="fwd_oversized"))
+    result = await _extract_forward_full(msg, bot, adapter_name="onebotv11")
+
+    assert result is not None
+    # Must contain the huge_text content (or at least a large prefix of it)
+    assert "大" in result
+    # The content should be much longer than max_chars (oversized first node is kept)
+    assert len(result) > 100
+    # Must NOT contain the char-limit truncation marker
+    # (truncation only fires when we already have a line in 'lines' to keep)
+    assert "[...因字符上限截断]" not in result
+
+
+@pytest.mark.asyncio
 async def test_extract_handles_nested_forward_placeholder(monkeypatch):
     """Node containing a nested forward segment shows placeholder, no recursion."""
     from nonebot_plugin_hermes.handlers.message import _extract_forward_full
