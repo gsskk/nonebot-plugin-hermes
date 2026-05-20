@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import nonebot_plugin_alconna as alconna
 from nonebot import logger, on_message
@@ -599,6 +599,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
                 image_urls=image_urls,
                 is_private=target.private,
                 now_ms=now,
+                event_msg_id=getattr(event, "message_id", None),
             )
             return
 
@@ -614,6 +615,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             image_urls=image_urls,
             is_explicit_trigger=is_explicit_trigger,
             now_ms=now,
+            event_msg_id=getattr(event, "message_id", None),
         )
 
 
@@ -936,6 +938,7 @@ async def _handle_passive_path(
     is_private: bool,
     now_ms: int,
     nickname: Optional[str] = None,
+    event_msg_id: Optional[Union[str, int]] = None,
 ):
     """Passive 外壳:inflight 占位 → _run_passive_turn → 合并重燃。
 
@@ -964,7 +967,7 @@ async def _handle_passive_path(
             key,
             current_buffered,
             is_explicit_trigger=True,  # passive 进得来即显式 (spec § 2.2 注释)
-            original_msg_id=None,  # Task 3 才填上,本 task 占位
+            original_msg_id=event_msg_id,
             now_ms=now_ms,
         )
         != "entered"
@@ -1001,6 +1004,8 @@ async def _handle_passive_path(
                     _refire(
                         key=key,
                         trigger_msg=pending_entry.msg,
+                        is_explicit_trigger=pending_entry.is_explicit_trigger,
+                        original_msg_id=pending_entry.original_msg_id,
                         depth=1,
                         mode="passive",
                         bot=bot,
@@ -1049,6 +1054,7 @@ async def _handle_reactive_path(
     is_explicit_trigger: bool,
     now_ms: int,
     nickname: Optional[str] = None,
+    event_msg_id: Optional[Union[str, int]] = None,
 ):
     """Reactive 外壳:inflight 占位 → 调 _run_reactive_turn → finally 合并重燃。
 
@@ -1110,7 +1116,7 @@ async def _handle_reactive_path(
             key,
             current_buffered,
             is_explicit_trigger=is_explicit_trigger,
-            original_msg_id=None,  # Task 3 才填上,本 task 占位
+            original_msg_id=event_msg_id,
             now_ms=now_ms,
         )
         != "entered"
@@ -1148,6 +1154,8 @@ async def _handle_reactive_path(
                     _refire(
                         key=key,
                         trigger_msg=pending_entry.msg,
+                        is_explicit_trigger=pending_entry.is_explicit_trigger,
+                        original_msg_id=pending_entry.original_msg_id,
                         depth=1,
                         mode="reactive",
                         bot=bot,
@@ -1162,6 +1170,8 @@ async def _refire(
     *,
     key,
     trigger_msg: BufferedMessage,
+    is_explicit_trigger: bool,
+    original_msg_id: Optional[Union[str, int]],
     depth: int,
     mode: str,
     bot: Bot,
@@ -1187,13 +1197,14 @@ async def _refire(
     refire_now_ms = _now_ms()
 
     # B: refire 路径同款 post-reply cooldown 闸门。
-    # 重燃总是 is_explicit_trigger=False(passive 旁观),所以一律按非显式触发处理。
+    # 仅对非显式触发生效——explicit pending(如 @bot)须穿透 cooldown 直达 chat()。
     # 关键场景:初发 turn 自己没回(submit_decision=silent)但期间 MCP push_message
     # 把 last_bot_reply_at 写了 → 仅靠入口处的闸门挡不住,因为 pending 是上一次
     # 入口处放进来的(进 pending 时还没写 mark)。在这里再判一次,把这条路径补严。
     if (
         mode == "reactive"
         and group_id is not None
+        and not is_explicit_trigger
         and _in_post_reply_cooldown(adapter_name, str(group_id), refire_now_ms)
     ):
         logger.debug(f"[HERMES reactive] refire skipped by post-reply cooldown (key={key} depth={depth})")
@@ -1213,7 +1224,7 @@ async def _refire(
                 group_id=group_id,
                 text=trigger_msg.content,
                 image_urls=list(trigger_msg.image_urls),
-                is_explicit_trigger=False,  # 重燃总是 passive 旁观;显式触发已是初发那一发
+                is_explicit_trigger=is_explicit_trigger,
                 now_ms=refire_now_ms,
             )
         else:
@@ -1242,6 +1253,8 @@ async def _refire(
                 _refire(
                     key=key,
                     trigger_msg=pending_entry.msg,
+                    is_explicit_trigger=pending_entry.is_explicit_trigger,
+                    original_msg_id=pending_entry.original_msg_id,
                     depth=depth + 1,
                     mode=mode,
                     bot=bot,
