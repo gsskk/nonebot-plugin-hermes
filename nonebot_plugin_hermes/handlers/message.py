@@ -959,7 +959,16 @@ async def _handle_passive_path(
         is_bot=False,
     )
 
-    if _mcp.inflight.try_enter(key, current_buffered, now_ms) == "pending_set":
+    if (
+        _mcp.inflight.try_enter(
+            key,
+            current_buffered,
+            is_explicit_trigger=True,  # passive 进得来即显式 (spec § 2.2 注释)
+            original_msg_id=None,  # Task 3 才填上,本 task 占位
+            now_ms=now_ms,
+        )
+        != "entered"
+    ):
         return
 
     should_refire = False
@@ -984,14 +993,14 @@ async def _handle_passive_path(
         if not should_refire:
             _mcp.inflight.exit(key)
         else:
-            pending = _mcp.inflight.take_pending(key)
-            if pending is None or pending.ts <= current_buffered.ts:
+            pending_entry = _mcp.inflight.take_pending(key)
+            if pending_entry is None or pending_entry.msg.ts <= current_buffered.ts:
                 _mcp.inflight.exit(key)
             else:
                 asyncio.create_task(
                     _refire(
                         key=key,
-                        trigger_msg=pending,
+                        trigger_msg=pending_entry.msg,
                         depth=1,
                         mode="passive",
                         bot=bot,
@@ -1096,7 +1105,16 @@ async def _handle_reactive_path(
         is_bot=False,
     )
 
-    if _mcp.inflight.try_enter(key, current_buffered, now_ms) == "pending_set":
+    if (
+        _mcp.inflight.try_enter(
+            key,
+            current_buffered,
+            is_explicit_trigger=is_explicit_trigger,
+            original_msg_id=None,  # Task 3 才填上,本 task 占位
+            now_ms=now_ms,
+        )
+        != "entered"
+    ):
         return
 
     should_refire = False
@@ -1122,14 +1140,14 @@ async def _handle_reactive_path(
         if not should_refire:
             _mcp.inflight.exit(key)
         else:
-            pending = _mcp.inflight.take_pending(key)
-            if pending is None or pending.ts <= current_buffered.ts:
+            pending_entry = _mcp.inflight.take_pending(key)
+            if pending_entry is None or pending_entry.msg.ts <= current_buffered.ts:
                 _mcp.inflight.exit(key)
             else:
                 asyncio.create_task(
                     _refire(
                         key=key,
-                        trigger_msg=pending,
+                        trigger_msg=pending_entry.msg,
                         depth=1,
                         mode="reactive",
                         bot=bot,
@@ -1218,12 +1236,12 @@ async def _refire(
         if not should_refire:
             _mcp.inflight.exit(key)
             return
-        pending = _mcp.inflight.take_pending(key)
-        if pending and pending.ts > trigger_msg.ts:
+        pending_entry = _mcp.inflight.take_pending(key)
+        if pending_entry and pending_entry.msg.ts > trigger_msg.ts:
             asyncio.create_task(
                 _refire(
                     key=key,
-                    trigger_msg=pending,
+                    trigger_msg=pending_entry.msg,
                     depth=depth + 1,
                     mode=mode,
                     bot=bot,

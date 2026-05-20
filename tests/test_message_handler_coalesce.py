@@ -342,6 +342,8 @@ async def test_refire_depth_caps_at_max(monkeypatch):
                 reply_to_ts=None,
                 is_bot=False,
             ),
+            is_explicit_trigger=False,
+            original_msg_id=None,
             now_ms=now + 1000 * (len(chat_calls) + 1),
         )
         return _make_chat_result(text=f"reply-{len(chat_calls)}")
@@ -1119,6 +1121,8 @@ async def test_refire_when_active_session_expired(monkeypatch):
                 reply_to_ts=None,
                 is_bot=False,
             ),
+            is_explicit_trigger=False,
+            original_msg_id=None,
             now_ms=now + 9999,
         )
         == "entered"
