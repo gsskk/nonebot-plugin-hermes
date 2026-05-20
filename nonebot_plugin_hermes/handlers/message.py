@@ -1216,7 +1216,14 @@ async def _refire(
     assert _mcp.inflight is not None
 
     if depth > MAX_REFIRE_DEPTH:
-        logger.warning(f"[HERMES] refire depth exceeded ({depth}); dropping pending {key}")
+        if is_explicit_trigger:
+            logger.warning(
+                f"[HERMES] refire depth cap reached for explicit @ "
+                f"(key={key} depth={depth} msg_id={original_msg_id}); emitting busy notice"
+            )
+            await _emit_busy_notice(bot, adapter_name, original_msg_id)
+        else:
+            logger.warning(f"[HERMES] refire depth exceeded ({depth}); dropping pending {key}")
         _mcp.inflight.exit(key)
         return
 

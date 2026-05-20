@@ -317,3 +317,147 @@ async def test_emit_busy_notice_swallows_api_error(monkeypatch):
     await handler_mod._emit_busy_notice(bot, "onebotv11", 12345)
 
     assert any("busy_notice" in m and "emit failed" in m for m in debug_messages)
+
+
+@pytest.mark.asyncio
+async def test_refire_depth_cap_explicit_emits_busy_emoji(monkeypatch):
+    """refire 链触顶 + pending 是 explicit + msg_id 有 → 调 set_msg_emoji_like with busy emoji_id。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.core.inflight import MAX_REFIRE_DEPTH
+    from nonebot_plugin_hermes.core.message_buffer import BufferedMessage
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    bot = _fake_bot()
+    target = _FakeTarget(id="g1", private=False)
+
+    # 直接调 _refire 触发 depth-cap 分支,跳过 burst orchestration
+    trigger_msg = BufferedMessage(
+        ts=int(time.time() * 1000),
+        adapter="onebotv11",
+        group_id="g1",
+        user_id="user-B",
+        nickname="B",
+        content="me too",
+        image_urls=[],
+        reply_to_ts=None,
+        is_bot=False,
+    )
+    # 占住 inflight slot 以便 _refire 内部 exit 不报错
+    _mcp.inflight.try_enter(
+        ("onebotv11", "group:g1"),
+        trigger_msg,
+        is_explicit_trigger=True,
+        original_msg_id=9999,
+        now_ms=trigger_msg.ts,
+    )
+
+    await handler_mod._refire(
+        key=("onebotv11", "group:g1"),
+        trigger_msg=trigger_msg,
+        is_explicit_trigger=True,
+        original_msg_id=9999,
+        depth=MAX_REFIRE_DEPTH + 1,
+        mode="reactive",
+        bot=bot,
+        target=target,
+        adapter_name="onebotv11",
+        group_id="g1",
+    )
+
+    bot.call_api.assert_awaited_once_with(
+        "set_msg_emoji_like",
+        message_id=9999,
+        emoji_id=plugin_config.hermes_busy_emoji_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_refire_depth_cap_bystander_no_emoji():
+    """refire 链触顶 + pending 是 bystander → 只 WARN 日志,不调 emoji API。"""
+    from nonebot_plugin_hermes.core.inflight import MAX_REFIRE_DEPTH
+    from nonebot_plugin_hermes.core.message_buffer import BufferedMessage
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    bot = _fake_bot()
+    target = _FakeTarget(id="g1", private=False)
+    trigger_msg = BufferedMessage(
+        ts=int(time.time() * 1000),
+        adapter="ob11",
+        group_id="g1",
+        user_id="user-B",
+        nickname="B",
+        content="something",
+        image_urls=[],
+        reply_to_ts=None,
+        is_bot=False,
+    )
+    _mcp.inflight.try_enter(
+        ("ob11", "group:g1"),
+        trigger_msg,
+        is_explicit_trigger=False,
+        original_msg_id=None,
+        now_ms=trigger_msg.ts,
+    )
+
+    await handler_mod._refire(
+        key=("ob11", "group:g1"),
+        trigger_msg=trigger_msg,
+        is_explicit_trigger=False,
+        original_msg_id=None,
+        depth=MAX_REFIRE_DEPTH + 1,
+        mode="reactive",
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        group_id="g1",
+    )
+
+    bot.call_api.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refire_depth_cap_explicit_no_msg_id_warn_only(monkeypatch):
+    """refire 链触顶 + pending 是 explicit 但 msg_id=None → 不调 emoji API,WARN 日志。"""
+    from nonebot_plugin_hermes.core.inflight import MAX_REFIRE_DEPTH
+    from nonebot_plugin_hermes.core.message_buffer import BufferedMessage
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    warn_messages: list[str] = []
+    monkeypatch.setattr(handler_mod.logger, "warning", lambda msg, *a, **kw: warn_messages.append(str(msg)))
+
+    bot = _fake_bot()
+    target = _FakeTarget(id="g1", private=False)
+    trigger_msg = BufferedMessage(
+        ts=int(time.time() * 1000),
+        adapter="ob11",
+        group_id="g1",
+        user_id="user-B",
+        nickname="B",
+        content="x",
+        image_urls=[],
+        reply_to_ts=None,
+        is_bot=False,
+    )
+    _mcp.inflight.try_enter(
+        ("ob11", "group:g1"),
+        trigger_msg,
+        is_explicit_trigger=True,
+        original_msg_id=None,
+        now_ms=trigger_msg.ts,
+    )
+
+    await handler_mod._refire(
+        key=("ob11", "group:g1"),
+        trigger_msg=trigger_msg,
+        is_explicit_trigger=True,
+        original_msg_id=None,
+        depth=MAX_REFIRE_DEPTH + 1,
+        mode="reactive",
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        group_id="g1",
+    )
+
+    bot.call_api.assert_not_awaited()
+    assert any("busy_notice" in m and "no-op" in m for m in warn_messages)
