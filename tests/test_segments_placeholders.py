@@ -119,6 +119,11 @@ def test_collect_file_with_name_returns_named_placeholder():
 
 
 def test_collect_file_without_name_returns_unknown_placeholder():
+    """显式 name=None 走 fallback 分支。
+
+    注意:alconna.File() 不传 name 时会自动设默认值 'file.bin',
+    会无声越过 fallback 路径。显式传 None 是该测试的正确写法,不要"清理"掉。
+    """
     from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
 
     import nonebot_plugin_alconna as alconna

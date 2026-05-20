@@ -29,6 +29,7 @@ async def send_text_with_media(
     media_urls: Sequence[str] = (),
     at_user_id: Optional[str] = None,
     reply_to_msg_id: Optional[str] = None,  # noqa: ARG001  forward-compat
+    adapter_name: Optional[str] = None,  # noqa: ARG001  forward-compat
 ) -> bool:
     """组装并发送一条消息,返回是否发送成功。
 

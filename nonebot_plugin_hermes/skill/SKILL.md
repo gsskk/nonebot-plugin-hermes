@@ -3,7 +3,7 @@ name: nonebot-bridge
 description: |
   Adapter for chatting in third-party group/private chats via the nonebot-plugin-hermes bridge.
   Activates when you see `mode: reactive` in a system message, or a tool result mentions
-  `nonebot-bridge`. Use to push messages to a chat group, list active groups, or pull context.
+  `nonebot-bridge`. Use this skill to push messages to a chat group, list active groups, or pull context.
 
 tools:
   - push_message
@@ -53,7 +53,7 @@ Pull the latest `limit` messages from a group buffer (capped at 50). Prefer the
 Each returned message carries:
 - `id` — DB primary key, stable across turns; pair with `get_message_images` to fetch images
 - `image_count` — number of images attached (0 = text only)
-- `text / user / ts / is_bot` — as before
+- `text`, `user`, `ts`, `is_bot` — as before
 
 ### `get_message_images(message_ids, adapter?, group_id?)`
 
@@ -113,14 +113,14 @@ When the user asks you to do something (look up data, search, fetch info):
   "I couldn't find that — try X instead" / "我这查不到 X,可以用 Y 看看".
 - **Do not** say "let me check" / "稍等" / "I'll look it up" / "我去看看" without making
   a real attempt. In reactive mode, once `reply_text` is sent the turn ends — these
-  phrases dangle a promise you cannot keep.
+  phrases dangle a promise you cannot keep, and the user gets nothing.
 - Act first, talk after. If you can't, say so directly and stop.
 
 ## Historical media recall
 
 When the user refers to a past image (e.g. "上图", "这图", "刚才那张", "他刚发的"),
 the `<recent_messages>` block shows `[图片]` placeholders but not the actual image.
-Two-step protocol:
+To see the image, follow this two-step protocol:
 
 1. **Identify the message.** Each line in `<recent_messages>` starts with `[m:<id>]` —
    that id is the DB primary key, stable across turns. Heuristics:

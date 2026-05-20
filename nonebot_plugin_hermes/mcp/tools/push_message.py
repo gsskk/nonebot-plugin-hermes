@@ -92,6 +92,7 @@ async def push_message_impl(
         text=inp.text,
         media_urls=inp.image_urls,
         at_user_id=None,  # 主动 push 不 @ 任何用户(对话不针对特定个体)
+        adapter_name=inp.adapter,
     )
     if not success:
         return PushMessageResult(ok=False, error="send failed (see nonebot log)")

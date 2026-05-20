@@ -909,6 +909,7 @@ async def _run_passive_turn(
                 text=fallback_text,
                 media_urls=[],
                 at_user_id=None if is_private else user_id,
+                adapter_name=adapter_name,
             )
         return result
 
@@ -931,6 +932,7 @@ async def _run_passive_turn(
         text=reply_text,
         media_urls=result.media_urls,
         at_user_id=None if is_private else user_id,
+        adapter_name=adapter_name,
     )
     return result
 
@@ -1030,6 +1032,7 @@ async def _run_reactive_turn(
                     text=fallback_text,
                     media_urls=[],
                     at_user_id=user_id,
+                    adapter_name=adapter_name,
                 )
             return result
 
@@ -1046,6 +1049,7 @@ async def _run_reactive_turn(
                 text=result.raw_text,
                 media_urls=result.media_urls,
                 at_user_id=user_id,
+                adapter_name=adapter_name,
             )
         return result
 
@@ -1099,6 +1103,7 @@ async def _run_reactive_turn(
         text=reply_text,
         media_urls=[],
         at_user_id=at_user,
+        adapter_name=adapter_name,
     )
     logger.debug(
         f"[HERMES reactive] sent adapter={adapter_name} group={group_id} "
