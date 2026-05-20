@@ -20,6 +20,112 @@ from ..config import plugin_config
 # 所有已知 adapter 上限 ≥ 4500,默认 max_len=4000,溢出安全。
 _TRUNCATION_SUFFIX = "\n\n…（消息过长,已截断）"
 
+# Bot self-nickname per process (per bot.self_id). Used for forward-node "name" field.
+# get_login_info is an extra OneBot RPC; cache result for the lifetime of the process.
+_bot_nickname_cache: dict[str, str] = {}
+
+
+async def _get_bot_nickname(bot: Bot) -> str:
+    """Return the bot's display nickname, cached per self_id. Fallback 'Bot' on failure."""
+    self_id = bot.self_id
+    if self_id in _bot_nickname_cache:
+        return _bot_nickname_cache[self_id]
+    try:
+        info = await bot.call_api("get_login_info")
+        nickname = (info or {}).get("nickname") or "Bot"
+    except Exception as exc:
+        logger.debug(f"[OUTBOUND] get_login_info failed (self_id={self_id}): {exc}")
+        nickname = "Bot"
+    _bot_nickname_cache[self_id] = nickname
+    return nickname
+
+
+def _split_into_forward_nodes(
+    text: str,
+    *,
+    bot_self_id: str,
+    bot_nickname: str,
+    max_chars_per_node: int = 3500,
+) -> list[dict]:
+    """Split a long text into OneBot v11 forward-node dicts.
+
+    Strategy:
+      1. Split by '\\n\\n' (paragraph boundaries). Keep paragraphs that fit; if a
+         paragraph alone exceeds max_chars_per_node, recursively split by '\\n',
+         then by hard cut.
+      2. Accumulate paragraphs into the same node until adding another would overshoot
+         max_chars_per_node. Then start a new node.
+      3. Each node carries a text segment in standard OneBot v11 node format.
+
+    Returns a list of at least one node. Empty text returns one node with empty text.
+    """
+
+    def _make_node(segment: str) -> dict:
+        return {
+            "type": "node",
+            "data": {
+                "name": bot_nickname,
+                "uin": bot_self_id,
+                "content": [{"type": "text", "data": {"text": segment}}],
+            },
+        }
+
+    def _split_chunk(chunk: str) -> list[str]:
+        """Return list of strings each ≤ max_chars_per_node."""
+        if len(chunk) <= max_chars_per_node:
+            return [chunk]
+        # Try splitting by newline
+        parts = chunk.split("\n")
+        if len(parts) > 1:
+            return _accumulate(parts)
+        # Hard cut as last resort
+        result = []
+        while chunk:
+            result.append(chunk[:max_chars_per_node])
+            chunk = chunk[max_chars_per_node:]
+        return result
+
+    def _accumulate(pieces: list[str]) -> list[str]:
+        """Pack pieces into buckets of ≤ max_chars_per_node."""
+        buckets: list[str] = []
+        current = ""
+        for piece in pieces:
+            if len(piece) > max_chars_per_node:
+                if current:
+                    buckets.append(current)
+                    current = ""
+                buckets.extend(_split_chunk(piece))
+            elif current and len(current) + 1 + len(piece) > max_chars_per_node:
+                buckets.append(current)
+                current = piece
+            else:
+                current = (current + "\n" + piece) if current else piece
+        if current:
+            buckets.append(current)
+        return buckets
+
+    paragraphs = text.split("\n\n")
+    segments: list[str] = []
+    for para in paragraphs:
+        if len(para) > max_chars_per_node:
+            segments.extend(_split_chunk(para))
+        else:
+            segments.append(para)
+
+    # Accumulate paragraph-level segments into nodes
+    nodes: list[dict] = []
+    current_text = ""
+    for seg in segments:
+        separator = "\n\n" if current_text else ""
+        if current_text and len(current_text) + len(separator) + len(seg) > max_chars_per_node:
+            nodes.append(_make_node(current_text))
+            current_text = seg
+        else:
+            current_text = current_text + separator + seg
+
+    nodes.append(_make_node(current_text))
+    return nodes
+
 
 async def send_text_with_media(
     *,
@@ -29,6 +135,7 @@ async def send_text_with_media(
     media_urls: Sequence[str] = (),
     at_user_id: Optional[str] = None,
     reply_to_msg_id: Optional[str] = None,  # noqa: ARG001  forward-compat
+    adapter_name: Optional[str] = None,
 ) -> bool:
     """组装并发送一条消息,返回是否发送成功。
 
@@ -39,15 +146,60 @@ async def send_text_with_media(
     - 空消息(text='' 且无 http/https 媒体)直接返回 False 不发,防 Task 12 push 路径
       在 Hermes 回空时构造空 UniMessage 发送出去。
     """
+    original_len = len(text)
+    max_len = plugin_config.hermes_max_length
+
+    # B-1.2: 群聊 + OneBot v11 + 超长 → 合并转发 (而非截断)
+    # 私聊永远走截断 (send_private_forward_msg 实现端覆盖差);
+    # 非 onebotv11 同样保持截断。
+    if (
+        text
+        and not target.private
+        and adapter_name == "onebotv11"
+        and plugin_config.hermes_long_reply_forward
+        and original_len > max_len
+    ):
+        try:
+            nickname = await _get_bot_nickname(bot)
+            nodes = _split_into_forward_nodes(
+                text,
+                bot_self_id=bot.self_id,
+                bot_nickname=nickname,
+            )
+            # Media: append at end of last node so it ships in the same forward bundle.
+            if media_urls:
+                last_node_content = nodes[-1]["data"]["content"]
+                for u in media_urls:
+                    if u.startswith(("http://", "https://")):
+                        last_node_content.append({"type": "image", "data": {"url": u}})
+            # The actual merged forward send.
+            await bot.call_api("send_group_forward_msg", group_id=int(target.id), messages=nodes)
+            # At-mention: send AFTER the forward bundle so the @ ping is the most recent
+            # message in the chat list. Moving it here also guarantees no double-@ if the
+            # forward call failed and fell through to the truncation path.
+            if at_user_id:
+                try:
+                    at_msg = alconna.UniMessage([alconna.At("user", at_user_id), " "])
+                    await at_msg.send(target=target, bot=bot)
+                except Exception as exc:
+                    logger.debug(f"[OUTBOUND] post-forward @-ping failed: {exc}")
+            valid_media = [u for u in media_urls if u.startswith(("http://", "https://"))]
+            logger.debug(
+                f"[OUTBOUND] sent-via-forward target={target} text_len={original_len} "
+                f"nodes={len(nodes)} media={len(valid_media)}"
+            )
+            return True
+        except Exception as exc:
+            logger.warning(f"[OUTBOUND] long-reply forward failed, falling back to truncation: {exc}")
+            # Fall through to existing truncation path
+
     msg = alconna.UniMessage()
 
     if not target.private and at_user_id:
         msg += alconna.UniMessage([alconna.At("user", at_user_id), " "])
 
-    original_len = len(text)
     truncated = False
     if text:
-        max_len = plugin_config.hermes_max_length
         if original_len > max_len:
             text = text[:max_len] + _TRUNCATION_SUFFIX
             truncated = True

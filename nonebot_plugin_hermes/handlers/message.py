@@ -8,6 +8,7 @@ priority=98 main:触发判断 → reactive 决策 → 出向
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from contextlib import asynccontextmanager
 from typing import List, Optional, Union
@@ -338,6 +339,7 @@ def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
       - Voice → [语音]
       - Video → [视频]
       - Emoji (QQ face 段) → [表情:<name>] 或 [表情] (name 缺失时)
+      - File → [文件:<name>] 或 [文件:未命名] (name 缺失时)
 
     与现有 [图片] 占位策略一致——仅追加到 msg_text 末尾,不试图与文本段 interleave。
     普通 (非 sticker) Image 不在本函数处理,沿用 _extract_image_urls + [图片] 占位流。
@@ -357,7 +359,179 @@ def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
         for face in uni_msg[alconna.Emoji]:
             name = getattr(face, "name", None)
             placeholders.append(f"[表情:{name}]" if name else "[表情]")
+    if uni_msg.has(alconna.File):
+        # File 与 Emoji 的 fallback 风格故意不一致:文件 metadata 几乎只剩"有/没有名字"这两个信号,
+        # 用 [文件:未命名] 保住"曾有文件且名字丢了"的语义,比裸 [文件] 更具信息量。
+        for f in uni_msg[alconna.File]:
+            name = getattr(f, "name", None) or "未命名"
+            placeholders.append(f"[文件:{name}]")
     return placeholders
+
+
+# --- Phase B-1: 合并转发消息提取 ---
+
+
+def _node_summary(node: dict) -> Optional[str]:
+    """将 OneBot get_forward_msg 返回的单条节点转成单行摘要。
+
+    节点结构:
+      {"sender": {"nickname": "...", "card": "..."}, "name": "...",
+       "message": [{"type": "text", "data": {"text": "..."}}, ...]}
+
+    空内容节点返回 None(调用方跳过,避免裸 'Unknown: ' 行)。
+    """
+    sender = node.get("sender", {})
+    nickname = sender.get("nickname") or sender.get("card") or node.get("name") or "Unknown"
+    parts: List[str] = []
+    for seg in node.get("message", []):
+        seg_type = seg.get("type", "")
+        data = seg.get("data", {}) if isinstance(seg.get("data"), dict) else {}
+        if seg_type == "text":
+            text = data.get("text", "")
+            if text:
+                parts.append(text)
+        elif seg_type == "image":
+            parts.append("[图片]")
+        elif seg_type == "record":
+            parts.append("[语音]")
+        elif seg_type == "video":
+            parts.append("[视频]")
+        elif seg_type == "file":
+            name = data.get("name") or data.get("file") or "未命名"
+            parts.append(f"[文件:{name}]")
+        elif seg_type == "face":
+            name = data.get("name")
+            parts.append(f"[表情:{name}]" if name else "[表情]")
+        elif seg_type == "forward":
+            content = data.get("content")
+            count = len(content) if isinstance(content, list) else "?"
+            parts.append(f"[嵌套合并转发 ({count} 条)]")
+        # other types → skip
+    joined = "".join(parts).strip()
+    if not joined:
+        return None
+    return f"{nickname}: {joined}"
+
+
+async def _extract_forward_full(
+    uni_msg: alconna.UniMessage,
+    bot: Bot,
+    *,
+    adapter_name: str,
+) -> Optional[str]:
+    """提取合并转发消息,返回 <forwarded_messages count="N">...</forwarded_messages> 块。
+
+    仅支持 onebotv11/onebotv12。其他适配器返回 None(调用方自行降级)。
+    调用 get_forward_msg 失败时返回自闭合 fetch_failed 标签,不抛出。
+    """
+    # TODO(B-1.3): onebotv12 uses the same `get_forward_msg` API name based on OneBot
+    # spec convergence, but this has not been verified against a live v12 deployment.
+    # If the v12 API name differs, the call below will raise and we'll return the
+    # fetch_failed self-closing tag — degraded but non-crashing. Verify with a real
+    # v12 adapter and either confirm or branch the call.
+    if adapter_name not in {"onebotv11", "onebotv12"}:
+        return None
+
+    refs = uni_msg[alconna.Reference]
+    ref_id: Optional[str] = None
+    for ref in refs:
+        if ref.id:
+            ref_id = ref.id
+            break
+    if ref_id is None:
+        return None
+
+    try:
+        resp = await bot.call_api("get_forward_msg", id=ref_id)
+    except Exception:
+        return '<forwarded_messages count="?" status="fetch_failed"/>'
+
+    nodes: list = []
+    if isinstance(resp, dict):
+        nodes = resp.get("messages") or []
+    elif isinstance(resp, list):
+        nodes = resp
+
+    total_nodes = len(nodes)
+
+    max_nodes = plugin_config.hermes_forward_extract_max_nodes
+    max_chars = plugin_config.hermes_forward_extract_max_chars
+
+    lines: List[str] = []
+    total_chars = 0
+    omitted = 0  # default: loop finished naturally, nothing hidden
+
+    for i, node in enumerate(nodes):
+        summary = _node_summary(node)
+        if summary is None:
+            continue
+        next_len = total_chars + len(summary) + (1 if lines else 0)
+        if next_len > max_chars and lines:
+            # Char-limit truncation requires at least one line already collected — better to
+            # overshoot max_chars with a single huge first node than to emit a content-less
+            # wrapper. Rare in practice (a 2KB single node under an 800-char cap), but the
+            # policy is "always show something."
+            lines.append("[...因字符上限截断]")
+            omitted = 0  # char path doesn't report a numeric "other N"
+            break
+        lines.append(summary)
+        total_chars = next_len
+        if len(lines) >= max_nodes:
+            # node truncation: count remaining indices not yet examined
+            omitted = total_nodes - (i + 1)
+            if omitted > 0:
+                lines.append(f"[...另有 {omitted} 条已省略]")
+            break
+
+    if not lines:
+        return '<forwarded_messages count="?" status="fetch_failed"/>'
+
+    content = "\n".join(lines)
+    return f'<forwarded_messages count="{total_nodes}">\n{content}\n</forwarded_messages>'
+
+
+def _summarize_forward(full_block: str, *, max_chars: int = 120) -> str:
+    """将 _extract_forward_full 返回的多行块压缩为单行自闭合预览标签。
+
+    用于 MessageBuffer / perception buffer 存储,避免 <recent_messages> 过度膨胀。
+    自闭合输入(含 fetch_failed 变体)原样返回。
+    """
+    # Already self-closing → unchanged
+    if re.match(r"<forwarded_messages [^>]+/>", full_block.strip()):
+        return full_block.strip()
+
+    # Extract count attribute
+    count_match = re.search(r'count="([^"]*)"', full_block)
+    count_val = count_match.group(1) if count_match else "?"
+
+    # Extract inner lines (between opening and closing tag)
+    inner_match = re.search(r"<forwarded_messages [^>]*>\n(.*?)\n</forwarded_messages>", full_block, re.DOTALL)
+    if not inner_match:
+        return f'<forwarded_messages count="{count_val}" preview=""/>'
+
+    inner = inner_match.group(1)
+    raw_lines = [ln.strip() for ln in inner.splitlines() if ln.strip()]
+
+    # Overhead: '<forwarded_messages count="N" preview=""/>'
+    overhead = len(f'<forwarded_messages count="{count_val}" preview=""/>')
+    budget = max_chars - overhead
+
+    preview_parts: List[str] = []
+    used = 0
+    for line in raw_lines:
+        compressed = line[:30] + "…" if len(line) > 30 else line
+        # separator cost
+        sep_cost = len(" / ") if preview_parts else 0
+        if used + sep_cost + len(compressed) > budget:
+            break
+        preview_parts.append(compressed)
+        used += sep_cost + len(compressed)
+
+    preview = " / ".join(preview_parts)
+    # Escape to keep attribute XML-safe: & first, then < and >, then "
+    preview = preview.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "'")
+
+    return f'<forwarded_messages count="{count_val}" preview="{preview}"/>'
 
 
 # Telegram `bot.get_file(file_id)` → URL 短期缓存。
@@ -445,6 +619,12 @@ async def handle_perception(bot: Bot, event: Event):
     if nontext_placeholders:
         suffix = " ".join(nontext_placeholders)
         msg_text = (msg_text + " " + suffix) if msg_text else suffix
+
+    # B-1.1: 合并转发提取 (perception 入站存 summary 版,避免 buffer 膨胀)
+    forward_full = await _extract_forward_full(uni_msg, bot, adapter_name=adapter_name)
+    if forward_full is not None:
+        summary = _summarize_forward(forward_full)
+        msg_text = f"{msg_text}\n{summary}" if msg_text else summary
 
     if not msg_text and not image_urls:
         return
@@ -541,6 +721,13 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     if nontext_placeholders:
         suffix = " ".join(nontext_placeholders)
         msg_text = (msg_text + " " + suffix).strip() if msg_text else suffix
+
+    # B-1.1: 合并转发提取 (main path 用 full 版,LLM 当前 turn 看到展开后的转发内容)
+    # 在 keyword-stripping 之前追加:keyword 前缀作用于 msg_text 开头的手打文本,
+    # 转发块拼在末尾,startswith(kw) 仍能匹配前缀,strip 后转发块完整保留。
+    forward_full = await _extract_forward_full(uni_msg, bot, adapter_name=adapter_name)
+    if forward_full is not None:
+        msg_text = f"{msg_text}\n{forward_full}" if msg_text else forward_full
 
     logger.debug(
         f"[HERMES recv] adapter={adapter_name} target={target.id} private={target.private} "
@@ -730,6 +917,7 @@ async def _run_passive_turn(
                 text=fallback_text,
                 media_urls=[],
                 at_user_id=None if is_private else user_id,
+                adapter_name=adapter_name,
             )
         return result
 
@@ -752,6 +940,7 @@ async def _run_passive_turn(
         text=reply_text,
         media_urls=result.media_urls,
         at_user_id=None if is_private else user_id,
+        adapter_name=adapter_name,
     )
     return result
 
@@ -851,6 +1040,7 @@ async def _run_reactive_turn(
                     text=fallback_text,
                     media_urls=[],
                     at_user_id=user_id,
+                    adapter_name=adapter_name,
                 )
             return result
 
@@ -867,6 +1057,7 @@ async def _run_reactive_turn(
                 text=result.raw_text,
                 media_urls=result.media_urls,
                 at_user_id=user_id,
+                adapter_name=adapter_name,
             )
         return result
 
@@ -920,6 +1111,7 @@ async def _run_reactive_turn(
         text=reply_text,
         media_urls=[],
         at_user_id=at_user,
+        adapter_name=adapter_name,
     )
     logger.debug(
         f"[HERMES reactive] sent adapter={adapter_name} group={group_id} "

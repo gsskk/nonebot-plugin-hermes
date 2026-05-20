@@ -89,13 +89,15 @@ def test_collect_mixed_segments_preserves_each():
         alconna.Emoji(id="1", name="笑"),
         alconna.Image(url="https://x/a.png", sticker=True),
         alconna.Video(url="https://x/v.mp4"),
+        alconna.File(id="f1", name="report.pdf"),
     )
     result = _collect_nontext_placeholders(msg)
     assert "[表情包]" in result
     assert "[语音]" in result
     assert "[视频]" in result
     assert "[表情:笑]" in result
-    assert len(result) == 4
+    assert "[文件:report.pdf]" in result
+    assert len(result) == 5
 
 
 def test_collect_text_only_returns_empty():
@@ -105,6 +107,29 @@ def test_collect_text_only_returns_empty():
 
     msg = _make_uni_msg(alconna.Text("hello world"))
     assert _collect_nontext_placeholders(msg) == []
+
+
+def test_collect_file_with_name_returns_named_placeholder():
+    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
+
+    import nonebot_plugin_alconna as alconna
+
+    msg = _make_uni_msg(alconna.File(id="abc", name="report.pdf"))
+    assert _collect_nontext_placeholders(msg) == ["[文件:report.pdf]"]
+
+
+def test_collect_file_without_name_returns_unknown_placeholder():
+    """显式 name=None 走 fallback 分支。
+
+    注意:alconna.File() 不传 name 时会自动设默认值 'file.bin',
+    会无声越过 fallback 路径。显式传 None 是该测试的正确写法,不要"清理"掉。
+    """
+    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
+
+    import nonebot_plugin_alconna as alconna
+
+    msg = _make_uni_msg(alconna.File(id="abc", name=None))
+    assert _collect_nontext_placeholders(msg) == ["[文件:未命名]"]
 
 
 # --- _extract_image_urls sticker skip ---
