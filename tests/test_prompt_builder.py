@@ -136,6 +136,27 @@ def test_decision_protocol_uses_topic_hint_field_name():
     assert "topic_tag" not in decision
 
 
+def test_decision_protocol_includes_addressee_check():
+    """decision_protocol 必须包含「对象归属」段,在多 bot / 模糊指代场景下
+    显式约束 should_reply,避免误答别人收到的批评/追问。"""
+    sp = build_reactive_system_prompt()
+    decision = sp.split("<decision_protocol>")[1]
+    assert "对象归属" in decision
+    assert "reply/quote" in decision
+    assert "无锚代词" in decision
+    assert "另一个 [bot]" in decision
+
+
+def test_decision_protocol_includes_self_attribution_check():
+    """decision_protocol 必须包含「自我归因校验」,要求被评价时先核对
+    recent_messages 里 [bot] 自己确实说过对应内容,才能认领。"""
+    sp = build_reactive_system_prompt()
+    decision = sp.split("<decision_protocol>")[1]
+    assert "自我归因校验" in decision
+    assert "禁止认错" in decision
+    assert "[bot]" in decision
+
+
 # --- reactive user content(runtime_state + recent_messages + current_message)---
 
 
