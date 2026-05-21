@@ -1343,21 +1343,30 @@ async def _handle_reactive_path(
         is_bot=False,
     )
 
-    if (
-        _mcp.inflight.try_enter(
-            key,
-            current_buffered,
-            is_explicit_trigger=is_explicit_trigger,
-            original_msg_id=event_msg_id,
-            now_ms=now_ms,
-        )
-        != "entered"
-    ):
+    inflight_result = _mcp.inflight.try_enter(
+        key,
+        current_buffered,
+        is_explicit_trigger=is_explicit_trigger,
+        original_msg_id=event_msg_id,
+        now_ms=now_ms,
+    )
+    if inflight_result != "entered":
+        # pending_set + explicit:在用户的原消息上贴 busy emoji,告知 bot 在排队。
+        # 之前只有 _refire 深度上限才贴 busy,首次撞 inflight 的 explicit @
+        # 拿不到任何提示 —— ack 闪一下被 _ack_scope finally 撤掉就没了。
+        # pending_kept(已有 explicit pending,新到 bystander 被挡)不贴 —— 那个
+        # 已被保护的 explicit 进 pending 时已贴过 busy,bystander 自己不期待反馈。
+        if inflight_result == "pending_set" and is_explicit_trigger:
+            await _emit_busy_notice(bot, adapter_name, event_msg_id)
         return
 
-    should_refire = False
+    # should_refire_pending=False 仅在 _run_reactive_turn 抛异常时:那是 plugin
+    # 自己的 bug,不该把 pending 回放(可能立刻再炸)。transport_error 是上游
+    # 故障(Hermes 超时 / 5xx),pending 里的下一发(特别是 explicit @)仍要
+    # refire,不能被静默吞掉。
+    should_refire_pending = False
     try:
-        result = await _run_reactive_turn(
+        await _run_reactive_turn(
             bot=bot,
             target=target,
             adapter_name=adapter_name,
@@ -1369,13 +1378,12 @@ async def _handle_reactive_path(
             is_explicit_trigger=is_explicit_trigger,
             now_ms=now_ms,
         )
-        should_refire = not (result is not None and result.is_transport_error)
+        should_refire_pending = True
     except Exception:
         logger.exception(f"[HERMES] reactive turn raised; dropping pending for {key}")
-        should_refire = False
         raise
     finally:
-        if not should_refire:
+        if not should_refire_pending:
             _mcp.inflight.exit(key)
         else:
             pending_entry = _mcp.inflight.take_pending(key)

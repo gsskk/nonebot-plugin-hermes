@@ -694,3 +694,234 @@ async def test_refire_transport_error_bystander_no_fallback(monkeypatch):
 
     # send 应该只被调 1 次:第一发回 "first ok",bystander 失败静默
     assert send_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_inflight_pending_set_explicit_emits_busy_emoji(monkeypatch):
+    """initial 到达的 explicit @ 撞 in-flight 占位 → 立刻在原消息贴 busy emoji。
+
+    覆盖路径:原来 try_enter 返 pending_set 时 handler 静默 return,只有 refire
+    深度上限才会贴 busy。结果用户 @ 进来,ack 闪一下被 finally 撤掉,什么提示
+    都没有。修复后:pending_set + is_explicit_trigger → 立刻贴 busy 97,让用户
+    知道 bot 在排队。
+    """
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 0)
+
+    now = int(time.time() * 1000)
+    _mcp.active_sessions.trigger("onebotv11", "g1", "user-A", now_ms=now)
+
+    async def slow_chat(**kwargs):
+        await asyncio.sleep(0.2)
+        return _make_chat_result(text="reply")
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", slow_chat)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    target.adapter = "onebotv11"
+    bot = _fake_bot()
+
+    # 第一发占住 inflight slot
+    t1 = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="onebotv11",
+            user_id="user-A",
+            group_id="g1",
+            text="seed",
+            image_urls=[],
+            is_explicit_trigger=True,
+            now_ms=now,
+            event_msg_id=1001,
+        )
+    )
+    await asyncio.sleep(0.02)
+
+    # 第二发 explicit @ 撞 inflight → pending_set → 应立刻贴 busy
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="onebotv11",
+        user_id="user-B",
+        group_id="g1",
+        text="me too",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now + 1,
+        event_msg_id=1002,
+    )
+
+    busy_calls = [
+        c
+        for c in bot.call_api.await_args_list
+        if c.args
+        and c.args[0] == "set_msg_emoji_like"
+        and c.kwargs.get("message_id") == 1002
+        and c.kwargs.get("emoji_id") == plugin_config.hermes_busy_emoji_id
+    ]
+    assert len(busy_calls) == 1, (
+        f"explicit @ pending_set 应贴 busy 97 在 msg_id=1002,实际调用: "
+        f"{[(c.args, c.kwargs) for c in bot.call_api.await_args_list]}"
+    )
+
+    await t1
+    await asyncio.sleep(0.3)
+
+
+@pytest.mark.asyncio
+async def test_inflight_pending_kept_no_busy_emoji(monkeypatch):
+    """pending 里已是 explicit + 新到 bystander → pending_kept,不贴 busy。
+
+    pending_kept 路径表示 pending 已被一个 explicit 占着了(那个 explicit 进 pending
+    时已经贴过 busy),后到的 bystander 既不替换 pending 也不需要新贴 busy ——
+    bystander 自己不该期待 ack/busy 反馈。
+    """
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 0)
+
+    now = int(time.time() * 1000)
+    _mcp.active_sessions.trigger("onebotv11", "g1", "user-A", now_ms=now)
+
+    async def slow_chat(**kwargs):
+        await asyncio.sleep(0.2)
+        return _make_chat_result(text="reply")
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", slow_chat)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    target.adapter = "onebotv11"
+    bot = _fake_bot()
+
+    # seed 占住 inflight
+    t_seed = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="onebotv11",
+            user_id="user-A",
+            group_id="g1",
+            text="seed",
+            image_urls=[],
+            is_explicit_trigger=True,
+            now_ms=now,
+            event_msg_id=1001,
+        )
+    )
+    await asyncio.sleep(0.02)
+    # explicit 进 pending(应贴 busy 在 1002 上)
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="onebotv11",
+        user_id="user-B",
+        group_id="g1",
+        text="me too",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now + 1,
+        event_msg_id=1002,
+    )
+    # bystander 再来一发 → pending_kept,不该贴 busy 在 1003 上
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="onebotv11",
+        user_id="user-C",
+        group_id="g1",
+        text="random chatter",
+        image_urls=[],
+        is_explicit_trigger=False,
+        now_ms=now + 2,
+        event_msg_id=1003,
+    )
+
+    busy_on_1003 = [
+        c
+        for c in bot.call_api.await_args_list
+        if c.args
+        and c.args[0] == "set_msg_emoji_like"
+        and c.kwargs.get("message_id") == 1003
+        and c.kwargs.get("emoji_id") == plugin_config.hermes_busy_emoji_id
+    ]
+    assert len(busy_on_1003) == 0, "bystander 撞 pending_kept 不应贴 busy"
+
+    await t_seed
+    await asyncio.sleep(0.3)
+
+
+@pytest.mark.asyncio
+async def test_transport_error_initial_turn_refires_explicit_pending(monkeypatch):
+    """initial turn 返 transport_error + pending 是 explicit → 仍然 refire。
+
+    覆盖修复:原 finally 在 should_refire=False (transport_error) 时直接
+    exit(key),把 pending 里的 explicit @ 静默丢掉。现在 transport_error 也
+    要 take_pending 并 refire,避免用户 @ 在 Hermes 超时后被吞。
+    """
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 0)
+
+    now = int(time.time() * 1000)
+    _mcp.active_sessions.trigger("ob11", "g1", "seed", now_ms=now)
+
+    chat_args: List[dict] = []
+
+    async def chat_transport_err_then_ok(**kwargs):
+        chat_args.append(kwargs)
+        await asyncio.sleep(0.1)
+        if len(chat_args) == 1:
+            return _make_chat_result(text="upstream error", transport_error=True)
+        return _make_chat_result(text=f"reply-{len(chat_args)}")
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_transport_err_then_ok)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1", private=False)
+    bot = _fake_bot()
+
+    # seed 占住 inflight 并最终返 transport_error
+    t_seed = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="seed-user",
+            group_id="g1",
+            text="seed",
+            image_urls=[],
+            is_explicit_trigger=False,
+            now_ms=now,
+        )
+    )
+    await asyncio.sleep(0.01)
+    # explicit @ 进 pending
+    t_at = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="user-B",
+            group_id="g1",
+            text="@bot real question",
+            image_urls=[],
+            is_explicit_trigger=True,
+            now_ms=now + 1,
+        )
+    )
+    await asyncio.gather(t_seed, t_at)
+    await asyncio.sleep(0.4)
+
+    assert len(chat_args) == 2, (
+        f"transport_error initial 应 refire explicit pending,实际只跑了 {len(chat_args)} 次 chat"
+    )
+    assert chat_args[1].get("user_id") == "user-B", (
+        f"refire chat 不是 explicit @ user-B 的,而是 {chat_args[1].get('user_id')!r}"
+    )
