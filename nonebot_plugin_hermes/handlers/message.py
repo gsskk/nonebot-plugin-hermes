@@ -368,6 +368,29 @@ def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
     return placeholders
 
 
+def _collect_at_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
+    """扫描 At / AtAll 段,返回 ['@全体', '@<user_id>', ...] 占位列表。
+
+    alconna `extract_plain_text()` 默认丢掉 At 段,Hermes 在 prompt 里看不到
+    "当前消息 @ 了谁"。在引用 bot 旧消息 + @ 群友 这类场景下,LLM 只能凭
+    引用关系判归属,误判"归你"。把 At 信息按 `@<target>` 回填到 plain text
+    末尾,让 decision_protocol 的"@ 了别人 → 不归你"规则有可用证据。
+
+    AtAll 放在 At 之前 — `@全体` 是更强的寻址信号,优先呈现。
+
+    target 一律按字符串输出。bot 自己被 @ 时不特判,Hermes 通过对比 recent_messages
+    里 [bot] 行的 `id=` 字段即可识别。
+    """
+    placeholders: List[str] = []
+    if uni_msg.has(alconna.AtAll):
+        for _ in uni_msg[alconna.AtAll]:
+            placeholders.append("@全体")
+    if uni_msg.has(alconna.At):
+        for at in uni_msg[alconna.At]:
+            placeholders.append(f"@{at.target}")
+    return placeholders
+
+
 # --- Phase B-1: 合并转发消息提取 ---
 
 
@@ -629,6 +652,12 @@ async def handle_perception(bot: Bot, event: Event):
         suffix = " ".join(nontext_placeholders)
         msg_text = (msg_text + " " + suffix) if msg_text else suffix
 
+    # At 段回填:plain_text 默认丢 At,补回让历史里 "@C 你看" 这类指向可读
+    at_placeholders = _collect_at_placeholders(uni_msg)
+    if at_placeholders:
+        suffix = " ".join(at_placeholders)
+        msg_text = (msg_text + " " + suffix) if msg_text else suffix
+
     # B-1.1: 合并转发提取 (perception 入站存 summary 版,避免 buffer 膨胀)
     forward_full = await _extract_forward_full(uni_msg, bot, adapter_name=adapter_name)
     if forward_full is not None:
@@ -705,6 +734,10 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             replied_message = await alconna.UniMessage.generate(message=event.reply.message, bot=bot)
             replied_text = replied_message.extract_plain_text().strip()
             replied_image_urls = await _extract_image_urls(replied_message, bot, adapter_name)
+            replied_at = _collect_at_placeholders(replied_message)
+            if replied_at:
+                suffix = " ".join(replied_at)
+                replied_text = (replied_text + " " + suffix).strip() if replied_text else suffix
             if replied_image_urls and not replied_text:
                 replied_text = "[图片]"
         except Exception as e:
@@ -731,12 +764,25 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
         suffix = " ".join(nontext_placeholders)
         msg_text = (msg_text + " " + suffix).strip() if msg_text else suffix
 
+    # 在 at_placeholders 注入**之前**快照:@ 是寻址不是内容,纯 @-only 消息
+    # (用户 tab 补全误发 / 单 @ 当 ping) 不应触发 chat。perception 入口仍会写
+    # buffer (历史里能看到 @),只是 main handler 不进 chat。
+    has_real_content = bool(msg_text) or bool(image_urls)
+
+    # At 段回填:让 Hermes 在 decision_protocol 里能看到当前消息 @ 了谁;keyword
+    # 模式的 startswith 检测不受影响(at_placeholders 拼在末尾,不在前缀)
+    at_placeholders = _collect_at_placeholders(uni_msg)
+    if at_placeholders:
+        suffix = " ".join(at_placeholders)
+        msg_text = (msg_text + " " + suffix).strip() if msg_text else suffix
+
     # B-1.1: 合并转发提取 (main path 用 full 版,LLM 当前 turn 看到展开后的转发内容)
     # 在 keyword-stripping 之前追加:keyword 前缀作用于 msg_text 开头的手打文本,
     # 转发块拼在末尾,startswith(kw) 仍能匹配前缀,strip 后转发块完整保留。
     forward_full = await _extract_forward_full(uni_msg, bot, adapter_name=adapter_name)
     if forward_full is not None:
         msg_text = f"{msg_text}\n{forward_full}" if msg_text else forward_full
+        has_real_content = True
 
     logger.debug(
         f"[HERMES recv] adapter={adapter_name} target={target.id} private={target.private} "
@@ -745,7 +791,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
         f"text_len={len(msg_text)} imgs={len(image_urls)}"
     )
 
-    if not msg_text and not image_urls:
+    if not has_real_content:
         logger.debug(f"[HERMES skip] empty adapter={adapter_name} user={user_id}")
         matcher.skip()
 
@@ -757,7 +803,10 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     if target.private:
         is_explicit_trigger = True
     else:
-        is_mentioned = event.is_tome() or _is_bot_at(uni_msg, str(bot.self_id))
+        # event.is_tome() 在用户引用 bot 旧消息时也会被置 True;若当前消息含 @ 段但
+        # 全部指向他人,视作"用户在跟别人讲话,只是顺手引用了 bot 那条",不算显式 @bot。
+        has_bot_at = _is_bot_at(uni_msg, str(bot.self_id))
+        is_mentioned = has_bot_at or (event.is_tome() and not _msg_at_only_other_users(uni_msg, str(bot.self_id)))
         trigger_mode = plugin_config.hermes_group_trigger
         if trigger_mode == "at":
             is_explicit_trigger = is_mentioned
