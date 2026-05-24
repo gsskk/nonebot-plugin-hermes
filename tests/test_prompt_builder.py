@@ -147,6 +147,19 @@ def test_decision_protocol_includes_addressee_check():
     assert "另一个 [bot]" in decision
 
 
+def test_decision_protocol_at_bot_takes_precedence_over_at_others():
+    """@ bot + @ 其他人共存时,@ 你必须压过 @ 了别人——否则 LLM 会把
+    `@<bot_id> @<other_id>` 这种双 @ 误判为「不归你」直接 should_reply=false,
+    导致用户 @ 群里所有相关方时 bot 集体噤声。两条规则必须在 prompt 里
+    显式区分「同时 @」与「只 @ 了别人」。"""
+    sp = build_reactive_system_prompt()
+    decision = sp.split("<decision_protocol>")[1]
+    # 正向规则: @ 你即使带其他 @ 也算归你
+    assert "即使同时 @ 了别人" in decision
+    # 负向规则: 必须强调"只 @ 了别人 + 没同时 @ 你"
+    assert "没同时 @ 你" in decision or "且没 @ 你" in decision
+
+
 def test_decision_protocol_includes_self_attribution_check():
     """decision_protocol 必须包含「自我归因校验」,要求被评价时先核对
     recent_messages 里 [bot] 自己确实说过对应内容,才能认领。"""
