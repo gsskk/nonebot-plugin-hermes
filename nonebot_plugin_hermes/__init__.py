@@ -14,7 +14,7 @@ require("nonebot_plugin_localstore")
 
 from .config import Config, plugin_config
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __plugin_meta__ = PluginMetadata(
     name="Hermes Agent",
