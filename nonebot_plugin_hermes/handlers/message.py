@@ -63,6 +63,39 @@ def _is_bot_at(uni_msg: alconna.UniMessage, bot_self_id: str) -> bool:
     return False
 
 
+def _has_at_bot_in_original(event: Event, bot_self_id: str) -> bool:
+    """检查 event.original_message 里是否有 @bot 段。
+
+    OneBot v11 adapter 在分发事件前调 `_check_at_me`,把消息**开头/结尾**的 @bot 段
+    从 event.message 中删除并置 to_me=True。下游 alconna 从 event.message 解析
+    UniMessage 时已看不到那个 @bot,导致:
+      - `_is_bot_at(uni_msg, ...)` 返回 False
+      - 「@bot @other 怎么看」被当成只 @ 他人,is_mentioned 错误地为 False
+      - emoji ack / chat 都不触发
+
+    event.original_message 是 v11 在 _check_at_me 跑之前深拷贝的,@bot 还在那里。
+    本函数兜底翻原始消息,告诉上游「用户确实 @ 了我」。
+
+    非 OneBot adapter 一般无此剥离行为、不一定保留 original_message;`getattr` +
+    try/except 让其他 adapter 安全返回 False(不退化原行为)。
+    """
+    original = getattr(event, "original_message", None)
+    if not original:
+        return False
+    try:
+        for seg in original:
+            if getattr(seg, "type", None) != "at":
+                continue
+            data = getattr(seg, "data", None)
+            if not isinstance(data, dict):
+                continue
+            if str(data.get("qq", "")) == str(bot_self_id):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _msg_at_only_other_users(uni_msg: alconna.UniMessage, bot_self_id: str) -> bool:
     """消息含 At 段、且所有 At target 都不是 bot 自身 → True。
 
@@ -368,7 +401,12 @@ def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
     return placeholders
 
 
-def _collect_at_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
+def _collect_at_placeholders(
+    uni_msg: alconna.UniMessage,
+    *,
+    event: Optional[Event] = None,
+    bot_self_id: Optional[str] = None,
+) -> List[str]:
     """扫描 At / AtAll 段,返回 ['@全体', '@<user_id>', ...] 占位列表。
 
     alconna `extract_plain_text()` 默认丢掉 At 段,Hermes 在 prompt 里看不到
@@ -380,6 +418,10 @@ def _collect_at_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
 
     target 一律按字符串输出。bot 自己被 @ 时不特判,Hermes 通过对比 recent_messages
     里 [bot] 行的 `id=` 字段即可识别。
+
+    若同时给出 event + bot_self_id 且 uni_msg 里没 @bot 但 event.original_message 里
+    有(OneBot v11 _check_at_me 剥走的情况),把 `@<bot_self_id>` 补到列表开头 ——
+    否则 Hermes 在多 @ 场景下看到「只 @ 了他人」会按 decision_protocol 抑制回复。
     """
     placeholders: List[str] = []
     if uni_msg.has(alconna.AtAll):
@@ -388,6 +430,10 @@ def _collect_at_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
     if uni_msg.has(alconna.At):
         for at in uni_msg[alconna.At]:
             placeholders.append(f"@{at.target}")
+    if event is not None and bot_self_id is not None:
+        bot_at_visible = any(p == f"@{bot_self_id}" for p in placeholders)
+        if not bot_at_visible and _has_at_bot_in_original(event, bot_self_id):
+            placeholders.insert(0, f"@{bot_self_id}")
     return placeholders
 
 
@@ -653,7 +699,8 @@ async def handle_perception(bot: Bot, event: Event):
         msg_text = (msg_text + " " + suffix) if msg_text else suffix
 
     # At 段回填:plain_text 默认丢 At,补回让历史里 "@C 你看" 这类指向可读
-    at_placeholders = _collect_at_placeholders(uni_msg)
+    # 传 event + bot_self_id 让 helper 检测「OneBot v11 _check_at_me 剥走的 @bot」并补回
+    at_placeholders = _collect_at_placeholders(uni_msg, event=event, bot_self_id=str(bot.self_id))
     if at_placeholders:
         suffix = " ".join(at_placeholders)
         msg_text = (msg_text + " " + suffix) if msg_text else suffix
@@ -771,7 +818,8 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
 
     # At 段回填:让 Hermes 在 decision_protocol 里能看到当前消息 @ 了谁;keyword
     # 模式的 startswith 检测不受影响(at_placeholders 拼在末尾,不在前缀)
-    at_placeholders = _collect_at_placeholders(uni_msg)
+    # 传 event + bot_self_id 让 helper 检测「OneBot v11 _check_at_me 剥走的 @bot」并补回
+    at_placeholders = _collect_at_placeholders(uni_msg, event=event, bot_self_id=str(bot.self_id))
     if at_placeholders:
         suffix = " ".join(at_placeholders)
         msg_text = (msg_text + " " + suffix).strip() if msg_text else suffix
@@ -805,7 +853,12 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     else:
         # event.is_tome() 在用户引用 bot 旧消息时也会被置 True;若当前消息含 @ 段但
         # 全部指向他人,视作"用户在跟别人讲话,只是顺手引用了 bot 那条",不算显式 @bot。
-        has_bot_at = _is_bot_at(uni_msg, str(bot.self_id))
+        #
+        # has_bot_at 要兜底翻 event.original_message:OneBot v11 adapter 在 _check_at_me
+        # 里会把消息开头/结尾的 @bot 段从 event.message 中剥掉(并置 to_me=True),下游
+        # uni_msg 里看不到 @bot,但用户其实 @ 了。否则「@bot @other 怎么看」会因
+        # _msg_at_only_other_users=True 触发 quoted-only 抑制,完全不响应(连 emoji 都没)。
+        has_bot_at = _is_bot_at(uni_msg, str(bot.self_id)) or _has_at_bot_in_original(event, str(bot.self_id))
         is_mentioned = has_bot_at or (event.is_tome() and not _msg_at_only_other_users(uni_msg, str(bot.self_id)))
         trigger_mode = plugin_config.hermes_group_trigger
         if trigger_mode == "at":

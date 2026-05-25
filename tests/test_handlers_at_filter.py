@@ -121,3 +121,103 @@ def test_collect_at_placeholders_includes_bot_self():
 
     msg = _make_msg(_at(BOT_SELF_ID), _text(" 帮我"))
     assert _collect_at_placeholders(msg) == [f"@{BOT_SELF_ID}"]
+
+
+# --- _has_at_bot_in_original / stripped @bot 兜底 ---
+
+
+class _FakeOnebotSeg:
+    """模拟 OneBot v11 MessageSegment 的最小 duck:`.type` + `.data` 字典。"""
+
+    def __init__(self, type_, **data):
+        self.type = type_
+        self.data = dict(data)
+
+
+def _make_event_with_original(*segments):
+    """造一个最小 event mock,只填 original_message 字段。"""
+    from unittest.mock import MagicMock
+
+    event = MagicMock()
+    event.original_message = list(segments)
+    return event
+
+
+def test_has_at_bot_in_original_finds_bot():
+    """original_message 含 @bot 段 → True (OneBot v11 _check_at_me 剥走前的状态)。"""
+    from nonebot_plugin_hermes.handlers.message import _has_at_bot_in_original
+
+    event = _make_event_with_original(
+        _FakeOnebotSeg("at", qq=BOT_SELF_ID),
+        _FakeOnebotSeg("at", qq="other"),
+        _FakeOnebotSeg("text", text=" hi"),
+    )
+    assert _has_at_bot_in_original(event, BOT_SELF_ID) is True
+
+
+def test_has_at_bot_in_original_no_bot():
+    """original_message 含 @ 段但全是别人 → False。"""
+    from nonebot_plugin_hermes.handlers.message import _has_at_bot_in_original
+
+    event = _make_event_with_original(
+        _FakeOnebotSeg("at", qq="other1"),
+        _FakeOnebotSeg("at", qq="other2"),
+    )
+    assert _has_at_bot_in_original(event, BOT_SELF_ID) is False
+
+
+def test_has_at_bot_in_original_missing_field_safe():
+    """event 没 original_message / 字段为 None → 静默返回 False (非 OneBot adapter)。"""
+    from unittest.mock import MagicMock
+
+    from nonebot_plugin_hermes.handlers.message import _has_at_bot_in_original
+
+    event = MagicMock(spec=[])  # 不暴露任何属性 → getattr 都返 None
+    assert _has_at_bot_in_original(event, BOT_SELF_ID) is False
+
+
+def test_has_at_bot_in_original_compares_as_string():
+    """qq 字段是 int / bot_self_id 是 str(或反之)→ 仍能匹配。"""
+    from nonebot_plugin_hermes.handlers.message import _has_at_bot_in_original
+
+    event = _make_event_with_original(_FakeOnebotSeg("at", qq=int(BOT_SELF_ID)))
+    assert _has_at_bot_in_original(event, BOT_SELF_ID) is True
+    assert _has_at_bot_in_original(event, int(BOT_SELF_ID)) is True  # type: ignore[arg-type]
+
+
+def test_collect_at_placeholders_backfills_stripped_bot():
+    """uni_msg 里只有 @other (因 OneBot v11 剥走 @bot) + original_message 里有 @bot
+    → 把 @<bot_id> 补到 placeholders 开头,让 Hermes 在 prompt 里能看到 @bot 信号。
+    """
+    from nonebot_plugin_hermes.handlers.message import _collect_at_placeholders
+
+    uni_msg = _make_msg(_at("other-1"), _text(" 怎么看"))
+    event = _make_event_with_original(
+        _FakeOnebotSeg("at", qq=BOT_SELF_ID),
+        _FakeOnebotSeg("at", qq="other-1"),
+        _FakeOnebotSeg("text", text=" 怎么看"),
+    )
+    result = _collect_at_placeholders(uni_msg, event=event, bot_self_id=BOT_SELF_ID)
+    assert result == [f"@{BOT_SELF_ID}", "@other-1"], f"应把 stripped @bot 补到开头,实际: {result}"
+
+
+def test_collect_at_placeholders_no_double_bot():
+    """uni_msg 已含 @bot (无剥离场景) → 不重复补 @bot。"""
+    from nonebot_plugin_hermes.handlers.message import _collect_at_placeholders
+
+    uni_msg = _make_msg(_at(BOT_SELF_ID), _at("other-1"), _text(" hi"))
+    event = _make_event_with_original(
+        _FakeOnebotSeg("at", qq=BOT_SELF_ID),
+        _FakeOnebotSeg("at", qq="other-1"),
+    )
+    result = _collect_at_placeholders(uni_msg, event=event, bot_self_id=BOT_SELF_ID)
+    # @bot 只出现一次,顺序按 uni_msg 原样
+    assert result == [f"@{BOT_SELF_ID}", "@other-1"]
+
+
+def test_collect_at_placeholders_no_event_unchanged_behavior():
+    """没传 event/bot_self_id (replied_message 等场景) → 与原行为完全一致。"""
+    from nonebot_plugin_hermes.handlers.message import _collect_at_placeholders
+
+    uni_msg = _make_msg(_at("other-1"), _text(" hi"))
+    assert _collect_at_placeholders(uni_msg) == ["@other-1"]
