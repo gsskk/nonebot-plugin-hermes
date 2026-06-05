@@ -408,3 +408,61 @@ def test_parse_first_json_block_preserves_embedded_quotes():
     parsed = _try_parse_first_json_block(raw)
     assert parsed is not None
     assert parsed["reply_text"] == '他说"你好"\n下一段'
+
+
+# --- 栈式 brace-matcher 扩展能力(小模型 emission 容错) ---
+
+
+def test_parse_first_json_block_nested_object():
+    """嵌套对象:旧版单层正则会抠到 `{"reply_text": "x", "meta": {"a": 1}` 然后 json5 失败。
+    栈式 matcher 必须穿过内层 `{...}` 并拿到完整外层平衡块。"""
+    from nonebot_plugin_hermes.core.hermes_client import _try_parse_first_json_block
+
+    raw = '{"should_reply": true, "reply_text": "x", "meta": {"a": 1, "b": {"c": 2}}}'
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed["reply_text"] == "x"
+    assert parsed["meta"] == {"a": 1, "b": {"c": 2}}
+
+
+def test_parse_first_json_block_string_contains_braces():
+    """字符串字面量内的 `{` / `}` 不能参与深度计数。"""
+    from nonebot_plugin_hermes.core.hermes_client import _try_parse_first_json_block
+
+    raw = '{"should_reply": true, "reply_text": "代码: if (x) {return 1;} else {return 2;}"}'
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed["reply_text"] == "代码: if (x) {return 1;} else {return 2;}"
+
+
+def test_parse_first_json_block_markdown_fenced():
+    """模型把 JSON 包在 ```json ... ``` 围栏里:matcher 从首个 `{` 开始扫,
+    fence 反引号天然不参与计数,块仍能抠出。"""
+    from nonebot_plugin_hermes.core.hermes_client import _try_parse_first_json_block
+
+    raw = '```json\n{"should_reply": true, "reply_text": "ok"}\n```'
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed["should_reply"] is True
+    assert parsed["reply_text"] == "ok"
+
+
+def test_parse_first_json_block_single_quoted_string():
+    """JSON5 允许单引号字符串;matcher 也得在单引号 string state 内忽略 `{` / `}`。"""
+    from nonebot_plugin_hermes.core.hermes_client import _try_parse_first_json_block
+
+    raw = "{'should_reply': true, 'reply_text': '里面有 } 字符'}"
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed["reply_text"] == "里面有 } 字符"
+
+
+def test_parse_first_json_block_prose_after_json():
+    """JSON 后面还跟一段说明文字 — 抠到的应是首个平衡块,后续 prose 不影响解析。"""
+    from nonebot_plugin_hermes.core.hermes_client import _try_parse_first_json_block
+
+    raw = '{"should_reply": false, "topic_hint": "demo"}\n\n以上是我的判断。'
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed["should_reply"] is False
+    assert parsed["topic_hint"] == "demo"

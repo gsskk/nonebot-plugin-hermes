@@ -1155,10 +1155,14 @@ async def _run_reactive_turn(
                 )
             return result
 
+        # raw_text 预览:用来分类失败模式(裸文本 / fenced ```json / 多 JSON 块 /
+        # nested object 等)。换行折叠成 \n 字面量,300 字够覆盖单 turn submit_decision。
+        raw_preview = (result.raw_text or "").replace("\n", "\\n").replace("\r", "\\r")[:300]
         logger.warning(
             f"[HERMES reactive] structured parse failed (group={group_id}, "
             f"transport_error={result.is_transport_error}); fallback="
-            f"{'raw_text' if is_explicit_trigger and result.raw_text else 'silent'}"
+            f"{'raw_text' if is_explicit_trigger and result.raw_text else 'silent'}; "
+            f"raw_len={len(result.raw_text or '')} raw_preview={raw_preview!r}"
         )
         # 静默兜底:显式触发时降级发 raw_text;非显式触发(被动)时静默
         if is_explicit_trigger and result.raw_text:

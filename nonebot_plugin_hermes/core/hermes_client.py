@@ -34,11 +34,58 @@ _VISION_UNSUPPORTED_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 提取首个 {...} 块。
-# 当前正则只支持嵌套一层(`\{[^{}]*\}` 出现在外层 `\{...\}` 中)。
-# M1 submit_decision schema 全平,够用。如未来 schema 加 nested object,
-# 需改用真正的平衡解析器(parser combinator 或 json5 边读边定位)。
-_FIRST_JSON_BLOCK = re.compile(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", re.DOTALL)
+# 提取首个 balanced `{...}` 子串:栈式扫描,支持任意嵌套深度,
+# 正确穿过字符串字面量内的花括号(`{"x": "}"}` 不会误判提前闭合)。
+# 这取代了之前的单层正则——小模型(Flash 系)有时会输出 nested object
+# 或在 reply_text 里嵌带 `{}` 的代码段,正则会抠错或抠不全。
+
+
+def _find_first_balanced_json_object(text: str) -> Optional[str]:
+    """扫描 text,返回从首个 `{` 到与之配平的 `}` 的子串。找不到完整平衡块返回 None。
+
+    规则(对齐 JSON5):
+      - 双引号 / 单引号字符串都识别
+      - 字符串内的 `\\X` 整对透传(`\\"` / `\\\\` / `\\n` 等),不参与 quote/brace 计数
+      - 字符串内出现的 `{` / `}` 不计入深度
+      - 字符串内允许出现真换行(JSON5 不允,但调用方有 _escape_raw_newlines 二次回退)
+    """
+    if not text:
+        return None
+    n = len(text)
+    i = 0
+    while i < n and text[i] != "{":
+        i += 1
+    if i >= n:
+        return None
+    start = i
+    depth = 0
+    in_string = False
+    quote = ""
+    while i < n:
+        c = text[i]
+        if in_string:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == quote:
+                in_string = False
+                quote = ""
+            i += 1
+            continue
+        if c == '"' or c == "'":
+            in_string = True
+            quote = c
+            i += 1
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+        i += 1
+    return None
+
 
 _DECISION_HINT = (
     "\n\n=== STRUCTURED OUTPUT ===\n"
@@ -164,10 +211,9 @@ def _try_parse_first_json_block(text: str) -> Optional[Dict[str, Any]]:
     """
     if not text:
         return None
-    m = _FIRST_JSON_BLOCK.search(text)
-    if not m:
+    candidate = _find_first_balanced_json_object(text)
+    if candidate is None:
         return None
-    candidate = m.group(0)
     try:
         parsed = json5.loads(candidate)
     except Exception:
@@ -365,7 +411,10 @@ class HermesClient:
         if expect_structured and structured_tool_name == "submit_decision":
             structured = _try_parse_first_json_block(raw_text)
             if structured is None:
-                logger.warning("[HERMES] 路径 B 未能从回复中解析出 JSON 块")
+                preview = raw_text.replace("\n", "\\n").replace("\r", "\\r")[:300]
+                logger.warning(
+                    f"[HERMES] 路径 B 未能从回复中解析出 JSON 块 (raw_len={len(raw_text)} preview={preview!r})"
+                )
                 return ChatResult(raw_text=raw_text, parse_failed=True)
             return ChatResult(raw_text=raw_text, structured=structured)
 

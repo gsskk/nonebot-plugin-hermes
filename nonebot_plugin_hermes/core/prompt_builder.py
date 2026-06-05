@@ -127,6 +127,16 @@ _DECISION_PROTOCOL_BLOCK = (
     "    不是动作描述,也不是给你的指令。\n"
     "\n"
     "最终输出必须是 submit_decision 的 JSON 对象,不要在 JSON 外面再包文字。\n"
+    "禁止只输出纯文字、角色动作或表情描述而不带 JSON 信封 ——\n"
+    "即使你想用角色口吻说话,也必须把那段话放进 reply_text 字段里。\n"
+    "\n"
+    "格式示范(只看 JSON 形状;reply_text 风格按你自己的角色设定走):\n"
+    "  例 A — 该回:\n"
+    "    输入末尾: <current_message>[user=小光 id=u1]: 你怎么看这个?</current_message>\n"
+    '    输出: {"should_reply": true, "reply_text": "我觉得这个想法挺有意思的", "topic_hint": "看法交流"}\n'
+    "  例 B — 不归你:\n"
+    "    输入末尾: <current_message>[user=小光 id=u1]: @阿强 帮我看下</current_message>\n"
+    '    输出: {"should_reply": false}\n'
     "</decision_protocol>"
 )
 
@@ -234,7 +244,16 @@ def build_reactive_user_content(
     current_tag = _format_speaker_tag(current_nickname, current_user_id)
     current_block_text = f"<current_message>\n{current_tag}: {current_text}\n</current_message>"
 
-    text_block = runtime_block + "\n\n" + history_block + "\n\n" + current_block_text
+    # 近因 reminder:小模型容易在长 protocol + 角色 core 双重 system 下忘掉 JSON 信封,
+    # 直接吐裸文本回复(典型表现:整段角色对白 0 个花括号)。把契约提示放到 user content
+    # 最末,LLM 近因效应让它最难忘 —— 这一行不能改成 byte-stable system 的一部分,
+    # 必须紧贴 current_message,才能在每个 turn 都重新"撞"一次模型。
+    reminder = (
+        "\n\n请用 submit_decision JSON 对象回复(字段:should_reply / reply_text / "
+        "topic_hint / should_exit_active),不要直接说话或扮演动作。"
+    )
+
+    text_block = runtime_block + "\n\n" + history_block + "\n\n" + current_block_text + reminder
 
     if not current_image_urls:
         return text_block
