@@ -44,6 +44,28 @@
 - 🧪 **消息段感知扩展 (0.3.4+, 实验性)**：语音/视频/QQ 表情/sticker 占位文本注入 LLM 视野;sticker 自动跳过 vision API。OneBot v11 NapCat 显式 @ 时贴 emoji 回执(`HERMES_ACK_FEEDBACK_ENABLED=true`)
 - ✅ **合并转发处理 (0.4.0+)**：群里收到合并转发消息时展开为有限长度摘要；bot 自身长回复在 OneBot v11 群里转为合并转发避免截断
 
+### 会话标注 (0.5.0+ 可选)
+
+开启：在 `.env` 添加 `HERMES_LABEL_ENABLED=true`（默认 false，老用户行为零变化）。
+可选地设置 `HERMES_LABEL_ADMIN_ONLY=false` 让所有用户都能给自己打标签（默认只 admin）。
+
+```bash
+# 在群里给自己当前 session 操作（需要先 /hermes-label 启用 + 加入 HERMES_ADMIN_USERS 白名单）
+/hermes-label add netops         # 加 tag
+/hermes-label add urgent
+/hermes-label priority 3         # 优先级 0-3
+/hermes-label note 先看 1.1.1    # 单行备注
+/hermes-label list               # 看自己的标注
+/hermes-label find urgent        # 查同 tag 的 session (admin)
+/hermes-label clear              # 清空
+
+# 管理员
+/hermes-label rebuild            # 从 gateway 拉全部 session 重建本地索引
+```
+
+技术细节：标签以 `\x1e{json}\x1f` 前缀塞进 PATCH `/api/sessions/{id}` 的 `title` 字段。
+纯 PATCH 协议实现，不引入新依赖、不破坏现有 chat 流程。
+
 ## 快速开始
 
 ### 1. 前置条件

@@ -431,5 +431,87 @@ class HermesClient:
         except Exception:
             return False
 
+    # ------------------------------------------------------------------
+    # Session metadata helpers (used by /hermes-label commands)
+    # ------------------------------------------------------------------
+
+    async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """GET /api/sessions/{id}。返回 session dict, 404 时返回 None。
+
+        只为 /hermes-label 系列命令服务, 完全独立于 chat() 路径。
+        API 返回形如 {"object":"hermes.session","session": {...}}, 抽 inner。
+        """
+        try:
+            headers = self.get_headers(session_id)
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"{self.api_url}/api/sessions/{session_id}", headers=headers
+                )
+                if resp.status_code == 404:
+                    return None
+                if resp.status_code != 200:
+                    logger.warning(f"[HERMES] get_session {session_id} HTTP {resp.status_code}")
+                    return None
+                data = resp.json()
+                # API 包了一层 {"object":..., "session": {...}}, 抽 inner 给调用方
+                if isinstance(data, dict) and "session" in data:
+                    return data["session"]
+                return data if isinstance(data, dict) else None
+        except Exception as exc:
+            logger.warning(f"[HERMES] get_session {session_id} failed: {exc}")
+            return None
+
+    async def list_sessions(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """GET /api/sessions。返回 session 字典列表 (可能空)。
+
+        为 /hermes-label rebuild 服务 —— 一次拉一批回来, 解 prefix 重建本地索引。
+        限制 limit ≤ 200 防止单次 payload 太大; gateway 端也会 cap。
+        """
+        try:
+            headers = self.get_headers()
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"{self.api_url}/api/sessions",
+                    params={"limit": min(limit, 200)},
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"[HERMES] list_sessions HTTP {resp.status_code}")
+                    return []
+                data = resp.json()
+                # API 形如 {"object":"list","data": [...], ...}, 抽 data 字段
+                if isinstance(data, dict) and "data" in data:
+                    return list(data["data"])
+                return list(data) if isinstance(data, list) else []
+        except Exception as exc:
+            logger.warning(f"[HERMES] list_sessions failed: {exc}")
+            return []
+
+    async def patch_session_title(self, session_id: str, new_title: str) -> bool:
+        """PATCH /api/sessions/{id} 只动 title。返回是否 200。
+
+        /hermes-label 的核心写路径: 拿旧 title → 解 prefix → 改 annotations
+        → 重编 prefix → PATCH 回去。任何 PATCH 失败 (网关拒绝 / 网络挂) 都
+        返回 False, 不抛 (调用方自己决定怎么提示用户)。
+        """
+        try:
+            headers = self.get_headers(session_id)
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.patch(
+                    f"{self.api_url}/api/sessions/{session_id}",
+                    json={"title": new_title},
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        f"[HERMES] patch_session_title {session_id} HTTP {resp.status_code}: "
+                        f"{resp.text[:200]}"
+                    )
+                    return False
+                return True
+        except Exception as exc:
+            logger.warning(f"[HERMES] patch_session_title {session_id} failed: {exc}")
+            return False
+
 
 hermes_client = HermesClient()

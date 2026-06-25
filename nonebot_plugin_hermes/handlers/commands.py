@@ -197,3 +197,227 @@ async def handle_status(bot: Bot, event: Event, matcher: Matcher):
         lines.append(f"  ... +{len(reg_lines) - 5} more")
 
     await alconna.UniMessage("\n".join(lines)).send(target=target, bot=bot)
+# --- /hermes-label ---
+# /hermes-label 命令族 (0.5.0+):
+#   add <tag>           — 给当前 session 加 1 个 tag
+#   remove <tag>        — 删 1 个 tag
+#   list                — 列当前 session 的所有 tags + priority + note
+#   find <tag>          — 找同 tag 的 session
+#   priority <0-3>      — 设优先级
+#   note <text>         — 设备注(空 = 清)
+#   clear               — 清空所有标注(保留真 title)
+#   rebuild             — 管理员:从 gateway 拉全部 session 重建本地索引
+
+from ..core.session_label import (  # noqa: E402
+    Annotations,
+    decode_annotations,
+    encode_annotations,
+    label_index,
+)
+
+label_command = on_command(
+    "hermes-label", aliases={"标签"}, force_whitespace=True, priority=88, block=True
+)
+
+
+def _is_label_admin(target, user_id: str) -> bool:
+    """检查当前用户是否被允许使用 /hermes-label 命令。"""
+    if not plugin_config.hermes_label_admin_only:
+        return True
+    adapter_name = get_adapter_name(target)
+    return f"{adapter_name}:{user_id}" in plugin_config.hermes_admin_users
+
+
+def _current_session_key(adapter_name: str, is_private: bool, user_id: str, group_id):
+    """复用 session_manager 拿到当前 session_key(X-Hermes-Session-Id header 值)。"""
+    return session_manager.get_session_key(
+        adapter_name=adapter_name,
+        is_private=is_private,
+        user_id=user_id,
+        group_id=group_id,
+    )
+
+
+@label_command.handle()
+async def handle_label(bot: Bot, event: Event, matcher: Matcher):
+    """/hermes-label 主入口。"""
+    target = alconna.get_target()
+    if not check_isolation(event, target):
+        matcher.skip()
+
+    if not plugin_config.hermes_label_enabled:
+        await alconna.UniMessage(
+            "⚠️ /hermes-label 未启用, 请在 .env 设置 HERMES_LABEL_ENABLED=true"
+        ).send(target=target, bot=bot)
+        return
+
+    raw = event.get_plaintext().strip()
+    for prefix in ("/hermes-label ", "/hermes-label", "标签 ", "标签"):
+        if raw.startswith(prefix):
+            raw = raw[len(prefix):].strip()
+            break
+    parts = raw.split(maxsplit=1)
+    if not parts:
+        await alconna.UniMessage(
+            "用法:\n"
+            "/hermes-label add <tag>\n"
+            "/hermes-label remove <tag>\n"
+            "/hermes-label list\n"
+            "/hermes-label find <tag>\n"
+            "/hermes-label priority <0-3>\n"
+            "/hermes-label note <text>\n"
+            "/hermes-label clear\n"
+            "/hermes-label rebuild (admin)"
+        ).send(target=target, bot=bot)
+        return
+
+    subcmd = parts[0].lower()
+    arg = parts[1] if len(parts) > 1 else ""
+
+    adapter_name = get_adapter_name(target)
+    user_id = event.get_user_id() or ""
+    is_private = target.private
+    group_id = None if is_private else target.id
+
+    if subcmd == "rebuild":
+        if not _is_label_admin(target, user_id):
+            return
+        await _do_rebuild(target, bot)
+        return
+
+    current_key = _current_session_key(adapter_name, is_private, user_id, group_id)
+
+    if subcmd in ("add", "remove", "priority", "note", "clear"):
+        if not _is_label_admin(target, user_id):
+            return
+    elif subcmd == "find":
+        if not _is_label_admin(target, user_id):
+            return
+
+    if subcmd == "add":
+        if not arg:
+            await alconna.UniMessage("用法: /hermes-label add <tag>").send(target=target, bot=bot)
+            return
+        await _do_modify(target, bot, current_key, "add", arg)
+    elif subcmd == "remove":
+        if not arg:
+            await alconna.UniMessage("用法: /hermes-label remove <tag>").send(target=target, bot=bot)
+            return
+        await _do_modify(target, bot, current_key, "remove", arg)
+    elif subcmd == "priority":
+        if not arg.isdigit() or not (0 <= int(arg) <= 3):
+            await alconna.UniMessage("用法: /hermes-label priority <0-3>").send(target=target, bot=bot)
+            return
+        await _do_modify(target, bot, current_key, "priority", int(arg))
+    elif subcmd == "note":
+        await _do_modify(target, bot, current_key, "note", arg)
+    elif subcmd == "clear":
+        await _do_modify(target, bot, current_key, "clear", "")
+    elif subcmd == "list":
+        await _do_list(target, bot, current_key)
+    elif subcmd == "find":
+        if not arg:
+            await alconna.UniMessage("用法: /hermes-label find <tag>").send(target=target, bot=bot)
+            return
+        await _do_find(target, bot, arg)
+    else:
+        await alconna.UniMessage(f"⚠️ 未知子命令: {subcmd}").send(target=target, bot=bot)
+
+
+async def _do_modify(target, bot, session_key: str, op: str, value):
+    """add/remove/priority/note/clear 的统一实现。"""
+    session = await hermes_client.get_session(session_key)
+    if session is None:
+        await alconna.UniMessage(f"⚠️ 找不到 session: {session_key}").send(target=target, bot=bot)
+        return
+
+    old_title = session.get("title") or ""
+    ann, real_title = decode_annotations(old_title)
+    labels = list(ann.labels)
+    priority = ann.priority
+    note = ann.note
+
+    if op == "add":
+        if value in labels:
+            await alconna.UniMessage(f"⚠️ 标签已存在: {value}").send(target=target, bot=bot)
+            return
+        labels.append(value)
+    elif op == "remove":
+        if value not in labels:
+            await alconna.UniMessage(f"⚠️ 标签不存在: {value}").send(target=target, bot=bot)
+            return
+        labels.remove(value)
+    elif op == "priority":
+        priority = value
+    elif op == "note":
+        note = value or None
+    elif op == "clear":
+        labels, priority, note = [], 0, None
+
+    new_ann = Annotations(labels=labels, priority=priority, note=note)
+    new_title = encode_annotations(real_title=real_title, annotations=new_ann)
+    ok = await hermes_client.patch_session_title(session_key, new_title)
+    if not ok:
+        await alconna.UniMessage("⚠️ 写入失败, gateway 拒绝了 PATCH").send(target=target, bot=bot)
+        return
+    label_index.set(session_key, new_ann)
+    await alconna.UniMessage(
+        f"✅ session {session_key[:16]}... 标注已更新:\n"
+        f"  labels: {new_ann.labels}\n"
+        f"  priority: {new_ann.priority}\n"
+        f"  note: {new_ann.note or '(无)'}"
+    ).send(target=target, bot=bot)
+
+
+async def _do_list(target, bot, session_key: str):
+    """列当前 session 的标注。"""
+    session = await hermes_client.get_session(session_key)
+    if session is None:
+        await alconna.UniMessage(f"⚠️ 找不到 session: {session_key}").send(target=target, bot=bot)
+        return
+    ann, real_title = decode_annotations(session.get("title"))
+    label_index.set(session_key, ann)
+    lines = [
+        f"📋 session {session_key[:16]}... 标注:",
+        f"  title: {real_title or '(空)'}",
+        f"  labels: {ann.labels or '(无)'}",
+        f"  priority: {ann.priority}",
+        f"  note: {ann.note or '(无)'}",
+    ]
+    await alconna.UniMessage("\n".join(lines)).send(target=target, bot=bot)
+
+
+async def _do_find(target, bot, label: str):
+    """管理员:查同 tag 的 session。"""
+    session_keys = label_index.find_by_label(label)
+    if not session_keys:
+        await alconna.UniMessage(
+            f"🏷️ 本地索引里没找到标签: {label}\n(可以试试 /hermes-label rebuild)"
+        ).send(target=target, bot=bot)
+        return
+    lines = [f"🏷️ 标签 '{label}' 命中 {len(session_keys)} 个 session:"]
+    for sk in session_keys[:20]:
+        ann = label_index.get(sk)
+        if ann:
+            lines.append(f"  - {sk[:20]}... priority={ann.priority} labels={ann.labels}")
+    if len(session_keys) > 20:
+        lines.append(f"  ... +{len(session_keys) - 20} more")
+    await alconna.UniMessage("\n".join(lines)).send(target=target, bot=bot)
+
+
+async def _do_rebuild(target, bot):
+    """管理员:从 gateway 拉全部 session 重建本地索引。"""
+    sessions = await hermes_client.list_sessions(limit=200)
+    label_index.clear()
+    n_labeled = 0
+    for s in sessions:
+        sid = s.get("id") or s.get("session_id")
+        if not sid:
+            continue
+        ann, _ = decode_annotations(s.get("title"))
+        if ann.labels or ann.priority or ann.note:
+            label_index.set(sid, ann)
+            n_labeled += 1
+    await alconna.UniMessage(
+        f"🔄 重建索引完成: 扫了 {len(sessions)} 个 session, 其中 {n_labeled} 个带标注"
+    ).send(target=target, bot=bot)

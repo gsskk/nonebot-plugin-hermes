@@ -213,5 +213,16 @@ class Config(BaseModel):
     私聊永远走截断(send_private_forward_msg 实现端覆盖差)。
     非 onebotv11 适配器亦不受此开关影响,沿用截断。"""
 
+    # --- 标注会话 (M2: session labels) ---
+    hermes_label_enabled: bool = False
+    """是否启用 /hermes-label 命令族。False = 老用户行为零变化。
+    启用后会把标签/优先级/备注以 \\x1e{json}\\x1f 前缀塞进 session title。
+    现有读取 title 的代码不受影响(前缀用 ASCII RS/US,人眼几乎无感)。"""
+
+    hermes_label_admin_only: bool = True
+    """True = 只允许 hermes_admin_users 使用 /hermes-label;
+    False = 所有用户可给自己当前 session 打标签,但 find/list 仍只对管理员开放。
+    默认 True,保老用户零行为变化。"""
+
 
 plugin_config = get_plugin_config(Config)
