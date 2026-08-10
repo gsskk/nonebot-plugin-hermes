@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from nonebot import get_bot, logger
 from pydantic import BaseModel, Field
@@ -49,7 +49,7 @@ async def push_message_impl(
     *,
     active_sessions,
     bot_registry,
-    message_buffer: Optional["MessageBuffer"] = None,
+    message_buffer: MessageBuffer | None = None,
 ) -> PushMessageResult:
     if not inp.text and not inp.image_urls:
         return PushMessageResult(ok=False, error="text and image_urls both empty")

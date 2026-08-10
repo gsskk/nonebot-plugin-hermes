@@ -11,7 +11,6 @@ import asyncio
 import re
 import time
 from contextlib import asynccontextmanager
-from typing import List, Optional, Union
 
 import nonebot_plugin_alconna as alconna
 from nonebot import logger, on_message
@@ -114,7 +113,7 @@ def _msg_at_only_other_users(uni_msg: alconna.UniMessage, bot_self_id: str) -> b
 _MAX_NICKNAME_LEN = 24
 
 
-def _sanitize_nickname(value) -> Optional[str]:
+def _sanitize_nickname(value) -> str | None:
     """清洗外部输入昵称,失败返 None。
 
     防御目标(顺手卫生 + 阻挡 [user=…] 定界符伪装):
@@ -135,7 +134,7 @@ def _sanitize_nickname(value) -> Optional[str]:
     return s
 
 
-def _extract_sender_nickname(event: Event, adapter_name: str) -> Optional[str]:
+def _extract_sender_nickname(event: Event, adapter_name: str) -> str | None:
     """从 event 抽真实昵称(群名片优先),失败回 None。所有命中字段都过 _sanitize_nickname。
 
     保持 cross-adapter,不 import adapter-specific 类型,全靠 getattr 链——
@@ -294,7 +293,7 @@ async def _ack_scope(
 async def _emit_busy_notice(
     bot: Bot,
     adapter_name: str,
-    original_msg_id: Optional[Union[str, int]],
+    original_msg_id: str | int | None,
 ) -> None:
     """Depth-cap 触顶丢 explicit pending 时, 在原消息上贴 busy emoji, 不撤销。
 
@@ -322,7 +321,7 @@ async def _emit_busy_notice(
         logger.debug(f"[HERMES busy_notice] emit failed (msg_id={original_msg_id}): {e}")
 
 
-async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_name: str) -> List[str]:
+async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_name: str) -> list[str]:
     """从 UniMessage 中抽出图片 URL 列表(可直接 HTTP GET 拿字节的那种)。
 
     多 adapter 行为不一致:
@@ -337,7 +336,7 @@ async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_nam
 
     本函数是 async 因为 telegram 分支要 await bot.get_file。
     """
-    urls: List[str] = []
+    urls: list[str] = []
     if not uni_msg.has(alconna.Image):
         return urls
     adapter_lc = (adapter_name or "").lower()
@@ -364,7 +363,7 @@ async def _extract_image_urls(uni_msg: alconna.UniMessage, bot: Bot, adapter_nam
     return urls
 
 
-def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
+def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> list[str]:
     """扫描非文本/普通图段,返回占位文本列表 (顺序近似按段类型聚合)。
 
     覆盖:
@@ -377,7 +376,7 @@ def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
     与现有 [图片] 占位策略一致——仅追加到 msg_text 末尾,不试图与文本段 interleave。
     普通 (非 sticker) Image 不在本函数处理,沿用 _extract_image_urls + [图片] 占位流。
     """
-    placeholders: List[str] = []
+    placeholders: list[str] = []
     if uni_msg.has(alconna.Image):
         for img in uni_msg[alconna.Image]:
             if getattr(img, "sticker", False):
@@ -404,9 +403,9 @@ def _collect_nontext_placeholders(uni_msg: alconna.UniMessage) -> List[str]:
 def _collect_at_placeholders(
     uni_msg: alconna.UniMessage,
     *,
-    event: Optional[Event] = None,
-    bot_self_id: Optional[str] = None,
-) -> List[str]:
+    event: Event | None = None,
+    bot_self_id: str | None = None,
+) -> list[str]:
     """扫描 At / AtAll 段,返回 ['@全体', '@<user_id>', ...] 占位列表。
 
     alconna `extract_plain_text()` 默认丢掉 At 段,Hermes 在 prompt 里看不到
@@ -423,7 +422,7 @@ def _collect_at_placeholders(
     有(OneBot v11 _check_at_me 剥走的情况),把 `@<bot_self_id>` 补到列表开头 ——
     否则 Hermes 在多 @ 场景下看到「只 @ 了他人」会按 decision_protocol 抑制回复。
     """
-    placeholders: List[str] = []
+    placeholders: list[str] = []
     if uni_msg.has(alconna.AtAll):
         for _ in uni_msg[alconna.AtAll]:
             placeholders.append("@全体")
@@ -440,7 +439,7 @@ def _collect_at_placeholders(
 # --- Phase B-1: 合并转发消息提取 ---
 
 
-def _node_summary(node: dict) -> Optional[str]:
+def _node_summary(node: dict) -> str | None:
     """将 OneBot get_forward_msg 返回的单条节点转成单行摘要。
 
     节点结构在不同 OneBot 实现端之间不完全统一,主要存在两种:
@@ -455,7 +454,7 @@ def _node_summary(node: dict) -> Optional[str]:
     """
     sender = node.get("sender", {})
     nickname = sender.get("nickname") or sender.get("card") or node.get("name") or "Unknown"
-    parts: List[str] = []
+    parts: list[str] = []
     segs = node.get("content") or node.get("message") or []
     for seg in segs:
         seg_type = seg.get("type", "")
@@ -492,7 +491,7 @@ async def _extract_forward_full(
     bot: Bot,
     *,
     adapter_name: str,
-) -> Optional[str]:
+) -> str | None:
     """提取合并转发消息,返回 <forwarded_messages count="N">...</forwarded_messages> 块。
 
     仅支持 onebotv11/onebotv12。其他适配器返回 None(调用方自行降级)。
@@ -507,7 +506,7 @@ async def _extract_forward_full(
         return None
 
     refs = uni_msg[alconna.Reference]
-    ref_id: Optional[str] = None
+    ref_id: str | None = None
     for ref in refs:
         if ref.id:
             ref_id = ref.id
@@ -535,7 +534,7 @@ async def _extract_forward_full(
     max_nodes = plugin_config.hermes_forward_extract_max_nodes
     max_chars = plugin_config.hermes_forward_extract_max_chars
 
-    lines: List[str] = []
+    lines: list[str] = []
     total_chars = 0
     omitted = 0  # default: loop finished naturally, nothing hidden
 
@@ -594,7 +593,7 @@ def _summarize_forward(full_block: str, *, max_chars: int = 120) -> str:
     overhead = len(f'<forwarded_messages count="{count_val}" preview=""/>')
     budget = max_chars - overhead
 
-    preview_parts: List[str] = []
+    preview_parts: list[str] = []
     used = 0
     for line in raw_lines:
         compressed = line[:30] + "…" if len(line) > 30 else line
@@ -623,7 +622,7 @@ _RESOLVED_URL_TTL_S = 60.0
 _resolved_url_cache: dict[tuple[str, str], tuple[str, float]] = {}
 
 
-async def _resolve_telegram_file_url(bot: Bot, file_id: str) -> Optional[str]:
+async def _resolve_telegram_file_url(bot: Bot, file_id: str) -> str | None:
     """Telegram file_id → 可拉的 HTTPS URL。失败返 None,perception 不崩。
 
     URL 里含 token,只在 plugin 本地 DB / fetcher 流转(不会进 prompt / MCP 返回)。
@@ -775,7 +774,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
 
     # 引用消息提取
     replied_text = ""
-    replied_image_urls: List[str] = []
+    replied_image_urls: list[str] = []
     if hasattr(event, "reply") and event.reply:
         try:
             replied_message = await alconna.UniMessage.generate(message=event.reply.message, bot=bot)
@@ -954,9 +953,9 @@ async def _run_passive_turn(
     target,
     adapter_name: str,
     user_id: str,
-    group_id: Optional[str],
+    group_id: str | None,
     text: str,
-    image_urls: List[str],
+    image_urls: list[str],
     is_private: bool,
     now_ms: int,
 ):
@@ -973,7 +972,7 @@ async def _run_passive_turn(
     # 同一事件 priority=1 时刚写入的当前消息,避免历史里出现重复。
     # 私聊不注入(0.1.6 起 perception 在私聊就是 no-op,Hermes session 已覆盖)。
     # 历史从 0.2.x 起放进 user content 而非 system,以维持 system 字节稳定。
-    recent: List[BufferedMessage] = []
+    recent: list[BufferedMessage] = []
     if not is_private and group_id and plugin_config.hermes_perception_enabled and _mcp.message_buffer is not None:
         recent = list(
             _mcp.message_buffer.get_recent(
@@ -1064,10 +1063,10 @@ async def _run_reactive_turn(
     user_id: str,
     group_id: str,
     text: str,
-    image_urls: List[str],
+    image_urls: list[str],
     is_explicit_trigger: bool,
     now_ms: int,
-    nickname: Optional[str] = None,
+    nickname: str | None = None,
 ):
     """跑一发 reactive turn,返回 hermes_client.chat() 的 ChatResult,或 None 表示提前 return。
 
@@ -1270,13 +1269,13 @@ async def _handle_passive_path(
     target,
     adapter_name: str,
     user_id: str,
-    group_id: Optional[str],
+    group_id: str | None,
     text: str,
-    image_urls: List[str],
+    image_urls: list[str],
     is_private: bool,
     now_ms: int,
-    nickname: Optional[str] = None,
-    event_msg_id: Optional[Union[str, int]] = None,
+    nickname: str | None = None,
+    event_msg_id: str | int | None = None,
 ):
     """Passive 外壳:inflight 占位 → _run_passive_turn → 合并重燃。
 
@@ -1388,11 +1387,11 @@ async def _handle_reactive_path(
     user_id: str,
     group_id: str,
     text: str,
-    image_urls: List[str],
+    image_urls: list[str],
     is_explicit_trigger: bool,
     now_ms: int,
-    nickname: Optional[str] = None,
-    event_msg_id: Optional[Union[str, int]] = None,
+    nickname: str | None = None,
+    event_msg_id: str | int | None = None,
 ):
     """Reactive 外壳:inflight 占位 → 调 _run_reactive_turn → finally 合并重燃。
 
@@ -1517,7 +1516,7 @@ async def _refire(
     key,
     trigger_msg: BufferedMessage,
     is_explicit_trigger: bool,
-    original_msg_id: Optional[Union[str, int]],
+    original_msg_id: str | int | None,
     depth: int,
     mode: str,
     bot: Bot,
@@ -1599,7 +1598,9 @@ async def _refire(
     finally:
         if not should_refire:
             _mcp.inflight.exit(key)
-            return
+            # B012 豁免: try 侧异常已被上方 except 捕获记录,不存在被吞的活异常;
+            # refire 是独立 create_task 的旁路接力,CancelledError 窗口仅停机时。
+            return  # noqa: B012
         pending_entry = _mcp.inflight.take_pending(key)
         if pending_entry and pending_entry.msg.ts > trigger_msg.ts:
             asyncio.create_task(
@@ -1626,8 +1627,8 @@ async def route_synthesized_input(
     target,
     adapter_name: str,
     user_id: str,
-    group_id: Optional[str],
-    nickname: Optional[str],
+    group_id: str | None,
+    nickname: str | None,
     text: str,
     allow_passive: bool,
     now_ms: int,

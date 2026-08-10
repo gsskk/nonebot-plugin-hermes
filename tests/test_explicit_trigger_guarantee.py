@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import List
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -82,7 +81,7 @@ async def test_inflight_explicit_at_replies_via_refire(monkeypatch):
     now = int(time.time() * 1000)
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
-    chat_args: List[dict] = []
+    chat_args: list[dict] = []
 
     async def slow_chat(**kwargs):
         chat_args.append(kwargs)
@@ -148,7 +147,7 @@ async def test_refire_cooldown_bypass_for_explicit_pending(monkeypatch):
     now = int(time.time() * 1000)
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
-    chat_args: List[dict] = []
+    chat_args: list[dict] = []
 
     async def slow_chat(**kwargs):
         chat_args.append(kwargs)
@@ -210,7 +209,7 @@ async def test_refire_cooldown_still_blocks_bystander_pending(monkeypatch):
     now = int(time.time() * 1000)
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
-    chat_args: List[dict] = []
+    chat_args: list[dict] = []
 
     async def slow_chat(**kwargs):
         chat_args.append(kwargs)
@@ -549,7 +548,7 @@ async def test_inflight_explicit_at_protected_from_bystander_overwrite(monkeypat
     now = int(time.time() * 1000)
     _mcp.active_sessions.trigger("ob11", "g1", "seed", now_ms=now)
 
-    chat_args: List[dict] = []
+    chat_args: list[dict] = []
 
     async def slow_chat(**kwargs):
         chat_args.append(kwargs)
@@ -872,7 +871,7 @@ async def test_transport_error_initial_turn_refires_explicit_pending(monkeypatch
     now = int(time.time() * 1000)
     _mcp.active_sessions.trigger("ob11", "g1", "seed", now_ms=now)
 
-    chat_args: List[dict] = []
+    chat_args: list[dict] = []
 
     async def chat_transport_err_then_ok(**kwargs):
         chat_args.append(kwargs)

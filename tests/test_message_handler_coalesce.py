@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import List
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -84,7 +83,7 @@ async def test_reactive_burst_coalesces_to_two_chat_calls(monkeypatch):
     now = int(time.time() * 1000)
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
-    chat_calls: List[int] = []
+    chat_calls: list[int] = []
 
     async def slow_chat(**kwargs):
         chat_calls.append(len(chat_calls))
@@ -123,10 +122,10 @@ async def test_reactive_burst_coalesces_to_two_chat_calls(monkeypatch):
 @pytest.mark.asyncio
 async def test_passive_private_burst_coalesces(monkeypatch):
     """私聊连发 3 条,chat 实际被调 2 次(初发 + 合并重燃)。"""
-    from nonebot_plugin_hermes.handlers import message as handler_mod
     from nonebot_plugin_hermes.core.hermes_client import ChatResult
+    from nonebot_plugin_hermes.handlers import message as handler_mod
 
-    chat_calls: List[int] = []
+    chat_calls: list[int] = []
 
     async def slow_chat_passive(**kwargs):
         chat_calls.append(len(chat_calls))
@@ -314,8 +313,8 @@ async def test_refire_depth_caps_at_max(monkeypatch):
     now = int(time.time() * 1000)
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
-    chat_calls: List[int] = []
-    warning_messages: List[str] = []
+    chat_calls: list[int] = []
+    warning_messages: list[str] = []
 
     # Capture loguru warnings (nonebot uses loguru, not stdlib logging)
     original_warning = handler_mod.logger.warning
@@ -382,7 +381,7 @@ async def test_transport_error_does_not_refire(monkeypatch):
     now = 5_000_000
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
-    chat_calls: List[int] = []
+    chat_calls: list[int] = []
 
     async def transport_err_chat(**kwargs):
         chat_calls.append(len(chat_calls))
@@ -439,7 +438,7 @@ async def test_exception_in_turn_does_not_refire(monkeypatch):
     now = 6_000_000
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
-    chat_calls: List[int] = []
+    chat_calls: list[int] = []
 
     async def boom_chat(**kwargs):
         chat_calls.append(len(chat_calls))
@@ -778,7 +777,7 @@ async def test_refire_respects_post_reply_cooldown(monkeypatch):
     now = int(time.time() * 1000)
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
-    chat_calls: List[dict] = []
+    chat_calls: list[dict] = []
 
     async def chat_then_external_mark(**kwargs):
         chat_calls.append(kwargs)
@@ -1057,7 +1056,7 @@ async def test_refire_when_active_session_expired(monkeypatch):
     now = 7_000_000
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
-    chat_calls: List[int] = []
+    chat_calls: list[int] = []
 
     async def chat_and_expire(**kwargs):
         chat_calls.append(len(chat_calls))

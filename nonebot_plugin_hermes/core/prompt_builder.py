@@ -17,13 +17,14 @@ passive 模式:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from .hermes_client import UserContent
 from .message_buffer import BufferedMessage
 
 
-def _format_speaker_tag(nickname: Optional[str], user_id: str) -> str:
+def _format_speaker_tag(nickname: str | None, user_id: str) -> str:
     """渲染对话行的 speaker 标签。
 
     - 有真实昵称(且不与 user_id 相同) → `[user=Nick id=ID]`,LLM 可用 ID
@@ -156,8 +157,8 @@ def _render_runtime_state(
     adapter: str,
     group_id: str,
     triggered_by: str,
-    triggered_by_nickname: Optional[str],
-    topic_hint: Optional[str],
+    triggered_by_nickname: str | None,
+    topic_hint: str | None,
 ) -> str:
     nick = f" ({triggered_by_nickname})" if triggered_by_nickname else ""
     lines = [
@@ -195,7 +196,7 @@ def build_passive_system_prompt(
     adapter: str,
     is_private: bool,
     user_id: str,
-    group_id: Optional[str],
+    group_id: str | None,
 ) -> str:
     """passive 路径的 system prompt:仅 Message Context 头。
 
@@ -219,11 +220,11 @@ def build_reactive_user_content(
     adapter: str,
     group_id: str,
     triggered_by: str,
-    triggered_by_nickname: Optional[str],
-    topic_hint: Optional[str],
+    triggered_by_nickname: str | None,
+    topic_hint: str | None,
     recent_messages: Sequence[BufferedMessage],
     current_user_id: str,
-    current_nickname: Optional[str],
+    current_nickname: str | None,
     current_text: str,
     current_image_urls: Sequence[str],
 ) -> UserContent:
@@ -258,7 +259,7 @@ def build_reactive_user_content(
     if not current_image_urls:
         return text_block
 
-    parts: List[Dict[str, Any]] = [{"type": "text", "text": text_block}]
+    parts: list[dict[str, Any]] = [{"type": "text", "text": text_block}]
     for u in current_image_urls:
         parts.append({"type": "image_url", "image_url": {"url": u}})
     return parts
@@ -283,7 +284,7 @@ def build_passive_user_content(
     if not current_image_urls:
         return text_block
 
-    parts: List[Dict[str, Any]] = [{"type": "text", "text": text_block}]
+    parts: list[dict[str, Any]] = [{"type": "text", "text": text_block}]
     for u in current_image_urls:
         parts.append({"type": "image_url", "image_url": {"url": u}})
     return parts

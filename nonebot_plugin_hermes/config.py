@@ -4,8 +4,6 @@
 所有配置项通过 NoneBot 的 .env 文件读取，前缀为 HERMES_。
 """
 
-from typing import Set
-
 from nonebot import get_plugin_config
 from pydantic import BaseModel, Field
 
@@ -25,19 +23,19 @@ class Config(BaseModel):
     hermes_group_trigger: str = "at"
     """群聊触发方式: at / all / keyword"""
 
-    hermes_keywords: Set[str] = {"/ai"}
+    hermes_keywords: set[str] = {"/ai"}
     """keyword 模式下的触发关键词"""
 
     hermes_private_trigger: str = "all"
     """私聊触发方式: all / allowlist"""
 
-    hermes_allow_users: Set[str] = set()
+    hermes_allow_users: set[str] = set()
     """允许私聊的用户 ID(allowlist 模式)"""
 
-    hermes_allow_groups: Set[str] = set()
+    hermes_allow_groups: set[str] = set()
     """允许响应的群组 ID(空 = 全部允许)"""
 
-    hermes_admin_users: Set[str] = set()
+    hermes_admin_users: set[str] = set()
     """管理员白名单(adapter+user 复合 ID)。用于 /hermes-status 等敏感命令。
     格式:`{adapter}:{user_id}`,adapter 取小写 + 去空格点(同 get_adapter_name)。
     例:["telegram:7055555877", "onebotv11:12345678"]
@@ -51,7 +49,7 @@ class Config(BaseModel):
     hermes_max_length: int = 4000
     """单条回复最大长度(超出截断,QQ 限制约 4500 字符)"""
 
-    hermes_ignore_prefix: Set[str] = {"."}
+    hermes_ignore_prefix: set[str] = {"."}
     """以这些字符开头的消息不触发回复"""
 
     # --- 被动感知 (Chat Awareness) ---

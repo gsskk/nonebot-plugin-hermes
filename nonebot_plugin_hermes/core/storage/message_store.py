@@ -12,12 +12,11 @@ from __future__ import annotations
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from nonebot import logger
 
 from ..message_buffer import BufferedMessage
-
 
 # 写法上分两段:CREATE TABLE 之间用分号分隔的多 statement,
 # sqlite3 单次 execute 只接一条,逐条执行更稳。
@@ -77,7 +76,7 @@ class MessageStore:
             pass
         self._closed = True
 
-    def append(self, msg: BufferedMessage) -> Optional[int]:
+    def append(self, msg: BufferedMessage) -> int | None:
         """写入消息,回填 msg.id。失败返回 None 但不抛。"""
         try:
             cur = self._conn.execute(
@@ -110,11 +109,11 @@ class MessageStore:
     def get_recent(
         self,
         adapter: str,
-        group_id: Optional[str],
+        group_id: str | None,
         limit: int,
-        before_ts: Optional[int] = None,
-        owner_user_id: Optional[str] = None,
-    ) -> List[BufferedMessage]:
+        before_ts: int | None = None,
+        owner_user_id: str | None = None,
+    ) -> list[BufferedMessage]:
         """新→旧顺序返回最近 limit 条;同 MessageBuffer.get_recent 语义。"""
         if group_id is None and owner_user_id is None:
             raise ValueError("owner_user_id is required when group_id is None (private chat lookup)")
@@ -163,7 +162,7 @@ class MessageStore:
             for r in rows
         ]
 
-    def get_message_images_meta(self, message_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
+    def get_message_images_meta(self, message_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
         """按 message_id 拉对应的 image 元数据(url + sha256 + mime)。
 
         未找到的 message_id 不出现在返回 dict 里(不是 KeyError)。
@@ -176,7 +175,7 @@ class MessageStore:
             f"WHERE message_id IN ({placeholders}) ORDER BY message_id, idx",
             message_ids,
         ).fetchall()
-        out: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+        out: dict[int, list[dict[str, Any]]] = defaultdict(list)
         for r in rows:
             out[r["message_id"]].append(
                 {
@@ -215,7 +214,7 @@ class MessageStore:
             deleted += extra
         return deleted
 
-    def known_groups(self) -> List[Tuple[str, str]]:
+    def known_groups(self) -> list[tuple[str, str]]:
         """返回所有已有消息的 (adapter, scope_id) 唯一集合。
 
         scope_id:群聊 = group_id,私聊 = `@private:<user_id>`(与

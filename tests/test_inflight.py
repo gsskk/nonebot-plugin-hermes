@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-
 from nonebot_plugin_hermes.core.inflight import (
-    InflightRegistry,
     MAX_REFIRE_DEPTH,
+    InflightRegistry,
 )
 from nonebot_plugin_hermes.core.message_buffer import BufferedMessage
 

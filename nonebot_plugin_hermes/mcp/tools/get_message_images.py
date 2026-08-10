@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any, Optional
+from typing import Any
 
 from mcp.types import ImageContent, TextContent
 from pydantic import BaseModel, Field
@@ -29,8 +29,8 @@ class GetMessageImagesInput(BaseModel):
         max_length=4,
         description="要取图字节的消息 id 列表;最多 4 个",
     )
-    adapter: Optional[str] = Field(default=None, description="可选防御性过滤")
-    group_id: Optional[str] = Field(default=None, description="可选防御性过滤")
+    adapter: str | None = Field(default=None, description="可选防御性过滤")
+    group_id: str | None = Field(default=None, description="可选防御性过滤")
 
 
 _PER_IMAGE_MAX_BYTES = 5 * 1024 * 1024  # 5MB

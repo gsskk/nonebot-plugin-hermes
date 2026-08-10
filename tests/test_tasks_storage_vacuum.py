@@ -10,8 +10,9 @@ argument 'replace_existing'`,bot 启动直接挂。本测试确保下次有人�
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 def test_register_storage_vacuum_does_not_pass_replace_existing_kwarg():

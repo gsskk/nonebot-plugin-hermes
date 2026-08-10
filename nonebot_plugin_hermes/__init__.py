@@ -36,7 +36,7 @@ __plugin_meta__ = PluginMetadata(
 )
 
 # handlers 必须在 plugin manager 上下文里 import,matchers 才会注册到此插件名下
-from . import handlers  # noqa: F401, E402
+from . import handlers  # noqa: F401
 
 # 所有运行时副作用挪到 driver.on_startup 钩子,避免 plugin import 阶段
 # 触发 nb-cli 的 "not loaded as a plugin" 检测(顶层副作用过重时会撞这个雷)。

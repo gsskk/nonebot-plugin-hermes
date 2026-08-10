@@ -12,10 +12,9 @@ pending 就一定能在前一发完成后被 _refire 跑到 chat()。
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Literal, Optional, Tuple, Union
+from typing import Literal
 
 from .message_buffer import BufferedMessage
-
 
 # Refire 链最大深度。超过则丢 pending、warn,等下一个新触发。
 # 一次 burst 最多产出 1(主回) + MAX_REFIRE_DEPTH(链尾)= 4 发回复。
@@ -34,13 +33,13 @@ class PendingEntry:
 
     msg: BufferedMessage
     is_explicit_trigger: bool
-    original_msg_id: Optional[Union[str, int]] = None
+    original_msg_id: str | int | None = None
 
 
 @dataclass
 class InflightSlot:
     started_at: int
-    pending: Optional[PendingEntry] = None
+    pending: PendingEntry | None = None
 
 
 class InflightRegistry:
@@ -62,15 +61,15 @@ class InflightRegistry:
     """
 
     def __init__(self) -> None:
-        self._slots: Dict[Tuple[str, str], InflightSlot] = {}
+        self._slots: dict[tuple[str, str], InflightSlot] = {}
 
     def try_enter(
         self,
-        key: Tuple[str, str],
+        key: tuple[str, str],
         current_msg: BufferedMessage,
         *,
         is_explicit_trigger: bool,
-        original_msg_id: Optional[Union[str, int]],
+        original_msg_id: str | int | None,
         now_ms: int,
     ) -> Literal["entered", "pending_set", "pending_kept"]:
         """无 slot → 占位 started_at=now_ms,返回 'entered'。
@@ -91,7 +90,7 @@ class InflightRegistry:
         )
         return "pending_set"
 
-    def take_pending(self, key: Tuple[str, str]) -> Optional[PendingEntry]:
+    def take_pending(self, key: tuple[str, str]) -> PendingEntry | None:
         """Destructive read。无 slot 或 pending 为 None 都返回 None。"""
         slot = self._slots.get(key)
         if slot is None:
@@ -100,7 +99,7 @@ class InflightRegistry:
         slot.pending = None
         return entry
 
-    def exit(self, key: Tuple[str, str]) -> None:
+    def exit(self, key: tuple[str, str]) -> None:
         """释放 slot。pending 仍在的话由调用方自行先 take_pending。
         slot 不存在则 no-op。
         """

@@ -48,7 +48,7 @@ class _FakeTarget:
 
 
 def _make_inp(**kwargs) -> PushMessageInput:
-    defaults = dict(adapter="ob11", group_id="g1", text="hello", image_urls=[])
+    defaults = {"adapter": "ob11", "group_id": "g1", "text": "hello", "image_urls": []}
     defaults.update(kwargs)
     return PushMessageInput(**defaults)
 

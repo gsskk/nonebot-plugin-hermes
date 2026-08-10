@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-
 BOT_SELF_ID = "999"
 
 

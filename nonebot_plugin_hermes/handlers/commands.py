@@ -19,7 +19,6 @@ from ..core.hermes_client import hermes_client
 from ..core.session import session_manager
 from ..utils import check_isolation, get_adapter_name
 
-
 # --- /clear ---
 clear_command = on_command("clear", force_whitespace=True, priority=88, block=True)
 
@@ -150,7 +149,7 @@ async def handle_status(bot: Bot, event: Event, matcher: Matcher):
     buf_total_msgs = 0
     if _mcp.message_buffer is not None:
         for key in _mcp.message_buffer.known_groups():
-            bucket = _mcp.message_buffer._buckets.get(key)  # noqa: SLF001
+            bucket = _mcp.message_buffer._buckets.get(key)
             if bucket is not None:
                 count = len(bucket)
                 buf_total_msgs += count

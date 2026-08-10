@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from nonebot import logger
 
 from ..config import plugin_config
@@ -25,7 +23,7 @@ class SessionManager:
         adapter_name: str,
         is_private: bool,
         user_id: str,
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
     ) -> str:
         """根据配置生成统一的内部会话 ID。
 
@@ -44,7 +42,7 @@ class SessionManager:
         adapter_name: str,
         is_private: bool,
         user_id: str,
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
     ) -> str:
         """获取或创建 Hermes session key,通过 X-Hermes-Session-Id 头送给上游。"""
         internal_id = self._get_internal_id(adapter_name, is_private, user_id, group_id)
@@ -66,7 +64,7 @@ class SessionManager:
         adapter_name: str,
         is_private: bool,
         user_id: str,
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
     ) -> None:
         """重置会话:递增 generation,使下次 get_session_key 返回新 key,
         Hermes 据此把后续对话当作新会话。"""

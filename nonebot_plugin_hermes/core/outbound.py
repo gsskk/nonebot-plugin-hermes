@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 import binascii
 import re
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 import nonebot_plugin_alconna as alconna
 from nonebot import logger
@@ -25,7 +25,7 @@ from ..config import plugin_config
 _IMAGE_DATA_URL_RE = re.compile(r"^data:(image/[\w.+-]+);base64,(.+)$", re.DOTALL)
 
 
-def _parse_image_data_url(url: str) -> Optional[tuple[bytes, str, str]]:
+def _parse_image_data_url(url: str) -> tuple[bytes, str, str] | None:
     """解析 base64 图片 data: URL → (raw_bytes, mimetype, b64_payload);不合法返回 None。"""
     m = _IMAGE_DATA_URL_RE.match(url)
     if m is None:
@@ -155,9 +155,9 @@ async def send_text_with_media(
     target: alconna.Target,
     text: str,
     media_urls: Sequence[str] = (),
-    at_user_id: Optional[str] = None,
-    reply_to_msg_id: Optional[str] = None,  # noqa: ARG001  forward-compat
-    adapter_name: Optional[str] = None,
+    at_user_id: str | None = None,
+    reply_to_msg_id: str | None = None,
+    adapter_name: str | None = None,
 ) -> bool:
     """组装并发送一条消息,返回是否发送成功。
 

@@ -6,6 +6,7 @@ import asyncio
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from nonebot_plugin_hermes.core.message_buffer import BufferedMessage
 from nonebot_plugin_hermes.core.storage.image_cache import ImageCache
@@ -116,12 +117,12 @@ def test_too_large_marks_unavailable(setup):
 
 
 def test_max_4_message_ids_input():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         GetMessageImagesInput(message_ids=[1, 2, 3, 4, 5])
 
 
 def test_empty_message_ids_rejected():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         GetMessageImagesInput(message_ids=[])
 
 

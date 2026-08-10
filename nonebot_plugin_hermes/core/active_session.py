@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
+import builtins
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -18,7 +18,7 @@ class ActiveSession:
     started_at: int  # ms
     last_active_at: int  # ms
     expires_at: int  # ms
-    topic_hint: Optional[str] = None
+    topic_hint: str | None = None
     last_bot_reply_at: int = 0
     """bot 最近一次在本群发出 reactive 回复的 ms 时间戳。0 = 本窗口期未回复过。
     用作 handlers 的 post-reply cooldown 判定。再次 trigger() 时清零,避免跨窗口
@@ -37,7 +37,7 @@ class ActiveSessionManager:
 
     def __init__(self, default_ttl_sec: int = 300) -> None:
         self._ttl_ms = default_ttl_sec * 1000
-        self._sessions: Dict[Tuple[str, str], ActiveSession] = {}
+        self._sessions: dict[tuple[str, str], ActiveSession] = {}
 
     def trigger(
         self,
@@ -45,7 +45,7 @@ class ActiveSessionManager:
         group_id: str,
         user_id: str,
         now_ms: int,
-        topic_hint: Optional[str] = None,
+        topic_hint: str | None = None,
     ) -> ActiveSession:
         s = ActiveSession(
             adapter=adapter,
@@ -59,7 +59,7 @@ class ActiveSessionManager:
         self._sessions[(adapter, group_id)] = s
         return s
 
-    def touch(self, adapter: str, group_id: str, now_ms: int) -> Optional[ActiveSession]:
+    def touch(self, adapter: str, group_id: str, now_ms: int) -> ActiveSession | None:
         s = self._sessions.get((adapter, group_id))
         if s is None or s.expires_at <= now_ms:
             return None
@@ -67,7 +67,7 @@ class ActiveSessionManager:
         s.expires_at = now_ms + self._ttl_ms
         return s
 
-    def get(self, adapter: str, group_id: str) -> Optional[ActiveSession]:
+    def get(self, adapter: str, group_id: str) -> ActiveSession | None:
         """裸访问,**不检查 TTL**——可能返回已过期 session。
 
         多数 handler 应改用 `get_if_active` 或先 `is_active` 校验。本方法保留是为了
@@ -75,7 +75,7 @@ class ActiveSessionManager:
         """
         return self._sessions.get((adapter, group_id))
 
-    def get_if_active(self, adapter: str, group_id: str, now_ms: int) -> Optional[ActiveSession]:
+    def get_if_active(self, adapter: str, group_id: str, now_ms: int) -> ActiveSession | None:
         """TTL 感知的 get:只在 session 存在且未过期时返回。"""
         s = self._sessions.get((adapter, group_id))
         if s is None or s.expires_at <= now_ms:
@@ -96,7 +96,7 @@ class ActiveSessionManager:
         if s is not None:
             s.last_bot_reply_at = now_ms
 
-    def update_topic(self, adapter: str, group_id: str, topic_hint: Optional[str]) -> None:
+    def update_topic(self, adapter: str, group_id: str, topic_hint: str | None) -> None:
         """更新或清空 topic_hint。
 
         传 None 即清空(允许 Hermes 在话题漂移检测后主动收尾 topic)。
@@ -109,12 +109,12 @@ class ActiveSessionManager:
     def end(self, adapter: str, group_id: str) -> None:
         self._sessions.pop((adapter, group_id), None)
 
-    def list(self, adapter: Optional[str] = None) -> List[ActiveSession]:
+    def list(self, adapter: str | None = None) -> builtins.list[ActiveSession]:
         if adapter is None:
             return list(self._sessions.values())
         return [s for s in self._sessions.values() if s.adapter == adapter]
 
-    def sweep_expired(self, now_ms: int) -> List[ActiveSession]:
+    def sweep_expired(self, now_ms: int) -> builtins.list[ActiveSession]:
         expired = [s for s in self._sessions.values() if s.expires_at <= now_ms]
         for s in expired:
             self._sessions.pop((s.adapter, s.group_id), None)

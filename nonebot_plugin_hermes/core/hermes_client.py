@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Literal
 
 import httpx
 import json5  # type: ignore[import-untyped]
@@ -19,7 +19,7 @@ from nonebot import logger
 from ..config import plugin_config
 
 # user_content_override 期望形态:纯文本 或 OpenAI 多模态 parts 列表
-UserContent = Union[str, List[Dict[str, Any]]]
+UserContent = str | list[dict[str, Any]]
 
 _MD_IMAGE_PATTERN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _MEDIA_TAG_PATTERN = re.compile(r"MEDIA:(\S+)")
@@ -40,7 +40,7 @@ _VISION_UNSUPPORTED_RE = re.compile(
 # 或在 reply_text 里嵌带 `{}` 的代码段,正则会抠错或抠不全。
 
 
-def _find_first_balanced_json_object(text: str) -> Optional[str]:
+def _find_first_balanced_json_object(text: str) -> str | None:
     """扫描 text,返回从首个 `{` 到与之配平的 `}` 的子串。找不到完整平衡块返回 None。
 
     规则(对齐 JSON5):
@@ -106,7 +106,7 @@ def _escape_raw_newlines_in_strings(s: str) -> str:
     抛 `Unexpected "\\n"` 后我们走这一遍状态机重试一次。状态:跟踪 " / ' 进出
     string、`\\X` 整对透传(不参与 quote 计数),quoted 区里把裸控制字符替换。
     """
-    out: List[str] = []
+    out: list[str] = []
     in_string = False
     quote = ""
     i = 0
@@ -144,7 +144,7 @@ def _escape_raw_newlines_in_strings(s: str) -> str:
     return "".join(out)
 
 
-def _summarize_error_body(body: str) -> Tuple[str, Optional[int]]:
+def _summarize_error_body(body: str) -> tuple[str, int | None]:
     """从 Hermes 错误响应体里抠出可读 reason 与内层 status。
 
     Hermes apiserver 习惯把 provider 端错误外包成 502, body 是 JSON, `error.message`
@@ -167,7 +167,7 @@ def _summarize_error_body(body: str) -> Tuple[str, Optional[int]]:
         msg = err.strip()
     else:
         msg = raw[:200]
-    inner_status: Optional[int] = None
+    inner_status: int | None = None
     m = _INNER_STATUS_RE.search(msg)
     if m:
         try:
@@ -189,14 +189,14 @@ def _user_facing_error(reason: str) -> str:
     return f"⚠️ AI 服务异常: {snippet}"
 
 
-def extract_response_media(text: str) -> Tuple[str, List[str]]:
+def extract_response_media(text: str) -> tuple[str, list[str]]:
     """从 Hermes 回复中提取 markdown 图片 / MEDIA: 标签 URL,返回 (清洗后文本, URL 列表)。
 
     MEDIA: 标签按前缀分流:http(s)/data: 进媒体列表;其余是 Hermes 主机上的
     本地文件路径(音频/视频/超限图片,api_server 不做内联改写),bot 侧无法抓取,
     原位替换为 [生成了文件: 文件名] 占位——只留 basename,不泄完整路径。
     """
-    media_urls: List[str] = []
+    media_urls: list[str] = []
     for m in _MD_IMAGE_PATTERN.finditer(text):
         url = m.group(2)
         # data:image/…;base64 是 api_server 对本地生成图片(≤5MB)的内联形态,
@@ -216,7 +216,7 @@ def extract_response_media(text: str) -> Tuple[str, List[str]]:
     return cleaned.strip(), media_urls
 
 
-def _try_parse_first_json_block(text: str) -> Optional[Dict[str, Any]]:
+def _try_parse_first_json_block(text: str) -> dict[str, Any] | None:
     """从模型回复中提取首个 {...} 块并 JSON5 解析。失败返回 None,调用方记 parse_failed。
 
     两段式回退:json5 首发失败 → 走 _escape_raw_newlines_in_strings 把字符串内
@@ -239,7 +239,7 @@ def _try_parse_first_json_block(text: str) -> Optional[Dict[str, Any]]:
     return parsed
 
 
-def maybe_extract_decision_reply_text(text: str) -> Optional[str]:
+def maybe_extract_decision_reply_text(text: str) -> str | None:
     """passive 路径的防御:如果 raw_text 是 submit_decision 形 JSON,抠出 reply_text。
 
     场景:同一 Hermes session 之前跑过 reactive 模式,LLM 上下文学到了
@@ -265,8 +265,8 @@ def maybe_extract_decision_reply_text(text: str) -> Optional[str]:
 @dataclass
 class ChatResult:
     raw_text: str
-    structured: Optional[Dict[str, Any]] = None
-    media_urls: List[str] = field(default_factory=list)
+    structured: dict[str, Any] | None = None
+    media_urls: list[str] = field(default_factory=list)
     parse_failed: bool = False
     """期望结构化输出但解析失败(JSON 提取不到 / json5 解析报错 / 非 dict 类型)。"""
 
@@ -281,9 +281,9 @@ class ChatResult:
 
 class HermesClient:
     def __init__(self) -> None:
-        self._api_url_cache: Optional[str] = None
-        self._api_key_cache: Optional[str] = None
-        self._timeout_cache: Optional[int] = None
+        self._api_url_cache: str | None = None
+        self._api_key_cache: str | None = None
+        self._timeout_cache: int | None = None
 
     @property
     def api_url(self) -> str:
@@ -303,7 +303,7 @@ class HermesClient:
             self._timeout_cache = plugin_config.hermes_api_timeout
         return self._timeout_cache
 
-    def get_headers(self, session_key: str = "") -> Dict[str, str]:
+    def get_headers(self, session_key: str = "") -> dict[str, str]:
         h = {"Content-Type": "application/json", "X-Hermes-Session-Id": session_key}
         if self.api_key:
             h["Authorization"] = f"Bearer {self.api_key}"
@@ -313,17 +313,17 @@ class HermesClient:
         self,
         *,
         text: str,
-        image_urls: Optional[List[str]] = None,
+        image_urls: list[str] | None = None,
         session_key: str,
         user_id: str,
-        group_id: Optional[str],
+        group_id: str | None,
         adapter_name: str,
         is_private: bool,
         mode: Literal["reactive", "passive"] = "passive",
         expect_structured: bool = False,
-        structured_tool_name: Optional[str] = None,
-        system_prompt: Optional[str] = None,
-        user_content_override: Optional[UserContent] = None,
+        structured_tool_name: str | None = None,
+        system_prompt: str | None = None,
+        user_content_override: UserContent | None = None,
     ) -> ChatResult:
         """调用 Hermes,返回 ChatResult。
 
@@ -347,7 +347,7 @@ class HermesClient:
             if not cur_imgs:
                 content = text
             else:
-                parts: List[Dict[str, Any]] = [{"type": "text", "text": text}]
+                parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
                 for u in cur_imgs:
                     parts.append({"type": "image_url", "image_url": {"url": u}})
                 content = parts
@@ -364,12 +364,12 @@ class HermesClient:
         if expect_structured and structured_tool_name == "submit_decision":
             system_prompt = system_prompt + _DECISION_HINT
 
-        messages: List[Dict[str, Any]] = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": content},
         ]
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": "hermes-agent",
             "messages": messages,
             "stream": False,

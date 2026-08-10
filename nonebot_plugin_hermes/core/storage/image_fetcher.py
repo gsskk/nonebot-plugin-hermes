@@ -14,14 +14,12 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from typing import Dict, List, Optional, Tuple
 
 import httpx
 from nonebot import logger
 
 from .image_cache import ImageCache
 from .message_store import MessageStore
-
 
 # 图片字节魔数 → 标准 MIME。用于 Telegram CDN 这类返回
 # `application/octet-stream` 的源 —— Content-Type 不可信,从字节头识别。
@@ -33,7 +31,7 @@ _MAGIC_TO_MIME: list[tuple[bytes, str]] = [
 ]
 
 
-def _sniff_image_mime(data: bytes) -> Optional[str]:
+def _sniff_image_mime(data: bytes) -> str | None:
     """Return a normalized image MIME if the byte head matches a known magic,
     else None. WebP needs both RIFF header + WEBP at offset 8.
     """
@@ -71,13 +69,13 @@ class ImageFetcher:
         self._max_attempts = max(1, max_attempts)
         self._queue_max = queue_max
         self._queue: deque[str] = deque()
-        self._pending: Dict[str, List[Tuple[int, int]]] = {}
+        self._pending: dict[str, list[tuple[int, int]]] = {}
         self._wake: asyncio.Event = asyncio.Event()
         self._stop: asyncio.Event = asyncio.Event()
-        self._worker: Optional[asyncio.Task] = None
-        self._client: Optional[httpx.AsyncClient] = None
+        self._worker: asyncio.Task | None = None
+        self._client: httpx.AsyncClient | None = None
 
-    def submit(self, message_id: int, urls: List[str]) -> None:
+    def submit(self, message_id: int, urls: list[str]) -> None:
         """把每张图挂进 pending 表。同 URL 已 in-flight 时只加 (msg_id, idx),
         不重复入队。overflow 时按 URL 维度丢最老。"""
         new_urls: list[str] = []
@@ -157,7 +155,7 @@ class ImageFetcher:
             await self._fetch_one(url)
 
     async def _fetch_one(self, url: str) -> None:
-        last_err: Optional[str] = None
+        last_err: str | None = None
         for attempt in range(1, self._max_attempts + 1):
             try:
                 assert self._client is not None, "fetcher not started"
@@ -187,7 +185,7 @@ class ImageFetcher:
         )
 
     @staticmethod
-    def _resolve_mime(content_type: Optional[str], bytes_: bytes) -> Optional[str]:
+    def _resolve_mime(content_type: str | None, bytes_: bytes) -> str | None:
         """信任顺序:
         1. Content-Type 是 image/* → 直接用
         2. Content-Type 是 application/octet-stream(Telegram CDN 典型行为)

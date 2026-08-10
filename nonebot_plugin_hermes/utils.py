@@ -27,9 +27,8 @@ def check_isolation(event: Event, target: alconna.Target) -> bool:
 
     if target.private:
         # 私聊触发检查
-        if plugin_config.hermes_private_trigger == "allowlist":
-            if user_id not in plugin_config.hermes_allow_users:
-                return False
+        if plugin_config.hermes_private_trigger == "allowlist" and user_id not in plugin_config.hermes_allow_users:
+            return False
     else:
         # 群聊触发检查
         group_id = target.id

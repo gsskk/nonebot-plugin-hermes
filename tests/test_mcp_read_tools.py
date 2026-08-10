@@ -26,7 +26,6 @@ from nonebot_plugin_hermes.mcp.tools.list_active_sessions import (
     list_active_sessions_impl,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

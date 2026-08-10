@@ -21,7 +21,6 @@ from nonebot_plugin_hermes.core.prompt_builder import (
     build_reactive_user_content,
 )
 
-
 # --- _format_speaker_tag ---
 
 
@@ -75,18 +74,18 @@ def _msg_with_id(ts, sender, content, msg_id, is_bot=False, imgs=None):
 
 def _reactive_user_kwargs(**overrides):
     """build_reactive_user_content 的默认入参,便于按需 override。"""
-    defaults = dict(
-        adapter="ob11",
-        group_id="g1",
-        triggered_by="u42",
-        triggered_by_nickname=None,
-        topic_hint=None,
-        recent_messages=[],
-        current_user_id="charlie",
-        current_nickname="Charlie",
-        current_text="hello",
-        current_image_urls=[],
-    )
+    defaults = {
+        "adapter": "ob11",
+        "group_id": "g1",
+        "triggered_by": "u42",
+        "triggered_by_nickname": None,
+        "topic_hint": None,
+        "recent_messages": [],
+        "current_user_id": "charlie",
+        "current_nickname": "Charlie",
+        "current_text": "hello",
+        "current_image_urls": [],
+    }
     defaults.update(overrides)
     return defaults
 

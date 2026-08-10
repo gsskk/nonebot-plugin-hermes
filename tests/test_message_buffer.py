@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import pytest
 
 from nonebot_plugin_hermes.core.message_buffer import (
@@ -23,7 +21,7 @@ from nonebot_plugin_hermes.core.storage.message_store import MessageStore
 
 def _msg(
     ts: int,
-    group: Optional[str] = "g1",
+    group: str | None = "g1",
     user: str = "u1",
     content: str = "hi",
     image_urls=None,

@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import hmac
-from typing import Optional
 
 from ..core.active_session import ActiveSessionManager
 from ..core.bot_registry import BotRegistry
@@ -22,7 +21,7 @@ class PushContextError(Exception):
     """push_message 工具上下文不满足,应映射成 422。"""
 
 
-def check_bearer(authorization_header: Optional[str], expected: str) -> None:
+def check_bearer(authorization_header: str | None, expected: str) -> None:
     """HTTP 层 Bearer 校验。
 
     Args:

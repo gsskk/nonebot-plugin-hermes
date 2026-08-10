@@ -10,10 +10,8 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
-from typing import Optional, Tuple
 
 from nonebot import logger
-
 
 _MIME_TO_EXT = {
     "image/jpeg": "jpg",
@@ -71,7 +69,7 @@ class ImageCache:
             raise
         return sha
 
-    def get_bytes(self, sha256: str) -> Optional[Tuple[bytes, str]]:
+    def get_bytes(self, sha256: str) -> tuple[bytes, str] | None:
         """读字节;sha 未知 / 文件已被外部删 → None。读到后 touch atime。"""
         for ext in _KNOWN_EXTS:
             path = self._dir / f"{sha256}.{ext}"

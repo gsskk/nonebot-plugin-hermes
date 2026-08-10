@@ -6,7 +6,6 @@ import asyncio
 import logging
 import re
 from pathlib import Path
-from typing import Optional
 
 import uvicorn
 from nonebot import get_driver, logger
@@ -76,8 +75,8 @@ message_store: MessageStore | None = None
 image_cache: ImageCache | None = None
 image_fetcher: ImageFetcher | None = None
 
-_server_task: Optional[asyncio.Task] = None
-_uvicorn_server: Optional[uvicorn.Server] = None
+_server_task: asyncio.Task | None = None
+_uvicorn_server: uvicorn.Server | None = None
 
 
 def _default_db_path() -> Path:

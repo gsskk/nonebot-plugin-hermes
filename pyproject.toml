@@ -21,9 +21,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    # <0.16: uv.lock 不进 git,CI 每次重新解析;0.16 改了 lint 规则,
-    # 无上界会让 CI 与本地 ruff 行为漂移。升级需连带过一遍新规则再抬上界。
-    "ruff>=0.15,<0.16",
+    # 上界必须保留:uv.lock 不进 git,CI 每次重新解析,无上界会让 CI 与
+    # 本地 ruff 规则漂移。升 minor 时连带过一遍新规则再抬上界。
+    "ruff>=0.16,<0.17",
     "nonebot-adapter-onebot>=2.4.6",
 ]
 
@@ -41,7 +41,9 @@ line-length = 120
 exclude = ["references", "dist", "build"]
 
 [tool.ruff.lint]
-ignore = ["E402"]
+# BLE001/S110: 桥接层防御式风格——ack/通知/发送等旁路失败一律吞掉,
+# 绝不让辅助路径的异常炸掉消息主流程,项目内属有意为之。
+ignore = ["E402", "BLE001", "S110"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

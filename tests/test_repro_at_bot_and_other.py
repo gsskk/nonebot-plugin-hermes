@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import time
-from typing import List, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -79,7 +78,7 @@ def _mock_event(
     group_id: str = "g1",
     is_tome: bool = True,
     message_id: int = 5001,
-    original_at_targets: Optional[List[str]] = None,
+    original_at_targets: list[str] | None = None,
 ) -> MagicMock:
     """造一个最小 mock Event,满足 handle_message 路径所需字段。
 
@@ -197,8 +196,6 @@ async def test_at_bot_and_at_other_with_text_triggers_explicit(monkeypatch):
 
 class _SkipSentinel(Exception):
     """模拟 matcher.skip() 抛 SkippedException。"""
-
-    pass
 
 
 @pytest.mark.asyncio

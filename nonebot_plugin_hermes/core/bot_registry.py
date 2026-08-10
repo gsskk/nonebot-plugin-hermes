@@ -6,7 +6,7 @@ Target 永远不序列化:重启即清,首次 perception 事件重新填表。
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Literal
 
 ScopeT = Literal["private", "group"]
 """push_message 路由表的 scope 维度。typo 会被 type checker 拦下,避免运行期静默 routing miss。"""
@@ -21,7 +21,7 @@ class BotEntry:
 
 class BotRegistry:
     def __init__(self) -> None:
-        self._entries: Dict[Tuple[str, ScopeT, str], BotEntry] = {}
+        self._entries: dict[tuple[str, ScopeT, str], BotEntry] = {}
 
     def upsert(
         self,
@@ -38,13 +38,13 @@ class BotRegistry:
             last_seen_at=ts,
         )
 
-    def get(self, adapter: str, scope: ScopeT, scope_id: str) -> Optional[BotEntry]:
+    def get(self, adapter: str, scope: ScopeT, scope_id: str) -> BotEntry | None:
         return self._entries.get((adapter, scope, scope_id))
 
     def remove(self, adapter: str, scope: ScopeT, scope_id: str) -> None:
         self._entries.pop((adapter, scope, scope_id), None)
 
-    def known(self, adapter: Optional[str] = None) -> List[Tuple[str, ScopeT, str]]:
+    def known(self, adapter: str | None = None) -> list[tuple[str, ScopeT, str]]:
         if adapter is None:
             return list(self._entries.keys())
-        return [k for k in self._entries.keys() if k[0] == adapter]
+        return [k for k in self._entries if k[0] == adapter]

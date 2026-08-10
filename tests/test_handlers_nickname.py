@@ -151,7 +151,7 @@ def test_sanitize_strips_zero_width_chars():
     """零宽字符(Cf 类)会让肉眼相同的名字哈希不一致,顺手剔除。"""
     from nonebot_plugin_hermes.handlers.message import _sanitize_nickname
 
-    assert _sanitize_nickname("ali​ce") == "alice"
+    assert _sanitize_nickname("ali\u200bce") == "alice"
     assert _sanitize_nickname("ali‌ce") == "alice"
 
 

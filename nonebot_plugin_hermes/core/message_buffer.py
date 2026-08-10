@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .storage.image_fetcher import ImageFetcher
@@ -21,14 +21,14 @@ if TYPE_CHECKING:
 class BufferedMessage:
     ts: int
     adapter: str
-    group_id: Optional[str]  # None = 私聊
+    group_id: str | None  # None = 私聊
     user_id: str
     nickname: str
     content: str
-    image_urls: List[str] = field(default_factory=list)
-    reply_to_ts: Optional[int] = None
+    image_urls: list[str] = field(default_factory=list)
+    reply_to_ts: int | None = None
     is_bot: bool = False
-    id: Optional[int] = None
+    id: int | None = None
     """DB 主键。perception 构造时为 None,MessageStore.append 写入后回填。
     handlers 不应直接读写;由 MessageStore.append 管控。"""
 
@@ -36,7 +36,7 @@ class BufferedMessage:
 _PRIVATE_KEY_PREFIX = "@private:"
 
 
-def _bucket_key(adapter: str, group_id: Optional[str], user_id: Optional[str]) -> Tuple[str, str]:
+def _bucket_key(adapter: str, group_id: str | None, user_id: str | None) -> tuple[str, str]:
     """私聊用 user_id 合成 scope_id,群聊用 group_id。
 
     保留这个 helper 主要是兼容 MessageStore.known_groups 返回的合成 scope
@@ -47,7 +47,7 @@ def _bucket_key(adapter: str, group_id: Optional[str], user_id: Optional[str]) -
     return (adapter, group_id)
 
 
-def is_private_key(key: Tuple[str, str]) -> bool:
+def is_private_key(key: tuple[str, str]) -> bool:
     """判断 known_groups() 返回的 (adapter, scope_id) 是否为私聊桶。"""
     return key[1].startswith(_PRIVATE_KEY_PREFIX)
 
@@ -55,7 +55,7 @@ def is_private_key(key: Tuple[str, str]) -> bool:
 class MessageBuffer:
     """对外 API 不变;实现转调 MessageStore + ImageFetcher。"""
 
-    def __init__(self, *, store: "MessageStore", fetcher: "ImageFetcher") -> None:
+    def __init__(self, *, store: MessageStore, fetcher: ImageFetcher) -> None:
         self._store = store
         self._fetcher = fetcher
 
@@ -67,11 +67,11 @@ class MessageBuffer:
     def get_recent(
         self,
         adapter: str,
-        group_id: Optional[str],
+        group_id: str | None,
         limit: int,
-        before_ts: Optional[int] = None,
-        owner_user_id: Optional[str] = None,
-    ) -> List[BufferedMessage]:
+        before_ts: int | None = None,
+        owner_user_id: str | None = None,
+    ) -> list[BufferedMessage]:
         return self._store.get_recent(
             adapter=adapter,
             group_id=group_id,
@@ -80,5 +80,5 @@ class MessageBuffer:
             owner_user_id=owner_user_id,
         )
 
-    def known_groups(self) -> List[Tuple[str, str]]:
+    def known_groups(self) -> list[tuple[str, str]]:
         return self._store.known_groups()

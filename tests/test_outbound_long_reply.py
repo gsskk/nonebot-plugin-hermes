@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Autouse fixture: clear the nickname cache before every test to avoid
 # cross-test leakage (each test should start with a clean cache).
@@ -381,7 +380,7 @@ async def test_long_reply_forward_success_with_at_sends_at_after_forward():
 
     bot.call_api = AsyncMock(side_effect=_call_api)
 
-    async def _mock_send(target, bot):  # noqa: ANN001
+    async def _mock_send(target, bot):
         call_order.append("unimessage:send")
 
     with patch("nonebot_plugin_hermes.core.outbound.plugin_config") as mock_cfg:

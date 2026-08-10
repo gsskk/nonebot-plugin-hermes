@@ -41,8 +41,9 @@ def _make_node(nickname: str, *text_segs: str, extra_segs=None):
 @pytest.mark.asyncio
 async def test_extract_returns_none_when_adapter_not_onebot():
     """Non-OneBot adapters get None immediately; bot.call_api is never called."""
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
 
     bot = MagicMock()
     bot.call_api = AsyncMock()
@@ -57,8 +58,9 @@ async def test_extract_returns_none_when_adapter_not_onebot():
 @pytest.mark.asyncio
 async def test_extract_returns_none_when_no_reference_segment():
     """UniMessage with only Text has no Reference → None."""
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
 
     bot = MagicMock()
     bot.call_api = AsyncMock()
@@ -73,9 +75,10 @@ async def test_extract_returns_none_when_no_reference_segment():
 @pytest.mark.asyncio
 async def test_extract_normal_5_nodes_within_limits(monkeypatch):
     """5 nodes, max_nodes=10, max_chars=800 → all 5 lines present, no truncation marker."""
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
-    from nonebot_plugin_hermes.config import plugin_config
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
 
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 800)
@@ -100,9 +103,10 @@ async def test_extract_normal_5_nodes_within_limits(monkeypatch):
 @pytest.mark.asyncio
 async def test_extract_truncates_at_max_nodes(monkeypatch):
     """25 nodes with max_nodes=10 → count=25, 10 content lines, omission marker."""
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
-    from nonebot_plugin_hermes.config import plugin_config
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
 
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 5000)
@@ -129,9 +133,10 @@ async def test_extract_truncates_at_max_nodes(monkeypatch):
 @pytest.mark.asyncio
 async def test_extract_truncates_at_max_chars(monkeypatch):
     """10 nodes each with long text, max_chars=200 → char-limit truncation marker."""
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
-    from nonebot_plugin_hermes.config import plugin_config
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
 
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 50)
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 200)
@@ -158,9 +163,10 @@ async def test_extract_oversized_first_node_bypasses_char_limit(monkeypatch):
     This is rare in practice but intentional — oversized single-node forwarding
     case bypasses the char limit.  Verify the policy with this regression test.
     """
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
-    from nonebot_plugin_hermes.config import plugin_config
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
 
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 100)
@@ -187,9 +193,10 @@ async def test_extract_oversized_first_node_bypasses_char_limit(monkeypatch):
 @pytest.mark.asyncio
 async def test_extract_handles_nested_forward_placeholder(monkeypatch):
     """Node containing a nested forward segment shows placeholder, no recursion."""
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
-    from nonebot_plugin_hermes.config import plugin_config
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
 
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 800)
@@ -217,8 +224,9 @@ async def test_extract_handles_nested_forward_placeholder(monkeypatch):
 @pytest.mark.asyncio
 async def test_extract_returns_fetch_failed_on_api_exception():
     """bot.call_api raises → fetch_failed self-closing tag returned, not None."""
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
 
     bot = MagicMock()
     bot.call_api = AsyncMock(side_effect=RuntimeError("network timeout"))
@@ -300,9 +308,10 @@ async def test_extract_omitted_count_accounts_for_blank_nodes(monkeypatch):
     After consuming the 10th content node the last examined index is 12,
     so omitted = 13 - 13 = 0 → no trailing '另有' line.
     """
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
-    from nonebot_plugin_hermes.config import plugin_config
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
 
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 99999)
@@ -332,9 +341,10 @@ async def test_extract_omitted_count_accounts_for_blank_nodes(monkeypatch):
 @pytest.mark.asyncio
 async def test_extract_omitted_count_correct_without_blanks(monkeypatch):
     """25 all-content nodes, max_nodes=10 → omitted = 15 (regression guard)."""
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
-    from nonebot_plugin_hermes.config import plugin_config
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
 
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 99999)
@@ -431,6 +441,7 @@ def test_wiring_handle_perception_calls_extract_and_summarize():
     the wiring lines changes the active source text and breaks this test.
     """
     import inspect
+
     from nonebot_plugin_hermes.handlers.message import handle_perception
 
     active = _active_lines(inspect.getsource(handle_perception))
@@ -453,6 +464,7 @@ def test_wiring_handle_message_calls_extract_full_not_summary():
     scaffolding.  Active-line source inspection is the minimal reliable contract here.
     """
     import inspect
+
     from nonebot_plugin_hermes.handlers.message import handle_message
 
     active = _active_lines(inspect.getsource(handle_message))
@@ -474,9 +486,10 @@ async def test_wiring_summary_is_self_closing_tag(monkeypatch):
     Covers the output contract that perception stores a compact single-line tag
     rather than the full multi-line block.
     """
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full, _summarize_forward
-    from nonebot_plugin_hermes.config import plugin_config
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full, _summarize_forward
 
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 800)
@@ -510,9 +523,10 @@ async def test_wiring_summary_is_self_closing_tag(monkeypatch):
 async def test_wiring_full_block_used_when_no_prior_text(monkeypatch):
     """When the user sends only a forward (no typed text), the full block becomes
     the sole msg_text content on the main path — no empty string is produced."""
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full, _summarize_forward
-    from nonebot_plugin_hermes.config import plugin_config
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full, _summarize_forward
 
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 800)
@@ -564,9 +578,10 @@ async def test_extract_handles_content_key_shape(monkeypatch):
     None for every node → empty lines → fetch_failed self-closing tag. This test
     pins the dual-shape contract.
     """
-    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
-    from nonebot_plugin_hermes.config import plugin_config
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers.message import _extract_forward_full
 
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_nodes", 10)
     monkeypatch.setattr(plugin_config, "hermes_forward_extract_max_chars", 800)

@@ -23,9 +23,9 @@ def _make_uni_msg(*segments):
 
 
 def test_collect_sticker_image_returns_emoji_pack_placeholder():
-    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
-
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
 
     msg = _make_uni_msg(alconna.Image(url="https://x/a.png", sticker=True))
     assert _collect_nontext_placeholders(msg) == ["[表情包]"]
@@ -34,54 +34,54 @@ def test_collect_sticker_image_returns_emoji_pack_placeholder():
 def test_collect_normal_image_returns_empty():
     """普通 image 不算非文本段(它已经走 _extract_image_urls + [图片] 占位),
     不要重复贴 [表情包]。"""
-    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
-
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
 
     msg = _make_uni_msg(alconna.Image(url="https://x/a.png", sticker=False))
     assert _collect_nontext_placeholders(msg) == []
 
 
 def test_collect_voice_returns_voice_placeholder():
-    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
-
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
 
     msg = _make_uni_msg(alconna.Voice(url="https://x/v.amr"))
     assert _collect_nontext_placeholders(msg) == ["[语音]"]
 
 
 def test_collect_video_returns_video_placeholder():
-    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
-
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
 
     msg = _make_uni_msg(alconna.Video(url="https://x/v.mp4"))
     assert _collect_nontext_placeholders(msg) == ["[视频]"]
 
 
 def test_collect_emoji_with_name_returns_named_placeholder():
-    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
-
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
 
     msg = _make_uni_msg(alconna.Emoji(id="123", name="微笑"))
     assert _collect_nontext_placeholders(msg) == ["[表情:微笑]"]
 
 
 def test_collect_emoji_without_name_returns_bare_placeholder():
-    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
-
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
 
     msg = _make_uni_msg(alconna.Emoji(id="123"))
     assert _collect_nontext_placeholders(msg) == ["[表情]"]
 
 
 def test_collect_mixed_segments_preserves_each():
-    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
-
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
 
     msg = _make_uni_msg(
         alconna.Text("hi"),
@@ -101,18 +101,18 @@ def test_collect_mixed_segments_preserves_each():
 
 
 def test_collect_text_only_returns_empty():
-    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
-
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
 
     msg = _make_uni_msg(alconna.Text("hello world"))
     assert _collect_nontext_placeholders(msg) == []
 
 
 def test_collect_file_with_name_returns_named_placeholder():
-    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
-
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
 
     msg = _make_uni_msg(alconna.File(id="abc", name="report.pdf"))
     assert _collect_nontext_placeholders(msg) == ["[文件:report.pdf]"]
@@ -124,9 +124,9 @@ def test_collect_file_without_name_returns_unknown_placeholder():
     注意:alconna.File() 不传 name 时会自动设默认值 'file.bin',
     会无声越过 fallback 路径。显式传 None 是该测试的正确写法,不要"清理"掉。
     """
-    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
-
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _collect_nontext_placeholders
 
     msg = _make_uni_msg(alconna.File(id="abc", name=None))
     assert _collect_nontext_placeholders(msg) == ["[文件:未命名]"]
@@ -138,9 +138,9 @@ def test_collect_file_without_name_returns_unknown_placeholder():
 @pytest.mark.asyncio
 async def test_extract_image_urls_skips_sticker():
     """sticker=True 的 Image 不进 URL list, 避免走 vision API 烧 token。"""
-    from nonebot_plugin_hermes.handlers.message import _extract_image_urls
-
     import nonebot_plugin_alconna as alconna
+
+    from nonebot_plugin_hermes.handlers.message import _extract_image_urls
 
     msg = _make_uni_msg(
         alconna.Image(url="https://x/normal.png", sticker=False),
