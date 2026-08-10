@@ -21,7 +21,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    "ruff>=0.15",
+    # <0.16: uv.lock 不进 git,CI 每次重新解析;0.16 改了 lint 规则,
+    # 无上界会让 CI 与本地 ruff 行为漂移。升级需连带过一遍新规则再抬上界。
+    "ruff>=0.15,<0.16",
     "nonebot-adapter-onebot>=2.4.6",
 ]
 
