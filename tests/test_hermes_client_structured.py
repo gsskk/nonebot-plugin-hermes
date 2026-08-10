@@ -137,6 +137,23 @@ def test_extract_response_media_strips_md_and_media_tags():
     assert "MEDIA:" not in cleaned
 
 
+def test_extract_response_media_collects_data_url_images():
+    data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+    text = f"看这张图 ![image]({data_url}) 完毕"
+    cleaned, urls = extract_response_media(text)
+    assert data_url in urls
+    assert "data:" not in cleaned
+    assert "![image]" not in cleaned
+
+
+def test_extract_response_media_ignores_non_image_data_urls():
+    data_url = "data:text/plain;base64,aGVsbG8="
+    text = f"![f]({data_url}) 结果"
+    cleaned, urls = extract_response_media(text)
+    assert urls == []
+    assert "![f]" not in cleaned
+
+
 @pytest.mark.asyncio
 async def test_path_b_appends_decision_hint_to_system_prompt(monkeypatch: MonkeyPatch):
     """expect_structured=True 时,system prompt 必须含 STRUCTURED OUTPUT 段。"""

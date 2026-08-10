@@ -8,6 +8,9 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import re
 from typing import Optional, Sequence
 
 import nonebot_plugin_alconna as alconna
@@ -15,6 +18,25 @@ from nonebot import logger
 from nonebot.adapters import Bot
 
 from ..config import plugin_config
+
+# api_server 把本地生成的图片内联成 data:image/…;base64 URL——没有可抓取的
+# http 地址,必须解码成字节直接附加。仅支持 base64 形态;RFC 2397 的
+# percent-encoded 形态不支持(上游不产生)。
+_IMAGE_DATA_URL_RE = re.compile(r"^data:(image/[\w.+-]+);base64,(.+)$", re.DOTALL)
+
+
+def _parse_image_data_url(url: str) -> Optional[tuple[bytes, str, str]]:
+    """解析 base64 图片 data: URL → (raw_bytes, mimetype, b64_payload);不合法返回 None。"""
+    m = _IMAGE_DATA_URL_RE.match(url)
+    if m is None:
+        return None
+    payload = m.group(2)
+    try:
+        raw = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return raw, m.group(1), payload
+
 
 # 截断 suffix 长度 = 13 字符;最终消息 = max_len + 13 字符,故意溢出 max_len。
 # 所有已知 adapter 上限 ≥ 4500,默认 max_len=4000,溢出安全。
@@ -143,8 +165,8 @@ async def send_text_with_media(
     - 群聊默认在文本前加 At(at_user_id);为 None 不 at
     - reply_to_msg_id: alconna Reply 段在多 adapter 下兼容性不一,M1 不强制使用;
       保留此参数供未来兼容扩展(noqa: ARG001 直到接入)。
-    - 空消息(text='' 且无 http/https 媒体)直接返回 False 不发,防 Task 12 push 路径
-      在 Hermes 回空时构造空 UniMessage 发送出去。
+    - 空消息(text='' 且无有效媒体——http/https URL 或可解码的 data:image)直接返回
+      False 不发,防 Task 12 push 路径在 Hermes 回空时构造空 UniMessage 发送出去。
     """
     original_len = len(text)
     max_len = plugin_config.hermes_max_length
@@ -167,11 +189,21 @@ async def send_text_with_media(
                 bot_nickname=nickname,
             )
             # Media: append at end of last node so it ships in the same forward bundle.
+            forward_media_count = 0
             if media_urls:
                 last_node_content = nodes[-1]["data"]["content"]
                 for u in media_urls:
                     if u.startswith(("http://", "https://")):
                         last_node_content.append({"type": "image", "data": {"url": u}})
+                        forward_media_count += 1
+                    elif u.startswith("data:"):
+                        parsed = _parse_image_data_url(u)
+                        if parsed is None:
+                            logger.warning(f"[OUTBOUND] unsupported data: URL skipped (len={len(u)})")
+                            continue
+                        # OneBot v11 image 段的 base64:// file 形态,免落盘直传字节。
+                        last_node_content.append({"type": "image", "data": {"file": f"base64://{parsed[2]}"}})
+                        forward_media_count += 1
             # The actual merged forward send.
             await bot.call_api("send_group_forward_msg", group_id=int(target.id), messages=nodes)
             # At-mention: send AFTER the forward bundle so the @ ping is the most recent
@@ -183,10 +215,9 @@ async def send_text_with_media(
                     await at_msg.send(target=target, bot=bot)
                 except Exception as exc:
                     logger.debug(f"[OUTBOUND] post-forward @-ping failed: {exc}")
-            valid_media = [u for u in media_urls if u.startswith(("http://", "https://"))]
             logger.debug(
                 f"[OUTBOUND] sent-via-forward target={target} text_len={original_len} "
-                f"nodes={len(nodes)} media={len(valid_media)}"
+                f"nodes={len(nodes)} media={forward_media_count}"
             )
             return True
         except Exception as exc:
@@ -209,6 +240,15 @@ async def send_text_with_media(
     for u in media_urls:
         if u.startswith(("http://", "https://")):
             msg += alconna.UniMessage(alconna.Image(url=u))
+            sent_media_count += 1
+        elif u.startswith("data:"):
+            parsed = _parse_image_data_url(u)
+            if parsed is None:
+                # 不打 URL 本体——base64 可能几 MB,日志只记长度。
+                logger.warning(f"[OUTBOUND] unsupported data: URL skipped (len={len(u)})")
+                continue
+            raw, mimetype, _ = parsed
+            msg += alconna.UniMessage(alconna.Image(raw=raw, mimetype=mimetype))
             sent_media_count += 1
 
     # 空消息守卫:连 At 都没有(私聊 / 没传 at_user_id),text 空,无合法媒体 → 不发

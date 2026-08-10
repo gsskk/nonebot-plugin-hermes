@@ -194,7 +194,9 @@ def extract_response_media(text: str) -> Tuple[str, List[str]]:
     media_urls: List[str] = []
     for m in _MD_IMAGE_PATTERN.finditer(text):
         url = m.group(2)
-        if url.startswith(("http://", "https://")):
+        # data:image/…;base64 是 api_server 对本地生成图片(≤5MB)的内联形态,
+        # 与 http(s) 同样要进 media 列表;解码与合法性校验在 outbound 侧做。
+        if url.startswith(("http://", "https://", "data:image/")):
             media_urls.append(url)
     for m in _MEDIA_TAG_PATTERN.finditer(text):
         media_urls.append(m.group(1))
