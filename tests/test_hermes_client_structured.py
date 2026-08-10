@@ -154,6 +154,29 @@ def test_extract_response_media_ignores_non_image_data_urls():
     assert "![f]" not in cleaned
 
 
+def test_extract_response_media_replaces_host_path_media_with_placeholder():
+    # 非图片媒体(音频/视频/>5MB 图)api_server 不改写,以字面 MEDIA:/host/path 返回。
+    text = "转换完成 MEDIA:/tmp/hermes/out/report.mp3 请查收"
+    cleaned, urls = extract_response_media(text)
+    assert urls == []
+    assert "[生成了文件: report.mp3]" in cleaned
+    assert "MEDIA:" not in cleaned
+    assert "/tmp/hermes" not in cleaned
+
+
+def test_extract_response_media_host_path_without_slash():
+    cleaned, urls = extract_response_media("MEDIA:foo.bin")
+    assert urls == []
+    assert cleaned == "[生成了文件: foo.bin]"
+
+
+def test_extract_response_media_data_url_media_tag_goes_to_urls():
+    tag = "data:image/png;base64,iVBORw0KGgo="
+    cleaned, urls = extract_response_media(f"图 MEDIA:{tag} 完")
+    assert urls == [tag]
+    assert "MEDIA:" not in cleaned
+
+
 @pytest.mark.asyncio
 async def test_path_b_appends_decision_hint_to_system_prompt(monkeypatch: MonkeyPatch):
     """expect_structured=True 时,system prompt 必须含 STRUCTURED OUTPUT 段。"""

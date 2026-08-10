@@ -190,7 +190,12 @@ def _user_facing_error(reason: str) -> str:
 
 
 def extract_response_media(text: str) -> Tuple[str, List[str]]:
-    """从 Hermes 回复中提取 markdown 图片 / MEDIA: 标签 URL,返回 (清洗后文本, URL 列表)。"""
+    """从 Hermes 回复中提取 markdown 图片 / MEDIA: 标签 URL,返回 (清洗后文本, URL 列表)。
+
+    MEDIA: 标签按前缀分流:http(s)/data: 进媒体列表;其余是 Hermes 主机上的
+    本地文件路径(音频/视频/超限图片,api_server 不做内联改写),bot 侧无法抓取,
+    原位替换为 [生成了文件: 文件名] 占位——只留 basename,不泄完整路径。
+    """
     media_urls: List[str] = []
     for m in _MD_IMAGE_PATTERN.finditer(text):
         url = m.group(2)
@@ -198,10 +203,16 @@ def extract_response_media(text: str) -> Tuple[str, List[str]]:
         # 与 http(s) 同样要进 media 列表;解码与合法性校验在 outbound 侧做。
         if url.startswith(("http://", "https://", "data:image/")):
             media_urls.append(url)
-    for m in _MEDIA_TAG_PATTERN.finditer(text):
-        media_urls.append(m.group(1))
+
+    def _media_tag_repl(m: re.Match) -> str:
+        token = m.group(1)
+        if token.startswith(("http://", "https://", "data:")):
+            media_urls.append(token)
+            return ""
+        return f"[生成了文件: {token.rsplit('/', 1)[-1]}]"
+
     cleaned = _MD_IMAGE_PATTERN.sub("", text)
-    cleaned = _MEDIA_TAG_PATTERN.sub("", cleaned)
+    cleaned = _MEDIA_TAG_PATTERN.sub(_media_tag_repl, cleaned)
     return cleaned.strip(), media_urls
 
 
