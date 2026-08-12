@@ -262,6 +262,21 @@ def maybe_extract_decision_reply_text(text: str) -> str | None:
     return None
 
 
+_PERSISTENCE_ERROR_PATTERNS = (
+    "session storage could not be written",
+    "the turn was stopped because session storage",
+    "session_persistence_failed",
+)
+
+
+def is_persistence_error_text(text: str) -> bool:
+    """检测回复内容是否为 Hermes 上游 SQLite session 持久化失败引发的中断报错文本。"""
+    if not text:
+        return False
+    lower = text.lower()
+    return any(pattern in lower for pattern in _PERSISTENCE_ERROR_PATTERNS)
+
+
 @dataclass
 class ChatResult:
     raw_text: str
@@ -276,6 +291,13 @@ class ChatResult:
     handler 据此决定:transport_error → 可重试或对用户报错;parse_failed →
     通常静默降级(模型回了不可解析的内容);两者**不互斥**(transport_error
     场景下 parse_failed 也设 True 以阻止 caller 误把 raw_text 当模型有效输出)。
+    """
+
+    is_persistence_error: bool = False
+    """上游 Hermes session DB 持久化失败(session_persistence_failed)。
+    
+    Hermes Gateway 在持久化失败时仍返回 HTTP 200，但 content 为中断解释文本。
+    置 True 后 handler 可识别并自动重置 session_key 即时重试或静默屏蔽。
     """
 
 
@@ -419,6 +441,19 @@ class HermesClient:
 
         msg = choices[0].get("message") or {}
         raw_text = msg.get("content") or ""
+
+        # 检查是否为上游持久化失败错误(Hermes 返回 200 但 content 为 Session DB 错误提示)
+        if is_persistence_error_text(raw_text):
+            preview = raw_text.replace("\n", "\\n").replace("\r", "\\r")[:200]
+            logger.warning(
+                f"[HERMES] 捕获到上游 Session 持久化失败中断提示 (raw_len={len(raw_text)} preview={preview!r})"
+            )
+            return ChatResult(
+                raw_text=raw_text,
+                parse_failed=True,
+                is_transport_error=True,
+                is_persistence_error=True,
+            )
 
         # 路径 B:从 raw_text 提取首个 {...} JSON5 块
         if expect_structured and structured_tool_name == "submit_decision":

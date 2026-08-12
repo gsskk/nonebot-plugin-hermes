@@ -1009,6 +1009,37 @@ async def _run_passive_turn(
         user_content_override=user_content,
     )
 
+    if result.is_persistence_error:
+        logger.warning(
+            f"[HERMES passive] 捕获 Session 持久化异常，立即重置 Session 并重试: "
+            f"adapter={adapter_name} group={group_id} user={user_id}"
+        )
+        session_manager.clear_session(
+            adapter_name=adapter_name,
+            is_private=is_private,
+            user_id=user_id,
+            group_id=group_id,
+        )
+        new_session_key = session_manager.get_session_key(
+            adapter_name=adapter_name,
+            is_private=is_private,
+            user_id=user_id,
+            group_id=group_id,
+        )
+        result = await hermes_client.chat(
+            text="",
+            image_urls=[],
+            session_key=new_session_key,
+            user_id=user_id,
+            group_id=group_id,
+            adapter_name=adapter_name,
+            is_private=is_private,
+            mode="passive",
+            expect_structured=False,
+            system_prompt=system_prompt,
+            user_content_override=user_content,
+        )
+
     # 上游 transport_error 同款保护(见 _run_reactive_turn 同名分支注释)。
     # passive 路径下私聊总是显式对话,群聊已通过触发判断进得来,两边都该有可见反馈;
     # 配空 fallback_text 时静默,保留逃生口。
@@ -1129,6 +1160,38 @@ async def _run_reactive_turn(
         system_prompt=system_prompt,
         user_content_override=user_content,
     )
+
+    if result.is_persistence_error:
+        logger.warning(
+            f"[HERMES reactive] 捕获 Session 持久化异常，立即重置 Session 并重试: "
+            f"adapter={adapter_name} group={group_id} user={user_id}"
+        )
+        session_manager.clear_session(
+            adapter_name=adapter_name,
+            is_private=False,
+            user_id=user_id,
+            group_id=group_id,
+        )
+        new_session_key = session_manager.get_session_key(
+            adapter_name=adapter_name,
+            is_private=False,
+            user_id=user_id,
+            group_id=group_id,
+        )
+        result = await hermes_client.chat(
+            text="",
+            image_urls=[],
+            session_key=new_session_key,
+            user_id=user_id,
+            group_id=group_id,
+            adapter_name=adapter_name,
+            is_private=False,
+            mode="reactive",
+            expect_structured=True,
+            structured_tool_name="submit_decision",
+            system_prompt=system_prompt,
+            user_content_override=user_content,
+        )
 
     if result.parse_failed or result.structured is None:
         # 上游 transport_error(5xx / 网络断 / 流被掐):raw_text 是服务端错误信息原文
