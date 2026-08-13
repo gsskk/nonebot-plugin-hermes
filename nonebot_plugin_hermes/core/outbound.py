@@ -26,16 +26,34 @@ _IMAGE_DATA_URL_RE = re.compile(r"^data:(image/[\w.+-]+);base64,(.+)$", re.DOTAL
 
 
 def _parse_image_data_url(url: str) -> tuple[bytes, str, str] | None:
-    """解析 base64 图片 data: URL → (raw_bytes, mimetype, b64_payload);不合法返回 None。"""
+    """解析 base64 图片 data: URL → (raw_bytes, mimetype, b64_payload);不合法返回 None。
+
+    宽容只做无损的两件事:去掉空白(payload 内联进 JSON 后可能被折行)、补齐缺失的
+    `=` padding(补 padding 还原出的字节与原图一致)。**不做**有损修补:丢字符或
+    放宽字符集校验能让半截 base64 也"解出来",但那是坏图——平台要么拒收要么显示
+    破图,还把「上游把回复截断了」伪装成「发图成功」,连日志都查不到。宁可跳过。
+    """
     m = _IMAGE_DATA_URL_RE.match(url)
     if m is None:
         return None
-    payload = m.group(2)
+    mimetype = m.group(1)
+    payload = re.sub(r"\s+", "", m.group(2))
+    if not payload:
+        return None
+
+    rem = len(payload) % 4
+    if rem in (2, 3):
+        payload += "=" * (4 - rem)
+
     try:
         raw = base64.b64decode(payload, validate=True)
     except (binascii.Error, ValueError):
         return None
-    return raw, m.group(1), payload
+
+    if not raw:
+        return None
+
+    return raw, mimetype, payload
 
 
 # 截断 suffix 长度 = 13 字符;最终消息 = max_len + 13 字符,故意溢出 max_len。
