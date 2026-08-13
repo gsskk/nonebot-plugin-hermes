@@ -25,6 +25,7 @@ from ..core.hermes_client import (
     extract_response_media,
     hermes_client,
     maybe_extract_decision_reply_text,
+    preview_raw,
 )
 from ..core.message_buffer import BufferedMessage
 from ..core.outbound import send_text_with_media
@@ -1221,7 +1222,7 @@ async def _run_reactive_turn(
 
         # raw_text 预览:用来分类失败模式(裸文本 / fenced ```json / 多 JSON 块 /
         # nested object 等)。换行折叠成 \n 字面量,300 字够覆盖单 turn submit_decision。
-        raw_preview = (result.raw_text or "").replace("\n", "\\n").replace("\r", "\\r")[:300]
+        raw_preview = preview_raw(result.raw_text or "")
         logger.warning(
             f"[HERMES reactive] structured parse failed (group={group_id}, "
             f"transport_error={result.is_transport_error}); fallback="
@@ -1257,8 +1258,7 @@ async def _run_reactive_turn(
     # 解析成功时也留一份 raw 预览:decision 摘要看不出模型到底吐了什么形状
     # (是完整 submit_decision,还是只有 {"should_reply": false} 这种退化输出),
     # 而「该回却静默」的排查恰恰全靠这个区分。DEBUG 级,正常运行不刷日志。
-    # 先切片再转义:raw_text 内联大图时是 MB 级,反过来做会白拷一遍整串。
-    raw_preview = (result.raw_text or "")[:300].replace("\n", "\\n").replace("\r", "\\r")
+    raw_preview = preview_raw(result.raw_text or "")
     logger.debug(f"[HERMES reactive] decision raw (len={len(result.raw_text or '')}): {raw_preview!r}")
 
     decision = result.structured

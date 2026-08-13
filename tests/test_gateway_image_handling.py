@@ -227,3 +227,68 @@ async def test_reactive_reply_buffers_placeholder_not_base64(monkeypatch, _runti
     assert "[图片]" in content
     assert "画好啦!" in content
     assert len(content) < 200
+
+
+def _decision_with_image(b64: str, *, suffix: str) -> str:
+    """构造一条 api_server 内联大图后的 submit_decision 回复。"""
+    return (
+        f'{{"should_reply": true, "reply_text": "画好啦喵! ![image](data:image/jpeg;base64,{b64})' + '"' + suffix + "}"
+    )
+
+
+def test_inline_image_decision_keeps_all_fields():
+    """带图回复必须走完整解析,不能退到救补。
+
+    救补只认 should_reply + reply_text,topic_hint / should_exit_active 会被丢掉 ——
+    活跃态的话题跟踪和退场判断在每个带图 turn 上静默失效。data URL 是生成之后由
+    api_server 内联的,JSON 结构本身只有几百字节,先摘掉 payload 再解析即可。
+    """
+    b64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * (400 * 1024)).decode("ascii")
+    raw = _decision_with_image(b64, suffix=', "topic_hint": "黑长直自画像", "should_exit_active": false')
+
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed.get("_salvaged") is None, "完整 JSON 不该落到救补"
+    assert parsed["topic_hint"] == "黑长直自画像"
+    assert parsed["should_exit_active"] is False
+    # 图必须原样回填,能一路解出字节
+    _cleaned, urls = extract_response_media(parsed["reply_text"])
+    assert len(urls) == 1
+    assert _parse_image_data_url(urls[0]) is not None
+
+
+def test_inline_image_decision_with_json5_only_syntax():
+    """尾随逗号这类只有 json5 认的脏语法 + 大图:摘掉 payload 后候选串回到 KB 级,
+    json5 仍然跑得起来(此前会被尺寸阈值挡掉,直接退救补)。"""
+    b64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * (400 * 1024)).decode("ascii")
+    raw = _decision_with_image(b64, suffix=', "topic_hint": "画图",')
+
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed.get("_salvaged") is None
+    assert parsed["topic_hint"] == "画图"
+    assert "data:image/jpeg;base64," in parsed["reply_text"]
+
+
+def test_inline_image_reattach_is_byte_exact():
+    """回填后的 reply_text 必须与原文逐字节一致,不能因为摘/填丢字符。"""
+    b64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 300_000).decode("ascii")
+    inner = f"两张图 ![a](data:image/png;base64,{b64}) 和 ![b](data:image/jpeg;base64,{b64})"
+    raw = json.dumps({"should_reply": True, "reply_text": inner}, ensure_ascii=False)
+
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed["reply_text"] == inner
+
+
+def test_truncated_inline_image_still_salvages():
+    """真被截断时(无闭合引号/括号)仍走救补,且截断的 data URL 不当图投递。"""
+    b64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 300_000).decode("ascii")
+    raw = '{"should_reply": true, "reply_text": "画好啦 ![image](data:image/jpeg;base64,' + b64[: len(b64) // 2]
+
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed.get("_salvaged") is True
+    cleaned, urls = extract_response_media(parsed["reply_text"])
+    assert urls == []
+    assert "[图片" in cleaned

@@ -177,6 +177,24 @@ def _summarize_error_body(body: str) -> tuple[str, int | None]:
     return msg[:300], inner_status
 
 
+def preview_raw(text: str, *, head: int = 220, tail: int = 220) -> str:
+    """给日志用的回复预览:**头尾都取**,中间省略。
+
+    只取头部对诊断结构化解析失败没用 —— 破在末尾的情况(缺闭合括号、多余字段、
+    尾随逗号)恰好都在被截掉的那一半里。先切片再转义:内联大图时 text 是 MB 级,
+    反过来做会白拷一遍整串。
+    """
+    if not text:
+        return ""
+
+    def _esc(s: str) -> str:
+        return s.replace("\n", "\\n").replace("\r", "\\r")
+
+    if len(text) <= head + tail:
+        return _esc(text)
+    return f"{_esc(text[:head])}…[省略 {len(text) - head - tail} 字符]…{_esc(text[-tail:])}"
+
+
 def _user_facing_error(reason: str) -> str:
     """把 _summarize_error_body 的 reason 翻译成给群里发的简短提示。
 
@@ -306,20 +324,57 @@ def _load_json_candidate(candidate: str) -> Any:
         return None
 
 
+# 内联 data URL 摘出/回填。api_server 把 MEDIA: 图片换成 data URL 是在**生成之后**
+# 做的,所以一条带图回复的 JSON 是 MB 级,而里面真正的 JSON 结构只有几百字节。
+# 先把 payload 换成短 token 再解析:候选串回到 KB 级,解析器阶梯(含 json5)全程可用,
+# 不必再靠尺寸阈值放弃 —— 之前跳过 json5 会让带图回复退到正则救补,连带丢掉
+# topic_hint / should_exit_active(救补只认 should_reply + reply_text)。
+# 阈值 256:短 data URL 本来就不影响解析,只处理真正撑爆候选串的那些。
+_DATA_URL_DETACH_RE = re.compile(r"data:[\w.+-]+/[\w.+-]+;base64,[A-Za-z0-9+/=]{256,}")
+_DETACH_TOKEN_RE = re.compile(r"⟦hermes-media-(\d+)⟧")
+
+
+def _detach_data_urls(text: str) -> tuple[str, list[str]]:
+    """把长 data URL 替换成 ⟦hermes-media-N⟧,返回 (缩短后的文本, 原始 URL 列表)。"""
+    urls: list[str] = []
+
+    def _repl(m: re.Match) -> str:
+        urls.append(m.group(0))
+        return f"⟦hermes-media-{len(urls) - 1}⟧"
+
+    return _DATA_URL_DETACH_RE.sub(_repl, text), urls
+
+
+def _reattach_data_urls(value: str, urls: list[str]) -> str:
+    """把 ⟦hermes-media-N⟧ 换回原始 data URL。索引越界时原样留着 token。"""
+
+    def _repl(m: re.Match) -> str:
+        idx = int(m.group(1))
+        return urls[idx] if 0 <= idx < len(urls) else m.group(0)
+
+    return _DETACH_TOKEN_RE.sub(_repl, value)
+
+
 def _try_parse_first_json_block(text: str) -> dict[str, Any] | None:
     """从模型回复中提取首个 {...} 块并解析。失败返回 None,调用方记 parse_failed。
 
-    两段式回退:_load_json_candidate(json → json5)拿不到 dict →
-    走 _salvage_truncated_reply_text 正则抠取。
+    流程:摘掉内联 data URL → 提平衡块 → _load_json_candidate(json → json5)
+    → 失败则 _salvage_truncated_reply_text 正则抠取 → 把 data URL 回填进字符串字段。
     """
     if not text:
         return None
-    candidate = _find_first_balanced_json_object(text)
+    shrunk, detached = _detach_data_urls(text)
+    parsed: Any = None
+    candidate = _find_first_balanced_json_object(shrunk)
     if candidate is not None:
         parsed = _load_json_candidate(candidate)
-        if isinstance(parsed, dict):
-            return parsed
-    return _salvage_truncated_reply_text(text)
+    if not isinstance(parsed, dict):
+        parsed = _salvage_truncated_reply_text(shrunk)
+    if parsed is None:
+        return None
+    if detached:
+        parsed = {k: (_reattach_data_urls(v, detached) if isinstance(v, str) else v) for k, v in parsed.items()}
+    return parsed
 
 
 def maybe_extract_decision_reply_text(text: str) -> str | None:
@@ -556,7 +611,7 @@ class HermesClient:
         # 检查是否为上游持久化失败错误(Hermes 返回 200 但 content 为 Session DB 错误提示)
         if is_persistence_error_text(raw_text):
             cause = classify_persistence_error(raw_text)
-            preview = raw_text.replace("\n", "\\n").replace("\r", "\\r")[:200]
+            preview = preview_raw(raw_text, head=200, tail=0)
             logger.warning(
                 f"[HERMES] 捕获到上游 Session 持久化失败中断提示 "
                 f"(cause={cause} raw_len={len(raw_text)} preview={preview!r})"
@@ -573,7 +628,7 @@ class HermesClient:
         if expect_structured and structured_tool_name == "submit_decision":
             structured = _try_parse_first_json_block(raw_text)
             if structured is None:
-                preview = raw_text.replace("\n", "\\n").replace("\r", "\\r")[:300]
+                preview = preview_raw(raw_text)
                 logger.warning(
                     f"[HERMES] 路径 B 未能从回复中解析出 JSON 块 (raw_len={len(raw_text)} preview={preview!r})"
                 )
