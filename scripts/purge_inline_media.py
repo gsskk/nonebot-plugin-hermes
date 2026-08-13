@@ -11,8 +11,12 @@
 
 默认 dry-run,只报告不改动;确认后加 --apply。
 
-    python3 scripts/purge_inline_media.py --db /path/to/messages.db
-    python3 scripts/purge_inline_media.py --db /path/to/messages.db --apply
+    python3 scripts/purge_inline_media.py --db /path/to/messages.db            # 只看
+    python3 scripts/purge_inline_media.py --db /path/to/messages.db --apply    # 清内容
+    python3 scripts/purge_inline_media.py --db /path/to/messages.db --vacuum   # 只收缩文件
+
+--apply 只改内容,不会让文件变小(SQLite 把腾出的页留着复用);要磁盘立刻降下来加
+--vacuum,它与 --apply 相互独立,内容已经干净时也能单独跑。
 
 故意不 import nonebot_plugin_hermes:`-m` / 直接 import 都会连带执行包的 __init__,
 里面的 require() 在没有 NoneBot 进程时直接抛错(与 hermes_install_skill.py 同因)。
@@ -66,13 +70,63 @@ def _human(n: int) -> str:
     return f"{n}B"
 
 
+def _footprint(db_path: Path) -> int:
+    """主库 + -wal + -shm 的磁盘占用。只看主库会漏掉被 WAL 顶起来的那几 MB。"""
+    total = 0
+    for suffix in ("", "-wal", "-shm"):
+        p = Path(str(db_path) + suffix)
+        if p.exists():
+            total += p.stat().st_size
+    return total
+
+
+def _compact(conn: sqlite3.Connection, db_path: Path) -> None:
+    """WAL checkpoint(TRUNCATE) + VACUUM,并报告磁盘占用变化。
+
+    两步都要做:重写 MB 级 blob 会把 -wal 撑到几 MB,只 VACUUM 不 checkpoint 的话
+    那部分占用还挂在 -wal 上;反过来只 checkpoint 不 VACUUM,主库里腾出的页仍然
+    留在文件里等后续写入复用。
+    """
+    before = _footprint(db_path)
+    # VACUUM 不能在事务里跑;Python sqlite3 默认会为 DML 隐式开事务,这里切自动提交。
+    conn.isolation_level = None
+    try:
+        busy, log_pages, checkpointed = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if busy:
+            print(
+                f"[purge] WAL checkpoint 未完成(busy=1,还有别的连接在读写);已 checkpoint {checkpointed}/{log_pages} 页"
+            )
+            print("[purge] 想彻底收回这部分,停掉 bot 后再跑一次 --vacuum")
+        else:
+            print(f"[purge] WAL 已折回主库并截断({checkpointed} 页)")
+    except sqlite3.Error as exc:
+        print(f"[purge] WAL checkpoint 失败: {exc}")
+
+    print("[purge] VACUUM 中(需要排它锁,视库大小可能要几十秒)…")
+    try:
+        conn.execute("VACUUM")
+        # VACUUM 在 WAL 模式下是把整个新库写过 -wal 的,跑完那一刻 -wal 正鼓着几 MB。
+        # 不再 checkpoint 一次就去量,报出来的数会比 `ls` 看到的大一大截。
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.Error as exc:
+        print(f"[purge] VACUUM 失败: {exc}", file=sys.stderr)
+        print("[purge] 通常是 bot 还占着库拿不到排它锁 —— 停掉 bot 后重跑 --vacuum", file=sys.stderr)
+        return
+    after = _footprint(db_path)
+    print(f"[purge] VACUUM 完成:磁盘占用 {_human(before)} → {_human(after)}(含 -wal/-shm)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--db", default=None, help="messages.db 路径(默认取 HERMES_STORAGE_DB_PATH / localstore 常规位置)"
     )
     parser.add_argument("--apply", action="store_true", help="真的写回;缺省只报告")
-    parser.add_argument("--vacuum", action="store_true", help="写回后跑 VACUUM 收缩文件(需要额外磁盘,期间锁库)")
+    parser.add_argument(
+        "--vacuum",
+        action="store_true",
+        help="WAL checkpoint + VACUUM 收缩文件(需要额外磁盘,期间要排它锁)。与 --apply 独立:内容已经干净时单独用它也能收缩",
+    )
     parser.add_argument("--limit-preview", type=int, default=10, help="报告里最多列几条(默认 10)")
     args = parser.parse_args()
 
@@ -100,7 +154,9 @@ def main() -> int:
             "FROM messages WHERE content LIKE '%;base64,%' ORDER BY len DESC"
         ).fetchall()
         if not rows:
-            print("[purge] 没有内联 base64 的行,无需处理")
+            print("[purge] 没有内联 base64 的行,内容无需处理")
+            if args.vacuum:
+                _compact(conn, db_path)
             return 0
 
         updates: list[tuple[str, int]] = []
@@ -128,20 +184,18 @@ def main() -> int:
         if still_big:
             print(f"[purge] 注意:{len(still_big)} 行剥掉图片后仍 >{_REPORT_THRESHOLD} 字符(是长文本,本脚本不截断)")
 
-        if not args.apply:
-            print("[purge] dry-run 结束,未改动。确认后加 --apply")
-            return 0
-
-        with conn:  # 单事务,失败整体回滚
-            conn.executemany("UPDATE messages SET content = ? WHERE id = ?", updates)
-        print(f"[purge] 已写回 {len(updates)} 行")
-
-        if args.vacuum:
-            print("[purge] VACUUM 中(锁库,视库大小可能要几十秒)…")
-            conn.execute("VACUUM")
-            print("[purge] VACUUM 完成")
+        if args.apply:
+            with conn:  # 单事务,失败整体回滚
+                conn.executemany("UPDATE messages SET content = ? WHERE id = ?", updates)
+            print(f"[purge] 已写回 {len(updates)} 行")
         else:
-            print("[purge] 未 VACUUM:文件大小不会立刻变小,空间会被后续写入复用。要立刻收缩加 --vacuum")
+            print("[purge] dry-run 结束,内容未改动。确认后加 --apply")
+
+        # 物理回收与内容清理解耦:--vacuum 单独判断,内容已经干净时也要能收缩
+        if args.vacuum:
+            _compact(conn, db_path)
+        elif args.apply:
+            print("[purge] 未 --vacuum:腾出的页会留在文件里给后续写入复用,文件大小不会立刻变小")
         return 0
     finally:
         conn.close()
