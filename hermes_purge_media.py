@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """把消息库里内联的 base64 data URL 原地换成 [图片] 占位。
 
-用途:0.2.x 之前 reactive 路径把 bot 回复原文写进 messages.content,api_server 内联的
-图片(data:image/…;base64,…)因此整段落库 —— 单条能到 1MB 量级。写入端已经改成只存
-清洗后的文本 + [图片],渲染端也会兜底截断,所以旧行**不再影响 prompt**;这个脚本只是
-把已经躺在库里的字节清出去,省磁盘和每 turn 的无谓读放大。
+用途:早期版本的 reactive 路径把 bot 回复原文写进 messages.content,而 api_server 会在
+生成之后把 MEDIA: 图片内联成 data:image/…;base64,… —— 于是 agent 每在群里发一次图,
+库里就多一条 MB 级的行。写入端与渲染端现在都会挡住,本工具只清存量字节。
 
 不删行:那会连带丢掉同一条消息里的正常文本,以及 bot 自己那条历史(decision_protocol
 的「自我归因校验」要靠它定位自己说过什么)。只替换 payload,长度之外的语义不变。
 
-默认 dry-run,只报告不改动;确认后加 --apply。
+默认 dry-run,只报告不改动;--db 不给时自动探测(见 _candidate_dbs)。
 
-    python3 scripts/purge_inline_media.py --db /path/to/messages.db            # 只看
-    python3 scripts/purge_inline_media.py --db /path/to/messages.db --apply    # 清内容
-    python3 scripts/purge_inline_media.py --db /path/to/messages.db --vacuum   # 只收缩文件
+    hermes-purge-media                    # 只看:每群命中数、最大行、可回收字节
+    hermes-purge-media --apply            # 清内容
+    hermes-purge-media --vacuum           # 只收缩文件
+    hermes-purge-media --apply --vacuum   # 一步到位
 
 --apply 只改内容,不会让文件变小(SQLite 把腾出的页留着复用);要磁盘立刻降下来加
 --vacuum,它与 --apply 相互独立,内容已经干净时也能单独跑。
@@ -54,12 +54,58 @@ def _strip_inline_media(content: str) -> str:
 _REPORT_THRESHOLD = 2000
 
 
+_PLUGIN_NAME = "nonebot_plugin_hermes"
+
+
+def _candidate_dbs() -> list[tuple[str, Path]]:
+    """按优先级列出可能的 messages.db,返回 [(来源说明, 路径)]。
+
+    覆盖插件实际用到的三条来源(见 mcp/__init__.py 的 _default_db_path):
+      1. HERMES_STORAGE_DB_PATH — 插件配置直接指定
+      2. localstore 的目录覆写 — LOCALSTORE_PLUGIN_DATA_DIR(按插件名的 dict)
+         / LOCALSTORE_DATA_DIR(基目录),部署常用它把数据落到项目目录下,
+         此时 DB 根本不在 ~/.local/share,不列出来就只能靠人手传 --db
+      3. localstore 默认位置
+    不 import localstore 解析:它是 nonebot 插件,离开 NoneBot 进程 import 会炸。
+    """
+    out: list[tuple[str, Path]] = []
+    direct = os.environ.get("HERMES_STORAGE_DB_PATH")
+    if direct:
+        out.append(("HERMES_STORAGE_DB_PATH", Path(direct)))
+
+    # dict 形态,形如 {"nonebot_plugin_hermes": "/some/dir"};只做宽松解析,
+    # 取到本插件那一项即可,不引入 json/ast 之外的猜测。
+    plugin_dirs = os.environ.get("LOCALSTORE_PLUGIN_DATA_DIR")
+    if plugin_dirs and _PLUGIN_NAME in plugin_dirs:
+        try:
+            import json
+
+            mapping = json.loads(plugin_dirs)
+            if isinstance(mapping, dict) and mapping.get(_PLUGIN_NAME):
+                out.append(("LOCALSTORE_PLUGIN_DATA_DIR", Path(mapping[_PLUGIN_NAME]) / "messages.db"))
+        except (ValueError, TypeError):
+            pass
+
+    base = os.environ.get("LOCALSTORE_DATA_DIR")
+    if base:
+        out.append(("LOCALSTORE_DATA_DIR", Path(base) / _PLUGIN_NAME / "messages.db"))
+
+    out.append(("localstore 默认位置", Path.home() / ".local" / "share" / "nonebot2" / _PLUGIN_NAME / "messages.db"))
+    # 从 bot 工作目录跑时的常见相对布局
+    for rel in ("localstorage", "data"):
+        out.append((f"./{rel}/", Path(rel) / _PLUGIN_NAME / "messages.db"))
+    return out
+
+
 def _default_db() -> Path | None:
-    env = os.environ.get("HERMES_STORAGE_DB_PATH")
-    if env:
-        return Path(env)
-    guess = Path.home() / ".local" / "share" / "nonebot2" / "nonebot_plugin_hermes" / "messages.db"
-    return guess if guess.exists() else None
+    for origin, path in _candidate_dbs():
+        if path.exists():
+            print(f"[purge] 自动定位到 messages.db({origin}): {path}")
+            return path
+    print("[purge] 自动定位失败,试过:", file=sys.stderr)
+    for origin, path in _candidate_dbs():
+        print(f"[purge]   [{origin}] {path}", file=sys.stderr)
+    return None
 
 
 def _human(n: int) -> str:

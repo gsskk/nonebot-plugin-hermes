@@ -282,6 +282,25 @@ T+5s  用户 B:  @bot 评价下上图
 | `/help` | 显示帮助信息 |
 | `/hermes-status` | 打印 M1 运行时状态（MCP / 活跃 sessions / buffer / registry）。**需在 `HERMES_ADMIN_USERS` 显式授权 `adapter:user_id`**;非管理员调用时静默无响应,且 `/help` 输出里也不出现该命令 |
 
+### 命令行工具
+
+| 命令 | 说明 |
+|------|------|
+| `hermes-install-skill --force` | 把 `SKILL.md` 装到 `~/.hermes/skills/nonebot-bridge/`(覆盖已装版本要带 `--force`) |
+| `hermes-purge-media` | 清理消息库里内联的 base64 图片字节。默认只报告,`--apply` 写回,`--vacuum` 收缩文件 |
+
+`hermes-purge-media` 用于清理历史遗留:早期版本会把 agent 回复里 api_server 内联的
+`data:image/…;base64,…` 整段存进消息库,单条可达 MB 级。当前版本写入端与渲染端都已挡住,
+这个命令只把存量字节清出去。
+
+```bash
+hermes-purge-media                    # 只报告:每群命中数、最大行、可回收字节
+hermes-purge-media --apply --vacuum   # 清理并收缩文件
+```
+
+不删消息,只把图片 payload 换成 `[图片]` 占位;幂等,可反复运行。`--vacuum` 需要排它锁,
+拿不到时停掉 bot 再跑。
+
 ## 配置项
 
 所有配置项通过 `.env` 文件设置，参见 [.env.example](.env.example) 中的详细注释。
