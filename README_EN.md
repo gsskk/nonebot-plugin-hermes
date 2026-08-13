@@ -42,6 +42,7 @@ User Message → NoneBot Adapter → nonebot-plugin-hermes
 - 🧪 **Historical image recall (0.3+, experimental)**: SQLite-backed message log + filesystem image-byte cache + `get_message_images` MCP tool. Lets Hermes precisely fetch a past image by message id when the user says things like "上图" / "the image just now"
 - 🧪 **OneBot v11 Notice triggers (0.3.3+, experimental)**: Poke (戳一戳) as a second @-equivalent trigger; on group-join Hermes self-decides whether to greet (noop is valid — no template welcomes)
 - 🧪 **Message segment perception (0.3.4+, experimental)**: Voice/Video/QQ face/sticker placeholders surface to LLM context; stickers automatically skip the vision API. OneBot v11 NapCat ack-emoji on explicit @ (`HERMES_ACK_FEEDBACK_ENABLED=true`)
+- ✅ **Merge-forward handling (0.4.0+)**: incoming merge-forward (合并转发) messages are expanded into a length-capped summary; the bot's own long replies are sent as a merge-forward in OneBot v11 groups instead of being truncated
 
 ## Quick Start
 
@@ -281,6 +282,26 @@ If your Hermes backend model is weak and unreliably parses the `[m:<id>]` conven
 | `/help` | Show help information |
 | `/hermes-status` | Print M1 runtime state (MCP / active sessions / buffer / registry). **Requires `adapter:user_id` to be listed in `HERMES_ADMIN_USERS`**; non-admin invocations are silently ignored and the command does not appear in `/help` for them |
 
+### Command-line tools
+
+| Command | Description |
+|------|------|
+| `hermes-install-skill --force` | Installs `SKILL.md` into `~/.hermes/skills/nonebot-bridge/` (`--force` is required to overwrite an existing install) |
+| `hermes-purge-media` | Purges inline base64 image bytes from the message database. Reports only by default; `--apply` writes back, `--vacuum` shrinks the file |
+
+`hermes-purge-media` cleans up a legacy artifact: earlier versions stored the whole
+`data:image/…;base64,…` payload that api_server inlines into agent replies straight into the
+message database, reaching megabytes for a single row. The current version blocks this on both
+the write and the render side; this command only clears out the bytes already stored.
+
+```bash
+hermes-purge-media                    # report only: hits per group, largest row, reclaimable bytes
+hermes-purge-media --apply --vacuum   # purge and shrink the file
+```
+
+Messages are never deleted — the image payload is replaced with a `[图片]` placeholder. Idempotent,
+safe to re-run. `--vacuum` needs an exclusive lock; stop the bot first if it can't acquire one.
+
 ## Configuration Options
 
 All configuration options are set via the `.env` file, see detailed comments in [.env.example](.env.example).
@@ -323,6 +344,20 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_IMAGE_CACHE_QUOTA_MB` | `200` | Image cache total size cap (MB); LRU-by-atime eviction during vacuum |
 | `HERMES_IMAGE_FETCH_TIMEOUT_S` | `10` | Per-image HTTP fetch timeout, seconds |
 | `HERMES_IMAGE_FETCH_MAX_ATTEMPTS` | `2` | Total HTTP attempts per image (1=no retry, 2=one retry, …) |
+
+### Busy notice (a visible signal when an explicit mention is dropped by plumbing)
+
+When the `_refire` chain hits `MAX_REFIRE_DEPTH=3` (≥ 4 explicit mentions queued in the same group within a short window while upstream Hermes can't keep up), the newest explicit mention gets dropped by the plumbing. The plugin then attaches `HERMES_BUSY_EMOJI_ID` (default 97 = the classic QQ face /擦汗, wiping sweat) to that original message and **does not clear it**, as a visual "I saw you, but I really can't keep up" signal.
+
+Different semantics from the ack-feedback emoji (`HERMES_ACK_EMOJI_ID`, default 341 /打招呼):
+- ack-feedback: stays for the duration of `chat()`, cleared on completion — "working on it"
+- busy notice: attached when the depth cap is hit, **never cleared** — "can't get to it"
+
+The two defaults are deliberately picked to look clearly distinct; verify the emoji_id table of your OneBot implementation before changing them.
+
+Only the OneBot v11 group path is covered; other adapters (Telegram / Discord) or a missing msg_id degrade to a WARN log with no text fallback, to avoid adding noise in a burst context.
+
+One related failure path does have a user-visible fallback: when upstream Hermes returns 5xx or the network drops, an explicit mention on the refire path replies with `HERMES_TRANSPORT_ERROR_FALLBACK_TEXT` (default "嗯…我这边遇到点状况,稍后再问一次"). Set it to an empty string to disable the text fallback.
 
 ## Limitations
 
