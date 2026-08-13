@@ -169,9 +169,6 @@ def test_decision_protocol_includes_self_attribution_check():
     assert "[bot]" in decision
 
 
-# --- reactive user content(runtime_state + recent_messages + current_message)---
-
-
 def test_reactive_user_content_includes_runtime_state_block():
     """runtime_state 从 system 搬过来后,所有字段必须出现在 user content 顶端。"""
     content = build_reactive_user_content(
@@ -546,3 +543,31 @@ def test_passive_user_content_omits_prefix_when_id_is_none():
     assert isinstance(content, str)
     assert "[m:None]" not in content
     assert "[user=alice]: hi" in content
+
+
+def test_history_line_strips_data_urls_and_caps_length():
+    """渲染端是最后一道闸:DB 里存了什么都不能让单行无上限地进 prompt。
+
+    写入端修好只保护新行 —— 修之前落库的 bot 回复(内联 data URL,一条几十万字符)
+    会在之后每个 turn 被逐字重放,直到 retention 淘汰。base64 对模型零信息量,
+    却能把真实上下文整段挤出窗口。
+    """
+    poisoned = "画好啦! ![image](data:image/png;base64," + "A" * 500_000 + ")"
+    content = build_reactive_user_content(
+        **_reactive_user_kwargs(recent_messages=[_msg_with_id(100, "bot", poisoned, 41, is_bot=True)])
+    )
+    assert isinstance(content, str)
+    history = content.split("<recent_messages>", 1)[1].split("</recent_messages>", 1)[0]
+    assert "data:image" not in history
+    assert "[图片]" in history
+    assert "画好啦!" in history, "正文要留住,只摘掉字节"
+    assert len(history) < 2000, f"单行没被封顶,渲染出 {len(history)} 字符"
+
+
+def test_history_line_under_cap_is_untouched():
+    """正常长度的历史行不能被动:多数「归你/自我归因」判断都靠原文匹配。"""
+    normal = "刚那题我算的是 O(n log n),你说的方案在最坏情况会退化"
+    content = build_reactive_user_content(
+        **_reactive_user_kwargs(recent_messages=[_msg_with_id(100, "bot", normal, 7, is_bot=True)])
+    )
+    assert f"[m:7] [bot] [user=bot]: {normal}" in content

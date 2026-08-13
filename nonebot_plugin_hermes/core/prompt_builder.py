@@ -17,6 +17,7 @@ passive 模式:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -174,19 +175,45 @@ def _render_runtime_state(
     return "\n".join(lines)
 
 
+# 历史行渲染上限。渲染端不能信任存进来的 content:写入端一旦漏过一条超长内容
+# (内联 data URL 的 bot 回复就是典型),它会在之后每一个 turn 被逐字重放进 prompt,
+# 直到被 retention 淘汰 —— 一条就能把整个上下文顶满。写入端修好只保护新行,
+# 已经落库的旧行必须在这里挡住。
+# 上限取得宽松:入站侧本来就按 hermes_perception_text_length(默认 200)截过,
+# 只有 bot 自己的长回复会接近这个数,留 800 字够「自我归因校验」定位到自己说过的话。
+_MAX_HISTORY_LINE_CHARS = 800
+_HISTORY_TRUNCATION_MARK = "…[历史过长已截断]"
+_DATA_URL_IN_HISTORY_RE = re.compile(r"data:[\w.+-]+/[\w.+-]+;base64,[A-Za-z0-9+/=\s]+")
+
+
+def _sanitize_history_content(content: str) -> str:
+    """把单条历史内容压到可安全放进 prompt 的形态。
+
+    先摘掉 data URL(base64 字节对模型毫无信息量,只会挤掉真实上下文),再按
+    字符数封顶。两步都是幂等的纯文本处理,不动 DB。
+    """
+    cleaned = _DATA_URL_IN_HISTORY_RE.sub("[图片]", content)
+    if len(cleaned) > _MAX_HISTORY_LINE_CHARS:
+        cleaned = cleaned[:_MAX_HISTORY_LINE_CHARS] + _HISTORY_TRUNCATION_MARK
+    return cleaned
+
+
 def _render_recent_messages_block(recent_messages: Sequence[BufferedMessage]) -> str:
     """渲染 <recent_messages> 块。recent_messages: 新→旧顺序;在 prompt 内反转为旧→新。
 
     每条历史行用 `[m:<id>] ` 前缀标识 DB 主键 — 跨 turn 稳定,Hermes 调
     get_message_images 时按此 id 召回。id=None(未入库 transient 消息)时
     跳过前缀,避免 prompt 出现 `[m:None]` 噪音。
+
+    每行内容都过 _sanitize_history_content:渲染端是最后一道闸,DB 里存了什么
+    都不能让单行无上限地进 prompt。
     """
     lines = ["<recent_messages>"]
     for m in reversed(list(recent_messages)):
         bot_prefix = "[bot] " if m.is_bot else ""
         speaker_tag = _format_speaker_tag(m.nickname, m.user_id)
         id_prefix = f"[m:{m.id}] " if m.id is not None else ""
-        lines.append(f"{id_prefix}{bot_prefix}{speaker_tag}: {m.content}")
+        lines.append(f"{id_prefix}{bot_prefix}{speaker_tag}: {_sanitize_history_content(m.content)}")
     lines.append("</recent_messages>")
     return "\n".join(lines)
 
