@@ -257,6 +257,8 @@ def extract_response_media(text: str) -> tuple[str, list[str]]:
 
 _SALVAGE_SHOULD_REPLY_RE = re.compile(r'"should_reply"\s*:\s*(true|false)', re.IGNORECASE)
 _SALVAGE_REPLY_TEXT_RE = re.compile(r'"reply_text"\s*:\s*"((?:[^"\\]|\\.)*)', re.DOTALL)
+_SALVAGE_TOPIC_HINT_RE = re.compile(r'"topic_hint"\s*:\s*"((?:[^"\\]|\\.)*)"')
+_SALVAGE_EXIT_ACTIVE_RE = re.compile(r'"should_exit_active"\s*:\s*(true|false)', re.IGNORECASE)
 
 
 def _salvage_truncated_reply_text(text: str) -> dict[str, Any] | None:
@@ -282,9 +284,24 @@ def _salvage_truncated_reply_text(text: str) -> dict[str, Any] | None:
         val = json.loads(f'"{escaped_val}"')
     except Exception:
         val = raw_val
+    # 典型破法:reply_text 以 `![image](…)` 结尾时模型漏掉闭合 `"`,于是 reply_text
+    # 正则一路吃到 `,"topic_hint"` 前的那个引号,尾部就多带一个逗号。那是信封的残渣,
+    # 不是内容,发到群里只是一个突兀的逗号。
+    val = val.rstrip().removesuffix(",").rstrip()
+
     m_flag = _SALVAGE_SHOULD_REPLY_RE.search(text)
     should_reply = True if m_flag is None else m_flag.group(1).lower() == "true"
-    return {"should_reply": should_reply, "reply_text": val, "_salvaged": True}
+    out: dict[str, Any] = {"should_reply": should_reply, "reply_text": val, "_salvaged": True}
+
+    # 另外两个字段也按正则捞回来:它们在原文里通常是完好的,丢掉的话每个带图 turn
+    # 都会连带丢掉话题跟踪与退场判断 —— 而带图 turn 恰恰是最常触发救补的那些。
+    m_topic = _SALVAGE_TOPIC_HINT_RE.search(text)
+    if m_topic:
+        out["topic_hint"] = m_topic.group(1)
+    m_exit = _SALVAGE_EXIT_ACTIVE_RE.search(text)
+    if m_exit:
+        out["should_exit_active"] = m_exit.group(1).lower() == "true"
+    return out
 
 
 # json5 是纯 Python 解析器,MB 级 payload 要几十秒 CPU,而解析跑在 event loop 里 ——

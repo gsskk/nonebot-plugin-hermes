@@ -1126,3 +1126,84 @@ async def test_refire_when_active_session_expired(monkeypatch):
         )
         == "entered"
     )
+
+
+@pytest.mark.asyncio
+async def test_mid_turn_push_without_media_still_delivers_decision_image(monkeypatch):
+    """中途 push 只发出了文本(图是主机本地路径,投不出去)→ submit_decision 里
+    能投的图必须补发,不能被同 turn 去重闸门整条抑制。
+
+    线上序列:push_message(text, image_urls=['/root/.hermes/cache/…jpeg']) 发出文本、
+    图被跳过 → submit_decision 带着网关内联好的 data URL → 闸门抑制 → 用户没收到图。
+    """
+    from nonebot_plugin_hermes.core.hermes_client import ChatResult
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 20_000_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+    data_url = "data:image/jpeg;base64," + __import__("base64").b64encode(b"\xff\xd8\xff" + b"\x00" * 64).decode()
+
+    async def chat_then_push(**kwargs):
+        # 模拟 agent loop 里 push_message 先答了文本、没投出任何媒体
+        _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 1_000, media_count=0)
+        return ChatResult(
+            raw_text="x",
+            structured={"should_reply": True, "reply_text": f"图来啦 ![image]({data_url})"},
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_then_push)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    await handler_mod._run_reactive_turn(
+        bot=_fake_bot(),
+        target=_FakeTarget(id="g1", private=False),
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="再来个漫画风的",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now,
+    )
+
+    send_mock.assert_awaited_once()
+    kwargs = send_mock.await_args.kwargs
+    assert kwargs["media_urls"] == [data_url], "图必须补发"
+    assert kwargs["text"] == "", "文本已经由 push 发过,不能重复"
+    assert kwargs["at_user_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_mid_turn_push_with_media_still_suppresses(monkeypatch):
+    """中途 push 已经投出了媒体 → submit_decision 属纯重复,照旧整条抑制。"""
+    from nonebot_plugin_hermes.core.hermes_client import ChatResult
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 21_000_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    async def chat_then_push(**kwargs):
+        _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 1_000, media_count=1)
+        return ChatResult(
+            raw_text="x",
+            structured={"should_reply": True, "reply_text": "图来啦 ![image](https://example.com/a.png)"},
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_then_push)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    await handler_mod._run_reactive_turn(
+        bot=_fake_bot(),
+        target=_FakeTarget(id="g1", private=False),
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="再来一张",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now,
+    )
+
+    send_mock.assert_not_awaited()

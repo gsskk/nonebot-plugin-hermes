@@ -1289,10 +1289,32 @@ async def _run_reactive_turn(
     # mark_bot_replied 是对同一 dataclass 实例原地写, session 变量持有的就是那个实例。
     # 不查 active_sessions 也回避了 TTL 边界判定与 ended-and-retriggered 罕见竞态。
     if session.last_bot_reply_at > last_bot_reply_at_at_entry:
+        # 中途那发**没投出任何媒体**、而本发带着能投的图 → 不是重复,是「文本已答、图还没出去」。
+        # 典型来路:agent 用 push_message 发文本,图给的是 Hermes 主机本地路径(投不出去),
+        # 随后 submit_decision 里带着网关内联好的 data URL。整条抑制会把那张图彻底丢掉,
+        # 所以只补媒体、不重复文本(文本已经在群里了)。
+        if media_urls and session.last_bot_reply_media == 0:
+            media_sent = await send_text_with_media(
+                bot=bot,
+                target=target,
+                text="",
+                media_urls=media_urls,
+                at_user_id=None,
+                adapter_name=adapter_name,
+            )
+            logger.info(
+                f"[HERMES reactive] mid-turn push had no media; delivered submit_decision media only "
+                f"(group={group_id} media={len(media_urls)} ok={media_sent})"
+            )
+            if media_sent:
+                _mcp.active_sessions.mark_bot_replied(
+                    adapter_name, group_id, now_ms=_now_ms(), media_count=len(media_urls)
+                )
+            return result
         logger.info(
             f"[HERMES reactive] suppress submit_decision reply: push_message fired mid-turn "
             f"(group={group_id} user={user_id} explicit={is_explicit_trigger} "
-            f"reply_text_len={len(reply_text)})"
+            f"reply_text_len={len(reply_text)} mid_turn_media={session.last_bot_reply_media})"
         )
         return result
 
@@ -1344,7 +1366,7 @@ async def _run_reactive_turn(
         _mcp.active_sessions.touch(adapter_name, group_id, now_ms=reply_now_ms)
         # B.2: 记下「bot 刚回过」时间戳,供 _handle_reactive_path 入口 + _refire 入口的
         # cooldown 闸门判定。
-        _mcp.active_sessions.mark_bot_replied(adapter_name, group_id, now_ms=reply_now_ms)
+        _mcp.active_sessions.mark_bot_replied(adapter_name, group_id, now_ms=reply_now_ms, media_count=len(media_urls))
 
     return result
 

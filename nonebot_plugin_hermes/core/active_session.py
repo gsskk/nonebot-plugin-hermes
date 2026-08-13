@@ -24,6 +24,11 @@ class ActiveSession:
     用作 handlers 的 post-reply cooldown 判定。再次 trigger() 时清零,避免跨窗口
     残留状态把新一轮对话的第一条非显式消息直接 skip 掉。"""
 
+    last_bot_reply_media: int = 0
+    """上一次回复实际投出去的媒体数。同 turn 去重闸门据此区分「重复答案」与
+    「文本已答但图还没出去」:push_message 拿主机本地路径当图时只发出文本,
+    此时若把带图的 submit_decision 整条抑制,那张图就彻底丢了。"""
+
 
 class ActiveSessionManager:
     """滑动 TTL 状态机,跟踪哪些 (adapter, group_id) 处于 reactive 监听窗口。
@@ -86,15 +91,17 @@ class ActiveSessionManager:
         s = self._sessions.get((adapter, group_id))
         return s is not None and s.expires_at > now_ms
 
-    def mark_bot_replied(self, adapter: str, group_id: str, now_ms: int) -> None:
-        """记录 bot 在本群刚发出回复的时间戳;session 缺失则 no-op。
+    def mark_bot_replied(self, adapter: str, group_id: str, now_ms: int, media_count: int = 0) -> None:
+        """记录 bot 在本群刚发出回复的时间戳与实际投出的媒体数;session 缺失则 no-op。
 
-        只写 last_bot_reply_at,不滑动 expires_at(滑动续期由 touch 负责)。
-        handlers 在 reactive 模式 send 成功后调用,供 post-reply cooldown 判定。
+        只写 last_bot_reply_at / last_bot_reply_media,不滑动 expires_at
+        (滑动续期由 touch 负责)。handlers 在 reactive 模式 send 成功后调用,
+        供 post-reply cooldown 与同 turn 去重闸门判定。
         """
         s = self._sessions.get((adapter, group_id))
         if s is not None:
             s.last_bot_reply_at = now_ms
+            s.last_bot_reply_media = media_count
 
     def update_topic(self, adapter: str, group_id: str, topic_hint: str | None) -> None:
         """更新或清空 topic_hint。

@@ -292,3 +292,43 @@ def test_truncated_inline_image_still_salvages():
     cleaned, urls = extract_response_media(parsed["reply_text"])
     assert urls == []
     assert "[图片" in cleaned
+
+
+# 线上实测的破法:reply_text 以 ![image](…) 结尾时,模型漏掉闭合 `"`,
+# 于是 `)` 后面直接跟 `,"topic_hint"`。19:28 与 19:30 两轮一模一样。
+def _malformed_decision_missing_quote(b64: str) -> str:
+    return (
+        '{"should_reply":true,"reply_text":"好的主人,这就重新投递刚才那张漫画风图喵~ '
+        f"![image](data:image/jpeg;base64,{b64})"
+        ',"topic_hint":"重新投递漫画图","should_exit_active":false}'
+    )
+
+
+def test_salvage_recovers_topic_hint_and_exit_flag():
+    """信封破了也要把 topic_hint / should_exit_active 捞回来。
+
+    带图 turn 几乎每次都走救补,而救补以前只认 should_reply + reply_text ——
+    等于活跃态的话题跟踪与退场判断在最常见的场景里静默失效。
+    """
+    b64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 300_000).decode("ascii")
+    parsed = _try_parse_first_json_block(_malformed_decision_missing_quote(b64))
+
+    assert parsed is not None
+    assert parsed.get("_salvaged") is True
+    assert parsed["should_reply"] is True
+    assert parsed["topic_hint"] == "重新投递漫画图"
+    assert parsed["should_exit_active"] is False
+
+
+def test_salvage_drops_envelope_comma_artifact():
+    """漏引号会让 reply_text 一路吃到 `,"topic_hint"` 前,尾部多个逗号 ——
+    那是信封残渣,不能当正文发到群里。图必须完好可投。"""
+    b64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 300_000).decode("ascii")
+    parsed = _try_parse_first_json_block(_malformed_decision_missing_quote(b64))
+
+    assert parsed is not None
+    cleaned, urls = extract_response_media(parsed["reply_text"])
+    assert not cleaned.endswith(","), f"尾部逗号没清掉: {cleaned[-20:]!r}"
+    assert cleaned.endswith("喵~")
+    assert len(urls) == 1
+    assert _parse_image_data_url(urls[0]) is not None, "图必须仍然可解"

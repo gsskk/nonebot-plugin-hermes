@@ -146,7 +146,9 @@ async def push_message_impl(
 
     # 与 reactive 回复路径对齐 — 写 last_bot_reply_at(供 cooldown 闸门),
     # 把 push 的内容注入 buffer(供后续 turn 的 <recent_messages> 看见 bot 已答)
-    active_sessions.mark_bot_replied(inp.adapter, inp.group_id, now_ms=now_ms)
+    # media_count 记**实际投出去的**张数(不含 skipped):同 turn 去重闸门据此判断
+    # 「文本已答但图还没出去」,把 submit_decision 里能投的图补发出去。
+    active_sessions.mark_bot_replied(inp.adapter, inp.group_id, now_ms=now_ms, media_count=len(deliverable))
     if message_buffer is not None:
         message_buffer.append(
             BufferedMessage(
