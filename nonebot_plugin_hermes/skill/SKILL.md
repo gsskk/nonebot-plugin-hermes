@@ -31,6 +31,12 @@ allows you to send messages back via the `push_message` tool.
 ### `push_message(adapter, group_id, text, image_urls?)`
 
 Send one message into a group. Constraints:
+- `image_urls` accepts **only** `http(s)://` and `data:` URLs. A path on this host
+  (`/root/.hermes/cache/images/…`) is not reachable from the bot process and is
+  **not** delivered — the result reports it in `skipped_images` with a `warning`,
+  and the text is still sent. Do not retry the same path: to send a locally
+  generated image, return a `submit_decision` whose `reply_text` carries a
+  `MEDIA:<absolute path>` tag instead (see "Sending images" below).
 - The (adapter, group_id) must currently be in an **active reactive session**. If not,
   returns `ok=false` with `error="no active reactive session"`. Do not retry — the user
   has not invited you in.

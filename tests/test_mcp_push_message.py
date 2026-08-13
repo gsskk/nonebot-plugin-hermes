@@ -360,3 +360,79 @@ async def test_push_send_failed_does_not_mark_or_append():
     assert result.ok is False
     assert am.get("ob11", "g1").last_bot_reply_at == 0
     assert buf.appended == []
+
+
+# ---------------------------------------------------------------------------
+# 主机本地路径当 image_urls:必须如实回报,不能报成功后静默丢
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_push_reports_undeliverable_local_path():
+    """agent 常把 Hermes 主机上生成的图路径直接塞进 image_urls。
+
+    bot 侧取不到那个文件,以前是交给 outbound 静默跳过 + 返回 ok=true ——
+    调用方以为图发了,用户什么也没看到,于是 agent 原样重发一遍,群里出现两条
+    一样的文本。文本照发,但 skipped_images / warning 必须把真相带回去。
+    """
+    am, br = _populated_managers()
+    local = "/root/.hermes/cache/images/custom_local_20260813_191527_ef3f7ff5.jpeg"
+    inp = _make_inp(text="漫画风自画像来啦", image_urls=[local])
+
+    fake_bot = MagicMock()
+    mock_send = AsyncMock(return_value=True)
+    buf = _RecordingBuffer()
+    with (
+        patch("nonebot_plugin_hermes.mcp.tools.push_message.get_bot", return_value=fake_bot),
+        patch("nonebot_plugin_hermes.mcp.tools.push_message.send_text_with_media", mock_send),
+        patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
+    ):
+        mock_time.time.return_value = 1.0  # 固定在 TTL 内
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, message_buffer=buf)
+
+    assert result.ok is True, "文本发出去了,整体不算失败"
+    assert result.skipped_images == [local]
+    assert result.warning is not None
+    assert "MEDIA:" in result.warning, "要告诉 agent 正确的发图通道"
+    # 不可投递的引用不进 outbound,也不进 buffer(否则 ImageFetcher 会去 httpx 它)
+    assert mock_send.await_args.kwargs["media_urls"] == []
+    assert buf.appended[0].image_urls == []
+
+
+@pytest.mark.asyncio
+async def test_push_fails_when_only_undeliverable_images_and_no_text():
+    """纯图 push + 图不可投递 → 什么都没发出去,不能返回 ok=true。"""
+    am, br = _populated_managers()
+    inp = _make_inp(text="", image_urls=["/root/.hermes/cache/images/a.jpeg"])
+
+    with (
+        patch("nonebot_plugin_hermes.mcp.tools.push_message.get_bot", return_value=MagicMock()),
+        patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
+    ):
+        mock_time.time.return_value = 1.0
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+
+    assert result.ok is False
+    assert "nothing deliverable" in (result.error or "")
+    assert result.skipped_images == ["/root/.hermes/cache/images/a.jpeg"]
+
+
+@pytest.mark.asyncio
+async def test_push_keeps_http_and_data_urls():
+    """http(s) / data: 照常投递,不受新校验影响。"""
+    am, br = _populated_managers()
+    urls = ["https://example.com/a.png", "data:image/png;base64,iVBORw0KGgo="]
+    inp = _make_inp(image_urls=[*urls, "/local/b.png"])
+
+    mock_send = AsyncMock(return_value=True)
+    with (
+        patch("nonebot_plugin_hermes.mcp.tools.push_message.get_bot", return_value=MagicMock()),
+        patch("nonebot_plugin_hermes.mcp.tools.push_message.send_text_with_media", mock_send),
+        patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
+    ):
+        mock_time.time.return_value = 1.0
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+
+    assert result.ok is True
+    assert mock_send.await_args.kwargs["media_urls"] == urls
+    assert result.skipped_images == ["/local/b.png"]

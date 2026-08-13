@@ -268,6 +268,11 @@ async def send_text_with_media(
             raw, mimetype, _ = parsed
             msg += alconna.UniMessage(alconna.Image(raw=raw, mimetype=mimetype))
             sent_media_count += 1
+        else:
+            # 其余 scheme(主机本地路径 / file:// / 相对路径)bot 侧取不到字节。
+            # 以前这里没有 else,直接静默丢:调用方(尤其 MCP push_message)拿到
+            # "发送成功",用户却没看到图,连日志都查不到。
+            logger.warning(f"[OUTBOUND] 无法投递的媒体引用,已跳过(需要 http(s) 或 data:): {u[:120]}")
 
     # 空消息守卫:连 At 都没有(私聊 / 没传 at_user_id),text 空,无合法媒体 → 不发
     if not msg:

@@ -77,10 +77,17 @@ class ImageFetcher:
 
     def submit(self, message_id: int, urls: list[str]) -> None:
         """把每张图挂进 pending 表。同 URL 已 in-flight 时只加 (msg_id, idx),
-        不重复入队。overflow 时按 URL 维度丢最老。"""
+        不重复入队。overflow 时按 URL 维度丢最老。
+
+        只收 http(s):worker 是 httpx,喂它主机本地路径或 data: URL 只会抛
+        UnsupportedProtocol 并重试到上限,白占队列还刷 warning。
+        """
         new_urls: list[str] = []
         for idx, url in enumerate(urls):
             if not url:
+                continue
+            if not url.startswith(("http://", "https://")):
+                logger.debug(f"[image_fetcher] skip non-http url (无法抓取): {url[:80]}")
                 continue
             if url in self._pending:
                 # 已 queued / in-flight,挂上这条 (msg_id, idx) 等同一份结果

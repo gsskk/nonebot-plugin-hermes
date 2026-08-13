@@ -42,6 +42,25 @@ class PushMessageInput(BaseModel):
 class PushMessageResult(BaseModel):
     ok: bool
     error: str | None = None
+    warning: str | None = None
+    """部分投递:文本发出去了,但有 image_urls 无法投递(见 skipped_images)。"""
+
+    skipped_images: list[str] = Field(default_factory=list)
+    """被跳过的图片引用。bot 侧只能投递 http(s) 与 data: URL;主机本地路径取不到字节。"""
+
+
+# bot 侧能真正投递的 scheme。本地路径不在其中:MCP 调用方(Hermes)与 bot 可能不同机,
+# 即使同机,按调用方给的任意路径去读文件也是一条不该开的洞。
+_DELIVERABLE_PREFIXES = ("http://", "https://", "data:")
+
+
+def _partition_image_urls(urls: list[str]) -> tuple[list[str], list[str]]:
+    """拆成 (可投递, 需跳过)。"""
+    ok: list[str] = []
+    skipped: list[str] = []
+    for u in urls:
+        (ok if u.startswith(_DELIVERABLE_PREFIXES) else skipped).append(u)
+    return ok, skipped
 
 
 async def push_message_impl(
@@ -86,16 +105,39 @@ async def push_message_impl(
         logger.warning(f"[MCP push_message] bot offline self_id={entry.bot_self_id}: {exc}")
         return PushMessageResult(ok=False, error=f"bot offline: {entry.bot_self_id}")
 
+    # 无法投递的引用要在这里就摘掉并如实回报:直接交给 outbound 只会被静默跳过,
+    # 调用方拿到 ok=true 以为图发了,用户却什么也没看到 —— agent 通常会因此重发一遍,
+    # 于是群里出现两条一样的文本。
+    deliverable, skipped = _partition_image_urls(inp.image_urls)
+    warning: str | None = None
+    if skipped:
+        logger.warning(
+            f"[MCP push_message] {len(skipped)} 个 image_urls 无法投递(需要 http(s)/data:): {[u[:80] for u in skipped]}"
+        )
+        warning = (
+            f"{len(skipped)} image(s) were NOT delivered: only http(s):// and data: URLs can be sent. "
+            "A path on the Hermes host is not reachable from the bot. To send a locally generated "
+            "image, put a MEDIA:<absolute path> tag in your submit_decision reply_text instead — "
+            "the gateway inlines it for you. Do not retry this push with the same path."
+        )
+    if not inp.text and not deliverable:
+        return PushMessageResult(
+            ok=False,
+            error="nothing deliverable: text empty and all image_urls unsupported",
+            warning=warning,
+            skipped_images=skipped,
+        )
+
     success = await send_text_with_media(
         bot=bot,
         target=entry.target,
         text=inp.text,
-        media_urls=inp.image_urls,
+        media_urls=deliverable,
         at_user_id=None,  # 主动 push 不 @ 任何用户(对话不针对特定个体)
         adapter_name=inp.adapter,
     )
     if not success:
-        return PushMessageResult(ok=False, error="send failed (see nonebot log)")
+        return PushMessageResult(ok=False, error="send failed (see nonebot log)", skipped_images=skipped)
 
     # 滑动续期。注:用 send 前的 now_ms 而非 send 后的 wall clock,
     # 慢 send(图片上传等)情况下 TTL 续期会比 wall clock 略短(<10s 量级,
@@ -114,8 +156,8 @@ async def push_message_impl(
                 user_id=entry.bot_self_id,
                 nickname="Bot",
                 content=inp.text,
-                image_urls=list(inp.image_urls),
+                image_urls=list(deliverable),
                 is_bot=True,
             )
         )
-    return PushMessageResult(ok=True)
+    return PushMessageResult(ok=True, warning=warning, skipped_images=skipped)
