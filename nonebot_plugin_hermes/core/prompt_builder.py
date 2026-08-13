@@ -183,7 +183,22 @@ def _render_runtime_state(
 # 只有 bot 自己的长回复会接近这个数,留 800 字够「自我归因校验」定位到自己说过的话。
 _MAX_HISTORY_LINE_CHARS = 800
 _HISTORY_TRUNCATION_MARK = "…[历史过长已截断]"
-_DATA_URL_IN_HISTORY_RE = re.compile(r"data:[\w.+-]+/[\w.+-]+;base64,[A-Za-z0-9+/=\s]+")
+# 优先匹配 markdown 包壳的形态(api_server 内联就是这个形状),连 `![alt](...)` 一起换掉,
+# 免得留下 `![image]([图片])` 这种壳;闭合 `)` 可缺,截断的回复就没有它。
+# 第二条兜裸 data URL(例如 MEDIA:data:… 形态)。
+_MD_DATA_IMAGE_IN_HISTORY_RE = re.compile(r"!\[[^\]]*\]\(\s*data:[\w.+-]+/[\w.+-]+;base64,[A-Za-z0-9+/=\s]*\)?")
+_BARE_DATA_URL_IN_HISTORY_RE = re.compile(r"data:[\w.+-]+/[\w.+-]+;base64,[A-Za-z0-9+/=\s]+")
+_HISTORY_IMAGE_PLACEHOLDER = "[图片]"
+
+
+def _placeholder_keeping_trailing_space(m: re.Match) -> str:
+    """换成 [图片],但把匹配尾部的空白还回去。
+
+    base64 可能被折行,所以字符类里含 \\s;它会顺手吃掉 payload 后面的那个空格,
+    让 `[图片] 完` 变成 `[图片]完`。
+    """
+    matched = m.group(0)
+    return _HISTORY_IMAGE_PLACEHOLDER + matched[len(matched.rstrip()) :]
 
 
 def _sanitize_history_content(content: str) -> str:
@@ -192,7 +207,8 @@ def _sanitize_history_content(content: str) -> str:
     先摘掉 data URL(base64 字节对模型毫无信息量,只会挤掉真实上下文),再按
     字符数封顶。两步都是幂等的纯文本处理,不动 DB。
     """
-    cleaned = _DATA_URL_IN_HISTORY_RE.sub("[图片]", content)
+    cleaned = _MD_DATA_IMAGE_IN_HISTORY_RE.sub(_placeholder_keeping_trailing_space, content)
+    cleaned = _BARE_DATA_URL_IN_HISTORY_RE.sub(_placeholder_keeping_trailing_space, cleaned)
     if len(cleaned) > _MAX_HISTORY_LINE_CHARS:
         cleaned = cleaned[:_MAX_HISTORY_LINE_CHARS] + _HISTORY_TRUNCATION_MARK
     return cleaned

@@ -571,3 +571,18 @@ def test_history_line_under_cap_is_untouched():
         **_reactive_user_kwargs(recent_messages=[_msg_with_id(100, "bot", normal, 7, is_bot=True)])
     )
     assert f"[m:7] [bot] [user=bot]: {normal}" in content
+
+
+def test_history_sanitize_drops_markdown_shell_and_keeps_spacing():
+    """占位要连 `![alt](...)` 外壳一起换,别留 `![image]([图片])`;
+    payload 后面那个空格也要还回来(字符类含 \\s,base64 可能折行)。"""
+    b64 = "A" * 400
+    for raw, want in [
+        (f"画好啦! ![image](data:image/png;base64,{b64}) 喜欢吗?", "画好啦! [图片] 喜欢吗?"),
+        (f"截断的 ![image](data:image/png;base64,{b64}", "截断的 [图片]"),
+        (f"裸 MEDIA:data:image/png;base64,{b64} 完", "裸 MEDIA:[图片] 完"),
+    ]:
+        content = build_reactive_user_content(
+            **_reactive_user_kwargs(recent_messages=[_msg_with_id(100, "bot", raw, 7, is_bot=True)])
+        )
+        assert f"[m:7] [bot] [user=bot]: {want}" in content, f"{raw[:30]}… 渲染成了别的形状"
