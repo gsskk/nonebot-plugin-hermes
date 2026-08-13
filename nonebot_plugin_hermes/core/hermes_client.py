@@ -189,54 +189,137 @@ def _user_facing_error(reason: str) -> str:
     return f"⚠️ AI 服务异常: {snippet}"
 
 
+# 输出被截断时 markdown 图片可能停在 base64 中途,没有闭合 `)`。半截 base64
+# 解出来是坏图,平台要么拒收要么显示破图,还会把「上游截断了回复」伪装成「发图成功」,
+# 所以只留占位、不投递(投递前的合法性最终判定在 outbound._parse_image_data_url)。
+_TRUNCATED_MD_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\(data:image/[\w.+-]+;base64,[A-Za-z0-9+/=\s]*$")
+_TRUNCATED_IMAGE_PLACEHOLDER = "[图片传输不完整]"
+
+
+def _media_basename(ref: str) -> str:
+    """只留 basename,不泄完整主机路径。"""
+    return ref.rsplit("/", 1)[-1] or ref
+
+
 def extract_response_media(text: str) -> tuple[str, list[str]]:
     """从 Hermes 回复中提取 markdown 图片 / MEDIA: 标签 URL,返回 (清洗后文本, URL 列表)。
 
-    MEDIA: 标签按前缀分流:http(s)/data: 进媒体列表;其余是 Hermes 主机上的
-    本地文件路径(音频/视频/超限图片,api_server 不做内联改写),bot 侧无法抓取,
-    原位替换为 [生成了文件: 文件名] 占位——只留 basename,不泄完整路径。
+    两种标签同一套分流规则:http(s) 与 data:image/…;base64 进媒体列表;
+    其余是 Hermes 主机上的本地文件路径(音频/视频/超限图片/路径校验失败,
+    api_server 不做内联改写),bot 侧无法抓取,原位替换为 [生成了文件: 文件名]
+    占位——静默删掉会让用户只看到「画好啦」却没有图。
     """
     media_urls: list[str] = []
-    for m in _MD_IMAGE_PATTERN.finditer(text):
-        url = m.group(2)
+
+    def _collect(ref: str) -> str | None:
+        """进媒体列表返回 None;否则返回该原位替换成的占位文本。"""
         # data:image/…;base64 是 api_server 对本地生成图片(≤5MB)的内联形态,
         # 与 http(s) 同样要进 media 列表;解码与合法性校验在 outbound 侧做。
-        if url.startswith(("http://", "https://", "data:image/")):
-            media_urls.append(url)
+        if ref.startswith(("http://", "https://", "data:image/")):
+            media_urls.append(ref)
+            return None
+        if ref.startswith("data:"):
+            # 非图片 data URL(text/plain 等):既不是可投递媒体也不是文件,直接去掉,
+            # 不能按路径切 basename——那会把 payload 本身当文件名贴到群里。
+            return ""
+        return f"[生成了文件: {_media_basename(ref)}]"
+
+    def _md_image_repl(m: re.Match) -> str:
+        return _collect(m.group(2)) or ""
 
     def _media_tag_repl(m: re.Match) -> str:
-        token = m.group(1)
-        if token.startswith(("http://", "https://", "data:")):
-            media_urls.append(token)
-            return ""
-        return f"[生成了文件: {token.rsplit('/', 1)[-1]}]"
+        return _collect(m.group(1)) or ""
 
-    cleaned = _MD_IMAGE_PATTERN.sub("", text)
+    cleaned = _MD_IMAGE_PATTERN.sub(_md_image_repl, text)
     cleaned = _MEDIA_TAG_PATTERN.sub(_media_tag_repl, cleaned)
+    cleaned = _TRUNCATED_MD_IMAGE_PATTERN.sub(_TRUNCATED_IMAGE_PLACEHOLDER, cleaned)
+
     return cleaned.strip(), media_urls
 
 
-def _try_parse_first_json_block(text: str) -> dict[str, Any] | None:
-    """从模型回复中提取首个 {...} 块并 JSON5 解析。失败返回 None,调用方记 parse_failed。
+_SALVAGE_SHOULD_REPLY_RE = re.compile(r'"should_reply"\s*:\s*(true|false)', re.IGNORECASE)
+_SALVAGE_REPLY_TEXT_RE = re.compile(r'"reply_text"\s*:\s*"((?:[^"\\]|\\.)*)', re.DOTALL)
 
-    两段式回退:json5 首发失败 → 走 _escape_raw_newlines_in_strings 把字符串内
-    的裸控制字符转义后重试。两次都失败才返回 None。
+
+def _salvage_truncated_reply_text(text: str) -> dict[str, Any] | None:
+    """当 JSON 块语法破坏 (如输出被截断、未闭合双引号或花括号) 时,
+    尝试通过正则从 raw_text 抠出 should_reply / reply_text 两个字段。
+
+    should_reply 必须照抄原文里的布尔值:硬编码 True 会把模型「这条不归我」的
+    决定翻成插话,抢答别人的对话比丢一条回复更糟。读不出布尔值时才默认 True
+    (reply_text 存在说明模型本来打算说话)。
+    """
+    if not text or '"should_reply"' not in text:
+        return None
+    # 仅在包含媒体标记 (data:image/, ![, MEDIA:) 或长响应 (截断场景) 时救补
+    salvageable = "data:image/" in text or "![" in text or "MEDIA:" in text or len(text) > 500
+    if not salvageable:
+        return None
+    m = _SALVAGE_REPLY_TEXT_RE.search(text)
+    if m is None:
+        return None
+    raw_val = m.group(1)
+    escaped_val = raw_val.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    try:
+        val = json.loads(f'"{escaped_val}"')
+    except Exception:
+        val = raw_val
+    m_flag = _SALVAGE_SHOULD_REPLY_RE.search(text)
+    should_reply = True if m_flag is None else m_flag.group(1).lower() == "true"
+    return {"should_reply": should_reply, "reply_text": val, "_salvaged": True}
+
+
+# json5 是纯 Python 解析器,MB 级 payload 要几十秒 CPU,而解析跑在 event loop 里 ——
+# 一次内联大图就能把整个 bot 冻住。超过这个尺寸只用 stdlib json(C 实现,同 payload
+# 毫秒级)与正则救补,不再交给 json5 兜。
+_JSON5_MAX_CHARS = 262_144
+
+
+def _load_json_candidate(candidate: str) -> Any:
+    """按 stdlib json → 转义裸控制字符 → json5(仅小 payload)顺序解析,全失败返回 None。
+
+    stdlib json 优先不只是快:结构化输出在正常路径下就是合法 JSON,json5 只用来
+    兜模型的语法脏(单引号 / 尾随逗号 / 裸 key)。
+    """
+    try:
+        return json.loads(candidate)
+    except Exception:
+        pass
+    # LLM 常在 reply_text 里嵌真换行(JSON 不允),转义后 stdlib json 仍能吃下
+    escaped = _escape_raw_newlines_in_strings(candidate)
+    try:
+        return json.loads(escaped)
+    except Exception:
+        pass
+    if len(candidate) > _JSON5_MAX_CHARS:
+        logger.warning(
+            f"[HERMES] 结构化回复过大({len(candidate)} 字符)且非合法 JSON,跳过 json5 回退以免阻塞 event loop,转正则救补"
+        )
+        return None
+    try:
+        return json5.loads(candidate)
+    except Exception:
+        pass
+    try:
+        return json5.loads(escaped)
+    except Exception:
+        return None
+
+
+def _try_parse_first_json_block(text: str) -> dict[str, Any] | None:
+    """从模型回复中提取首个 {...} 块并解析。失败返回 None,调用方记 parse_failed。
+
+    两段式回退:_load_json_candidate(json → json5)拿不到 dict →
+    走 _salvage_truncated_reply_text 正则抠取。
     """
     if not text:
         return None
     candidate = _find_first_balanced_json_object(text)
-    if candidate is None:
-        return None
-    try:
-        parsed = json5.loads(candidate)
-    except Exception:
-        try:
-            parsed = json5.loads(_escape_raw_newlines_in_strings(candidate))
-        except Exception:
-            return None
-    if not isinstance(parsed, dict):
-        return None
-    return parsed
+    if candidate is not None:
+        parsed = _load_json_candidate(candidate)
+        if isinstance(parsed, dict):
+            return parsed
+    return _salvage_truncated_reply_text(text)
 
 
 def maybe_extract_decision_reply_text(text: str) -> str | None:
@@ -268,6 +351,16 @@ _PERSISTENCE_ERROR_PATTERNS = (
     "session_persistence_failed",
 )
 
+# 上游把 cause 只写在散文里(结构化的 failure_reason 没有透到 /v1/chat/completions
+# 的响应体),所以按各 cause 的特征词分类。三类的可恢复性完全不同:
+#   locked  — 别的 Hermes 进程正在写 state.db,上游明说「消息已存下,过一会再发一次」
+#   disk    — 磁盘满 / state.db 权限,重发也写不进去
+#   unknown — 需要人去跑 hermes doctor
+PersistenceCause = Literal["locked", "disk", "unknown"]
+
+_PERSISTENCE_LOCKED_PATTERNS = ("session storage was busy", "another hermes process was writing")
+_PERSISTENCE_DISK_PATTERNS = ("free some space", "full disk", "disk full")
+
 
 def is_persistence_error_text(text: str) -> bool:
     """检测回复内容是否为 Hermes 上游 SQLite session 持久化失败引发的中断报错文本。"""
@@ -275,6 +368,16 @@ def is_persistence_error_text(text: str) -> bool:
         return False
     lower = text.lower()
     return any(pattern in lower for pattern in _PERSISTENCE_ERROR_PATTERNS)
+
+
+def classify_persistence_error(text: str) -> PersistenceCause:
+    """把持久化中断文本分到 locked / disk / unknown。只在 is_persistence_error_text 为真时有意义。"""
+    lower = (text or "").lower()
+    if any(pattern in lower for pattern in _PERSISTENCE_LOCKED_PATTERNS):
+        return "locked"
+    if any(pattern in lower for pattern in _PERSISTENCE_DISK_PATTERNS):
+        return "disk"
+    return "unknown"
 
 
 @dataclass
@@ -295,9 +398,17 @@ class ChatResult:
 
     is_persistence_error: bool = False
     """上游 Hermes session DB 持久化失败(session_persistence_failed)。
-    
-    Hermes Gateway 在持久化失败时仍返回 HTTP 200，但 content 为中断解释文本。
-    置 True 后 handler 可识别并自动重置 session_key 即时重试或静默屏蔽。
+
+    Hermes Gateway 在持久化失败时仍返回 HTTP 200,但 content 是中断解释文本。
+    置 True 让 handler 能识别并按 persistence_cause 决定重试还是静默屏蔽,
+    而不是把上游报错原文丢进群里。
+    """
+
+    persistence_cause: PersistenceCause | None = None
+    """持久化失败的类别,仅 is_persistence_error=True 时有值。
+
+    只有 locked(别的进程正在写库)是瞬时可恢复的 —— 上游对这一类明确要求
+    「过一会再发一次」;disk / unknown 重发也写不进去,重试只是浪费一次 agent turn。
     """
 
 
@@ -444,15 +555,18 @@ class HermesClient:
 
         # 检查是否为上游持久化失败错误(Hermes 返回 200 但 content 为 Session DB 错误提示)
         if is_persistence_error_text(raw_text):
+            cause = classify_persistence_error(raw_text)
             preview = raw_text.replace("\n", "\\n").replace("\r", "\\r")[:200]
             logger.warning(
-                f"[HERMES] 捕获到上游 Session 持久化失败中断提示 (raw_len={len(raw_text)} preview={preview!r})"
+                f"[HERMES] 捕获到上游 Session 持久化失败中断提示 "
+                f"(cause={cause} raw_len={len(raw_text)} preview={preview!r})"
             )
             return ChatResult(
                 raw_text=raw_text,
                 parse_failed=True,
                 is_transport_error=True,
                 is_persistence_error=True,
+                persistence_cause=cause,
             )
 
         # 路径 B:从 raw_text 提取首个 {...} JSON5 块

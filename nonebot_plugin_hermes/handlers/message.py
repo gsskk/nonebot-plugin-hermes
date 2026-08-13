@@ -20,7 +20,12 @@ from nonebot.rule import Rule
 
 from .. import mcp as _mcp  # lazy access to runtime singletons
 from ..config import plugin_config
-from ..core.hermes_client import hermes_client, maybe_extract_decision_reply_text
+from ..core.hermes_client import (
+    ChatResult,
+    extract_response_media,
+    hermes_client,
+    maybe_extract_decision_reply_text,
+)
 from ..core.message_buffer import BufferedMessage
 from ..core.outbound import send_text_with_media
 from ..core.prompt_builder import (
@@ -947,6 +952,44 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
         )
 
 
+# 上游 locked 类持久化失败 = 别的 Hermes 进程正在写 state.db,上游要求「过一会再发一次」。
+# 等一拍再重试,让持有写锁的一方先落库;不做指数退避,单次补偿够覆盖锁窗口,
+# 拖长只会把群里的回复延迟摊得更明显。
+_PERSISTENCE_RETRY_DELAY_S = 1.0
+
+
+async def _chat_with_persistence_retry(label: str, /, **chat_kwargs) -> ChatResult:
+    """调 chat();命中瞬时(locked)持久化失败时用**同一个** session_key 重试一次。
+
+    label 走 positional-only,余下 kwargs 原样转给 hermes_client.chat,
+    调用点因此和直接调 chat() 读起来一样。
+
+    不换 session_key:上游三类 cause(locked / disk / unknown)都指向同一个 state.db,
+    换 key 只是新开一个会话写同一个库,治不了锁也治不了满盘,代价是整个群的
+    Hermes 侧上下文当场清零。disk / unknown 直接不重试 —— 重发也写不进去,而持久化
+    失败是在 turn 收尾阶段判定的(工具此时已经跑过),白重试一次等于让副作用再来一遍。
+    """
+    result = await hermes_client.chat(**chat_kwargs)
+    if not result.is_persistence_error:
+        return result
+
+    if result.persistence_cause != "locked":
+        # disk / unknown 要人介入(清盘、修 state.db 权限、hermes doctor),
+        # 拉到 error 级别让运维扫日志能看见;回复本身走 transport_error 兜底屏蔽。
+        logger.error(
+            f"[HERMES {label}] 上游 Session 持久化失败且不可自动恢复 "
+            f"(cause={result.persistence_cause}),不重试;请检查 Hermes 侧磁盘 / state.db"
+        )
+        return result
+
+    logger.warning(f"[HERMES {label}] 上游 state.db 写锁冲突,{_PERSISTENCE_RETRY_DELAY_S}s 后按原 session 重试一次")
+    await asyncio.sleep(_PERSISTENCE_RETRY_DELAY_S)
+    retried = await hermes_client.chat(**chat_kwargs)
+    if retried.is_persistence_error:
+        logger.error(f"[HERMES {label}] 重试后仍持久化失败 (cause={retried.persistence_cause}),放弃本轮")
+    return retried
+
+
 async def _run_passive_turn(
     *,
     bot: Bot,
@@ -995,7 +1038,8 @@ async def _run_passive_turn(
         current_image_urls=image_urls,
     )
 
-    result = await hermes_client.chat(
+    result = await _chat_with_persistence_retry(
+        "passive",
         text="",
         image_urls=[],
         session_key=session_key,
@@ -1008,37 +1052,6 @@ async def _run_passive_turn(
         system_prompt=system_prompt,
         user_content_override=user_content,
     )
-
-    if result.is_persistence_error:
-        logger.warning(
-            f"[HERMES passive] 捕获 Session 持久化异常，立即重置 Session 并重试: "
-            f"adapter={adapter_name} group={group_id} user={user_id}"
-        )
-        session_manager.clear_session(
-            adapter_name=adapter_name,
-            is_private=is_private,
-            user_id=user_id,
-            group_id=group_id,
-        )
-        new_session_key = session_manager.get_session_key(
-            adapter_name=adapter_name,
-            is_private=is_private,
-            user_id=user_id,
-            group_id=group_id,
-        )
-        result = await hermes_client.chat(
-            text="",
-            image_urls=[],
-            session_key=new_session_key,
-            user_id=user_id,
-            group_id=group_id,
-            adapter_name=adapter_name,
-            is_private=is_private,
-            mode="passive",
-            expect_structured=False,
-            system_prompt=system_prompt,
-            user_content_override=user_content,
-        )
 
     # 上游 transport_error 同款保护(见 _run_reactive_turn 同名分支注释)。
     # passive 路径下私聊总是显式对话,群聊已通过触发判断进得来,两边都该有可见反馈;
@@ -1073,13 +1086,16 @@ async def _run_passive_turn(
         logger.warning(f"[HERMES passive] 检测到 submit_decision 形 JSON 残留,抠 reply_text 后发送(group={group_id})")
         reply_text = extracted
 
-    if not reply_text and not result.media_urls:
+    cleaned_text, extracted_media_urls = extract_response_media(reply_text)
+    media_urls = list(result.media_urls) + [u for u in extracted_media_urls if u not in result.media_urls]
+
+    if not cleaned_text and not media_urls:
         return result
     await send_text_with_media(
         bot=bot,
         target=target,
-        text=reply_text,
-        media_urls=result.media_urls,
+        text=cleaned_text,
+        media_urls=media_urls,
         at_user_id=None if is_private else user_id,
         adapter_name=adapter_name,
     )
@@ -1137,6 +1153,23 @@ async def _run_reactive_turn(
         current_image_urls=image_urls,
     )
 
+    # 出站 prompt 体量:模型在 explicit @ 下静默时,第一件要排除的就是「上下文被
+    # 某条历史撑爆」。只记尺寸不记内容(历史可能几十万字符,也含用户隐私)。
+    # oversized_history 记的是 sanitize **之前** 的原始长度 —— 渲染端已经会截断,
+    # 但一条超长旧行说明 DB 里躺着脏数据,值得单独告警。
+    prompt_chars = len(user_content) if isinstance(user_content, str) else sum(len(str(p)) for p in user_content)
+    oversized = [(m.id, len(m.content)) for m in recent if len(m.content) > 2000]
+    logger.debug(
+        f"[HERMES reactive] prompt built group={group_id} user_content_chars={prompt_chars} "
+        f"recent={len(recent)} explicit={is_explicit_trigger} "
+        f"imgs={len(image_urls)}"
+    )
+    if oversized:
+        logger.warning(
+            f"[HERMES reactive] <recent_messages> 含超长历史行(已按渲染上限截断,但 DB 里是脏数据): "
+            f"group={group_id} rows={oversized}"
+        )
+
     session_key = session_manager.get_session_key(
         adapter_name=adapter_name,
         is_private=False,
@@ -1146,7 +1179,8 @@ async def _run_reactive_turn(
     # 注:user_content_override 已携带 user message 的全部内容(text + 多模态);
     # text/image_urls 在 chat() 中会被忽略(见 hermes_client.chat 文档),此处显式传 ""
     # /[] 让契约清晰,避免被读者误以为 image_urls 也参与了构造。
-    result = await hermes_client.chat(
+    result = await _chat_with_persistence_retry(
+        "reactive",
         text="",
         image_urls=[],
         session_key=session_key,
@@ -1160,38 +1194,6 @@ async def _run_reactive_turn(
         system_prompt=system_prompt,
         user_content_override=user_content,
     )
-
-    if result.is_persistence_error:
-        logger.warning(
-            f"[HERMES reactive] 捕获 Session 持久化异常，立即重置 Session 并重试: "
-            f"adapter={adapter_name} group={group_id} user={user_id}"
-        )
-        session_manager.clear_session(
-            adapter_name=adapter_name,
-            is_private=False,
-            user_id=user_id,
-            group_id=group_id,
-        )
-        new_session_key = session_manager.get_session_key(
-            adapter_name=adapter_name,
-            is_private=False,
-            user_id=user_id,
-            group_id=group_id,
-        )
-        result = await hermes_client.chat(
-            text="",
-            image_urls=[],
-            session_key=new_session_key,
-            user_id=user_id,
-            group_id=group_id,
-            adapter_name=adapter_name,
-            is_private=False,
-            mode="reactive",
-            expect_structured=True,
-            structured_tool_name="submit_decision",
-            system_prompt=system_prompt,
-            user_content_override=user_content,
-        )
 
     if result.parse_failed or result.structured is None:
         # 上游 transport_error(5xx / 网络断 / 流被掐):raw_text 是服务端错误信息原文
@@ -1228,11 +1230,17 @@ async def _run_reactive_turn(
         )
         # 静默兜底:显式触发时降级发 raw_text;非显式触发(被动)时静默
         if is_explicit_trigger and result.raw_text:
+            fallback_text = result.raw_text
+            extracted = maybe_extract_decision_reply_text(fallback_text)
+            if extracted is not None:
+                fallback_text = extracted
+            cleaned_text, extracted_media_urls = extract_response_media(fallback_text)
+            media_urls = list(result.media_urls) + [u for u in extracted_media_urls if u not in result.media_urls]
             await send_text_with_media(
                 bot=bot,
                 target=target,
-                text=result.raw_text,
-                media_urls=result.media_urls,
+                text=cleaned_text,
+                media_urls=media_urls,
                 at_user_id=user_id,
                 adapter_name=adapter_name,
             )
@@ -1243,8 +1251,15 @@ async def _run_reactive_turn(
         f"explicit={is_explicit_trigger} should_reply={result.structured.get('should_reply')} "
         f"should_exit_active={result.structured.get('should_exit_active')} "
         f"reply_text_len={len(str(result.structured.get('reply_text') or ''))} "
-        f"topic_hint={result.structured.get('topic_hint')!r}"
+        f"topic_hint={result.structured.get('topic_hint')!r} "
+        f"salvaged={result.structured.get('_salvaged', False)}"
     )
+    # 解析成功时也留一份 raw 预览:decision 摘要看不出模型到底吐了什么形状
+    # (是完整 submit_decision,还是只有 {"should_reply": false} 这种退化输出),
+    # 而「该回却静默」的排查恰恰全靠这个区分。DEBUG 级,正常运行不刷日志。
+    # 先切片再转义:raw_text 内联大图时是 MB 级,反过来做会白拷一遍整串。
+    raw_preview = (result.raw_text or "")[:300].replace("\n", "\\n").replace("\r", "\\r")
+    logger.debug(f"[HERMES reactive] decision raw (len={len(result.raw_text or '')}): {raw_preview!r}")
 
     decision = result.structured
     if decision.get("topic_hint"):
@@ -1263,7 +1278,8 @@ async def _run_reactive_turn(
         return result
 
     reply_text = str(decision.get("reply_text") or "").strip()
-    if not reply_text:
+    cleaned_reply_text, media_urls = extract_response_media(reply_text)
+    if not cleaned_reply_text and not media_urls:
         return result
 
     # B.3: 同 turn 内防重复闸门 — 若 chat() agent loop 期间 last_bot_reply_at
@@ -1285,14 +1301,14 @@ async def _run_reactive_turn(
     sent = await send_text_with_media(
         bot=bot,
         target=target,
-        text=reply_text,
-        media_urls=[],
+        text=cleaned_reply_text,
+        media_urls=media_urls,
         at_user_id=at_user,
         adapter_name=adapter_name,
     )
     logger.debug(
         f"[HERMES reactive] sent adapter={adapter_name} group={group_id} "
-        f"ok={sent} text_len={len(reply_text)} at_user={at_user}"
+        f"ok={sent} text_len={len(cleaned_reply_text)} media={len(media_urls)} at_user={at_user}"
     )
 
     # 用 send 完成时的 wall clock,不复用入参 now_ms。
@@ -1304,6 +1320,13 @@ async def _run_reactive_turn(
     # 入参,又避免多次读时钟在三个字段间引入毫秒级偏差。
     if sent and _mcp.message_buffer is not None:
         reply_now_ms = _now_ms()
+        # 回写清洗后的文本 + [图片] 占位,绝不写 reply_text 原文:媒体在回复里是内联
+        # data:image;base64 形态,单张图就是几十万字符,原文入库后会被逐 turn 渲染进
+        # <recent_messages>,几轮把上下文顶满,模型开始引用错历史。入站侧本来就只存
+        # [图片] 占位(见 handle_perception),出站对齐同一约定。
+        buffered_content = cleaned_reply_text
+        if media_urls:
+            buffered_content = f"{buffered_content} [图片]".strip()
         _mcp.message_buffer.append(
             BufferedMessage(
                 ts=reply_now_ms,
@@ -1311,7 +1334,7 @@ async def _run_reactive_turn(
                 group_id=group_id,
                 user_id=str(bot.self_id),
                 nickname="Bot",
-                content=reply_text,
+                content=buffered_content,
                 image_urls=[],
                 is_bot=True,
             )
