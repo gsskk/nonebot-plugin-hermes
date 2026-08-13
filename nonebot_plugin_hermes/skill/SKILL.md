@@ -116,6 +116,29 @@ When the user asks you to do something (look up data, search, fetch info):
   phrases dangle a promise you cannot keep, and the user gets nothing.
 - Act first, talk after. If you can't, say so directly and stop.
 
+## Sending images (outbound media)
+
+To put an image in the chat, write a `MEDIA:<absolute path>` tag **inside** the field the
+plugin actually delivers:
+
+- reactive mode → inside `reply_text` of your `submit_decision` object.
+- `push_message` → inside `text`, or pass an http(s) URL in `image_urls`.
+
+The gateway replaces the tag with the image itself before the plugin sees the reply, and the
+plugin re-attaches it as a real image segment. Constraints:
+
+- **Absolute path only** (`MEDIA:/home/user/out.png`), extension one of
+  `.png .jpg .jpeg .gif .webp .bmp`, file **≤ 5 MB**.
+- Anything else — non-image files, oversized images, a path that fails the gateway's
+  safety check — is not delivered. The user sees a `[生成了文件: <name>]` placeholder
+  instead, so **say in your reply text that the file couldn't be sent** rather than
+  acting as though it went through.
+- **Never hand-write a `data:` / base64 URL yourself**, and never put the `MEDIA:` tag
+  outside the JSON envelope — content outside the envelope is dropped, not sent.
+- If a reply is cut off mid-image the user gets a `[图片传输不完整]` placeholder. Keep
+  `reply_text` short when it carries an image; the image itself costs you no output tokens,
+  but a long reply around it raises the odds of truncation.
+
 ## Historical media recall
 
 When the user refers to a past image (e.g. "上图", "这图", "刚才那张", "他刚发的"),

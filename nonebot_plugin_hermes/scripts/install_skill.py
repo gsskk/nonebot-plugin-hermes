@@ -1,9 +1,14 @@
 """把 SKILL.md 复制到 ~/.hermes/skills/nonebot-bridge/。
 
-使用:
-    uv run hermes-install-skill
+使用(覆盖已装版本要带 --force,否则报 target exists 并退出):
+    uv run hermes-install-skill --force
     或
-    uv run python -m nonebot_plugin_hermes.scripts.install_skill
+    uv run python -m hermes_install_skill --force
+
+注:控制台入口点(见 pyproject [project.scripts])指向根模块 hermes_install_skill,
+本模块只是同一逻辑的包内副本。**不要**用
+`python -m nonebot_plugin_hermes.scripts.install_skill` —— `-m` 会连带导入
+nonebot_plugin_hermes/__init__.py,在没有 NoneBot 进程的场景下 require() 直接抛错。
 """
 
 from __future__ import annotations
