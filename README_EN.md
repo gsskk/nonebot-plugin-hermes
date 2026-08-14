@@ -346,10 +346,15 @@ python3 hermes_repair_sessions.py            # exactly equivalent to hermes-repa
 message database, reaching megabytes for a single row. The current version blocks this on both
 the write and the render side; this command only clears out the bytes already stored.
 
+Run it on the **bot host**, where the plugin is installed:
+
 ```bash
-hermes-purge-media                    # report only: hits per group, largest row, reclaimable bytes
-hermes-purge-media --apply --vacuum   # purge and shrink the file
+uv run hermes-purge-media                    # report only: hits per group, largest row, reclaimable bytes
+uv run hermes-purge-media --apply --vacuum   # purge and shrink the file
 ```
+
+With a plain venv use `.venv/bin/hermes-purge-media`; with the venv already activated the bare
+`hermes-purge-media` works. The bare form is only on PATH once the virtualenv is active.
 
 Messages are never deleted — the image payload is replaced with a `[图片]` placeholder. Idempotent,
 safe to re-run. `--vacuum` needs an exclusive lock; stop the bot first if it can't acquire one.
@@ -368,15 +373,22 @@ Once more than one live child exists the upstream lineage check fails closed and
 longer be written to — the transcript freezes and the context grows without bound (compression can
 never complete).
 
-Run it on the **Hermes host** (if the plugin is not installed there, use the `git clone` route above
-and call `python3 hermes_repair_sessions.py`):
+Run it on the **Hermes host**. That machine usually has no plugin install, so the single-file form is
+what the steps below use:
 
 ```bash
 systemctl stop hermes-gateway     # the repair needs the write lock, and a running agent may hold stale session state
-hermes-repair-sessions            # report only: which sessions are stuck, which rows would change
-hermes-repair-sessions --apply    # back up the database, then reopen parents + retire snapshots
+
+git clone https://github.com/gsskk/nonebot-plugin-hermes.git
+cd nonebot-plugin-hermes
+python3 hermes_repair_sessions.py            # report only: which sessions are stuck, which rows would change
+python3 hermes_repair_sessions.py --apply    # back up the database, then reopen parents + retire snapshots
+
 systemctl start hermes-gateway
 ```
+
+If Hermes shares a host with the bot and the plugin is installed there, those two lines become
+`uv run hermes-repair-sessions [--apply]`.
 
 No message row is ever deleted. **Upgrade the plugin to 0.4.5+ and restart it first**, then stop the
 gateway and run the repair — otherwise the next compression closes the parent again and it re-sticks

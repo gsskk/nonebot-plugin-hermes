@@ -338,10 +338,15 @@ python3 hermes_repair_sessions.py            # 与 hermes-repair-sessions 完全
 `data:image/…;base64,…` 整段存进消息库,单条可达 MB 级。当前版本写入端与渲染端都已挡住,
 这个命令只把存量字节清出去。
 
+在 **bot 那台**(插件装在那儿)执行:
+
 ```bash
-hermes-purge-media                    # 只报告:每群命中数、最大行、可回收字节
-hermes-purge-media --apply --vacuum   # 清理并收缩文件
+uv run hermes-purge-media                    # 只报告:每群命中数、最大行、可回收字节
+uv run hermes-purge-media --apply --vacuum   # 清理并收缩文件
 ```
+
+bot 项目用普通 venv 就换成 `.venv/bin/hermes-purge-media`;已激活虚拟环境时可直接敲
+`hermes-purge-media`。裸命令只在虚拟环境已激活时才在 PATH 上。
 
 不删消息,只把图片 payload 换成 `[图片]` 占位;幂等,可反复运行。`--vacuum` 需要排它锁,
 拿不到时停掉 bot 再跑。
@@ -357,14 +362,20 @@ compression skipped: … no unique live child could be adopted
 已关闭的父会话再分叉一个快照子会话;live 子会话超过一个后上游判定歧义并 fail-closed,该会话
 从此写不进去 —— 对话记录冻结,上下文还会无限膨胀(压缩永远跑不完)。
 
-在 **Hermes 那台**执行(没装插件就按上面的 git clone 方式跑 `python3 hermes_repair_sessions.py`):
+在 **Hermes 那台**执行。那台一般没装插件,所以下面直接用单文件形式:
 
 ```bash
 systemctl stop hermes-gateway     # 修复期间要拿写锁,跑着的 agent 也可能持有旧会话状态
-hermes-repair-sessions            # 只报告:哪些会话卡住、会动哪些行
-hermes-repair-sessions --apply    # 整库备份后:重开父会话 + 退休快照子会话
+
+git clone https://github.com/gsskk/nonebot-plugin-hermes.git
+cd nonebot-plugin-hermes
+python3 hermes_repair_sessions.py            # 只报告:哪些会话卡住、会动哪些行
+python3 hermes_repair_sessions.py --apply    # 整库备份后:重开父会话 + 退休快照子会话
+
 systemctl start hermes-gateway
 ```
+
+与 bot 同机、插件已装时,把这两行换成 `uv run hermes-repair-sessions [--apply]` 即可。
 
 不删任何消息行。**先把插件升级到 0.4.5+ 并重启**,再停掉 gateway 跑修复 —— 否则下一次压缩
 会把父会话再次关闭,几轮之内又卡回去。某个子会话若是被真正续写过的 continuation
