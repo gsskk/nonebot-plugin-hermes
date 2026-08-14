@@ -198,6 +198,23 @@ platform_toolsets:
 
 后端 Prompt 可以通过这些信息实现个性化称呼或针对特定平台的功能逻辑。
 
+### 🔄 会话轮换（0.4.5+）
+
+插件用 `X-Hermes-Session-Id` 请求头维持会话连续性,key 由 `{adapter}+{private|group}+{ids}`
+派生(`/clear` 递增 `-gN`)。但这个 id 不是永久不变的:Hermes 自动压缩上下文时会**轮换会话**
+—— 旧 id 被置为 `end_reason='compression'` 并关闭,新建一个 continuation 子会话,新 id 通过
+**响应头** `X-Hermes-Session-Id` 回传。
+
+插件从 0.4.5 起采纳这个回传值,并把 `internal_id → session key` 映射持久化到消息库同目录的
+`session_keys.db`(`/clear` 的 generation 也一并持久化,重启不再复活被清掉的会话)。
+
+0.1.0 ~ 0.4.4 不读这个响应头,后果是每轮都把会话钉回已关闭的父会话:读还能跟随 tip,写全部
+失败,而且每压缩一次就再分叉一个兄弟快照。live 子会话超过一个后,Hermes 的
+`find_live_compression_child()` 判定歧义并 fail-closed,该会话从此永久写不进去。旧版本的
+Hermes 容忍往已关闭会话追加,所以这个问题长期无声;上游 2026-07-23 的
+`fix(compression): recover rotated session lineage` 之后变成硬失败,日志会刷
+`Session '…' is closed by compression`。存量损坏用 `hermes-repair-sessions` 修。
+
 ## 群活跃态 + 反向通道（M1，实验性）
 
 启用后，bot 在被 @ 之后会进入 5 分钟"活跃窗口"——期间能听到所有群消息（无需再 @），由 Hermes Agent 通过结构化决策（`should_reply` / `should_exit_active`）自行判断是否插话。同时插件起一个本地 MCP server，让 Hermes 可以主动 push 消息进群（延迟回复、异步通知等）。

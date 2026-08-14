@@ -6,17 +6,44 @@
 
 from __future__ import annotations
 
+import time
+
 from nonebot import logger
 
 from ..config import plugin_config
+from .storage.session_key_store import SessionKeyStore
 
 
 class SessionManager:
-    """管理 Hermes session key 的生成和过期"""
+    """管理 Hermes session key 的生成、采纳与过期"""
 
     def __init__(self) -> None:
         self._cache: dict[str, str] = {}
         self._generation: dict[str, int] = {}
+        self._store: SessionKeyStore | None = None
+
+    def bind_store(self, store: SessionKeyStore) -> None:
+        """绑定持久化存储并载入已有映射(启动时调一次)。
+
+        未绑定时整个管理器退化成纯内存,行为不变——但那样重启会退回派生 key,
+        既复活被 /clear 掉的会话,也会把已被上游压缩关闭的父会话重新钉上。
+        """
+        self._store = store
+        for internal_id, (session_key, generation) in store.load_all().items():
+            self._cache[internal_id] = session_key
+            self._generation[internal_id] = generation
+        if self._cache:
+            logger.debug(f"[SESSION] 载入 {len(self._cache)} 条持久化 session key 映射")
+
+    def _persist(self, internal_id: str) -> None:
+        if self._store is None:
+            return
+        self._store.put(
+            internal_id,
+            self._cache[internal_id],
+            self._generation.get(internal_id, 0),
+            now=time.time(),
+        )
 
     def _get_internal_id(
         self,
@@ -56,8 +83,31 @@ class SessionManager:
             session_key = f"{session_key}-g{gen}"
 
         self._cache[internal_id] = session_key
+        self._persist(internal_id)
         logger.debug(f"[SESSION] 新建会话: {internal_id} -> {session_key}")
         return session_key
+
+    def adopt_session_key(self, previous_key: str, new_key: str) -> bool:
+        """采纳上游轮换后的 session key,返回是否命中一条映射。
+
+        上游自动压缩上下文时会关闭旧 session 并新建 continuation,新 id 走响应头
+        X-Hermes-Session-Id 回传。不采纳就等于每轮都往一个 end_reason='compression'
+        的会话里写,上游一律拒收,而且每压缩一次就再分叉一个兄弟会话。
+
+        previous_key 认不出来时(典型是采纳与 /clear 撞车,映射已被换掉)不做任何事:
+        凭 key 反推 internal_id 会把刚清空的会话又接回旧血缘。
+        """
+        if not new_key or new_key == previous_key:
+            return False
+        for internal_id, current in self._cache.items():
+            if current != previous_key:
+                continue
+            self._cache[internal_id] = new_key
+            self._persist(internal_id)
+            logger.info(f"[SESSION] 采纳上游轮换: {internal_id} -> {new_key}")
+            return True
+        logger.debug(f"[SESSION] 上游轮换的 {previous_key} 已不在映射中,忽略")
+        return False
 
     def clear_session(
         self,
@@ -72,6 +122,9 @@ class SessionManager:
         self._cache.pop(internal_id, None)
         gen = self._generation.get(internal_id, 0) + 1
         self._generation[internal_id] = gen
+        # 立刻把新 key 落库:generation 只活在内存的话,重启后 /clear 会失效,
+        # 被清掉的会话原地复活。
+        self.get_session_key(adapter_name, is_private, user_id, group_id)
         logger.info(f"[SESSION] 会话已重置: {internal_id} (generation={gen})")
 
 

@@ -57,10 +57,13 @@ def _no_retry_delay(monkeypatch: MonkeyPatch):
 
 
 class _MockResponse:
-    def __init__(self, status_code: int, body: dict[str, Any]):
+    def __init__(self, status_code: int, body: dict[str, Any], headers: dict[str, str] | None = None):
         self.status_code = status_code
         self._body = body
         self.text = json.dumps(body)
+        # 真实 httpx.Response 一定带 headers;客户端要从 X-Hermes-Session-Id 读
+        # 上游本轮实际使用的 session id(compression 轮换后会变)。
+        self.headers = headers or {}
 
     def json(self) -> dict[str, Any]:
         return self._body

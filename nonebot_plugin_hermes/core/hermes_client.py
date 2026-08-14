@@ -434,6 +434,14 @@ _PERSISTENCE_LOCKED_PATTERNS = ("session storage was busy", "another hermes proc
 _PERSISTENCE_DISK_PATTERNS = ("free some space", "full disk", "disk full")
 
 
+def rotated_session_key(header_value: str | None, sent_key: str) -> str | None:
+    """响应头里的有效 session id;缺失或与请求发出的 key 相同时返回 None(未轮换)。"""
+    value = (header_value or "").strip()
+    if not value or value == sent_key:
+        return None
+    return value
+
+
 def is_persistence_error_text(text: str) -> bool:
     """检测回复内容是否为 Hermes 上游 SQLite session 持久化失败引发的中断报错文本。"""
     if not text:
@@ -474,6 +482,15 @@ class ChatResult:
     Hermes Gateway 在持久化失败时仍返回 HTTP 200,但 content 是中断解释文本。
     置 True 让 handler 能识别并按 persistence_cause 决定重试还是静默屏蔽,
     而不是把上游报错原文丢进群里。
+    """
+
+    effective_session_key: str | None = None
+    """上游本轮实际使用的 session id,**仅在与请求发出的 key 不同时**有值。
+
+    Hermes 自动压缩上下文时会轮换会话:旧 id 被 end_reason='compression' 关闭,
+    新建 continuation 子会话,新 id 走响应头 X-Hermes-Session-Id 回传。不采纳的话
+    下一轮又钉回已关闭的父会话——读还能跟随 tip,写全部失败,且每次压缩再分叉一个
+    兄弟会话,直到 live 子会话不止一个,上游血缘恢复判定歧义后永久写不进去。
     """
 
     persistence_cause: PersistenceCause | None = None
@@ -595,6 +612,7 @@ class HermesClient:
                         is_transport_error=True,
                     )
                 data = resp.json()
+                rotated = rotated_session_key(resp.headers.get("X-Hermes-Session-Id"), session_key)
         except httpx.TimeoutException:
             logger.error(f"[HERMES] API 请求超时 ({self.timeout}s)")
             return ChatResult(
@@ -617,10 +635,15 @@ class HermesClient:
                 is_transport_error=True,
             )
 
+        def _out(result: ChatResult) -> ChatResult:
+            """给本轮所有出口统一挂上有效 session id(轮换才有值)。"""
+            result.effective_session_key = rotated
+            return result
+
         choices = data.get("choices") or []
         if not choices:
             # 期望结构化但响应空:这是结构性失败而非"模型选择不回复"
-            return ChatResult(raw_text="", parse_failed=expect_structured)
+            return _out(ChatResult(raw_text="", parse_failed=expect_structured))
 
         msg = choices[0].get("message") or {}
         raw_text = msg.get("content") or ""
@@ -633,12 +656,14 @@ class HermesClient:
                 f"[HERMES] 捕获到上游 Session 持久化失败中断提示 "
                 f"(cause={cause} raw_len={len(raw_text)} preview={preview!r})"
             )
-            return ChatResult(
-                raw_text=raw_text,
-                parse_failed=True,
-                is_transport_error=True,
-                is_persistence_error=True,
-                persistence_cause=cause,
+            return _out(
+                ChatResult(
+                    raw_text=raw_text,
+                    parse_failed=True,
+                    is_transport_error=True,
+                    is_persistence_error=True,
+                    persistence_cause=cause,
+                )
             )
 
         # 路径 B:从 raw_text 提取首个 {...} JSON5 块
@@ -649,12 +674,12 @@ class HermesClient:
                 logger.warning(
                     f"[HERMES] 路径 B 未能从回复中解析出 JSON 块 (raw_len={len(raw_text)} preview={preview!r})"
                 )
-                return ChatResult(raw_text=raw_text, parse_failed=True)
-            return ChatResult(raw_text=raw_text, structured=structured)
+                return _out(ChatResult(raw_text=raw_text, parse_failed=True))
+            return _out(ChatResult(raw_text=raw_text, structured=structured))
 
         # 普通文本路径(passive 或未要求结构化)
         cleaned, media_urls = extract_response_media(raw_text)
-        return ChatResult(raw_text=cleaned, media_urls=media_urls)
+        return _out(ChatResult(raw_text=cleaned, media_urls=media_urls))
 
     async def health_check(self) -> bool:
         try:

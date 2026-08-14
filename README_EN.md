@@ -198,6 +198,27 @@ This plugin automatically injects the following metadata into the Hermes API, en
 
 Backend prompts can leverage this information for personalized greetings or platform-specific logic.
 
+### 🔄 Session Rotation (0.4.5+)
+
+The plugin keeps a conversation continuous through the `X-Hermes-Session-Id` request header, whose
+key is derived from `{adapter}+{private|group}+{ids}` (`/clear` bumps a `-gN` suffix). That id is
+not permanent: when Hermes auto-compresses the context it **rotates the session** — the old id is
+closed with `end_reason='compression'`, a continuation child is created, and the new id comes back
+in the **response header** `X-Hermes-Session-Id`.
+
+Since 0.4.5 the plugin adopts that value and persists the `internal_id → session key` mapping to
+`session_keys.db`, next to the message database (the `/clear` generation is persisted too, so a
+restart no longer resurrects a cleared session).
+
+0.1.0 through 0.4.4 never read that response header, which pinned every turn back onto the closed
+parent session: reads still followed the compression tip, but every write failed, and each further
+compression forked yet another sibling snapshot off the same parent. Once more than one live child
+exists, Hermes' `find_live_compression_child()` treats the lineage as ambiguous and fails closed —
+that session can never be written to again. Older Hermes builds tolerated appends to a closed
+session, so this stayed silent for a long time; after the upstream 2026-07-23
+`fix(compression): recover rotated session lineage` it became a hard failure and the logs fill with
+`Session '…' is closed by compression`. Use `hermes-repair-sessions` to fix existing damage.
+
 ## Active Sessions + Reverse Channel (M1, experimental)
 
 When enabled, an @-mention puts the bot into a 5-minute "active window" — during which it hears every message in the group (no @ needed) and Hermes Agent uses a structured decision (`should_reply` / `should_exit_active`) to choose whether to speak. The plugin also runs a local MCP server so Hermes can proactively push messages into the chat (delayed replies, async notifications, etc.).

@@ -15,9 +15,11 @@ from ..core.active_session import ActiveSessionManager
 from ..core.bot_registry import BotRegistry
 from ..core.inflight import InflightRegistry
 from ..core.message_buffer import MessageBuffer
+from ..core.session import session_manager
 from ..core.storage.image_cache import ImageCache
 from ..core.storage.image_fetcher import ImageFetcher
 from ..core.storage.message_store import MessageStore
+from ..core.storage.session_key_store import SessionKeyStore
 from .server import build_mcp_app
 
 
@@ -74,6 +76,7 @@ inflight: InflightRegistry | None = None
 message_store: MessageStore | None = None
 image_cache: ImageCache | None = None
 image_fetcher: ImageFetcher | None = None
+session_key_store: SessionKeyStore | None = None
 
 _server_task: asyncio.Task | None = None
 _uvicorn_server: uvicorn.Server | None = None
@@ -105,12 +108,18 @@ def _default_image_cache_dir() -> Path:
 def init_runtime_state() -> None:
     """由 plugin __init__.py 在 startup 钩子里调用,装配全局对象。"""
     global message_buffer, active_sessions, bot_registry, inflight
-    global message_store, image_cache, image_fetcher
+    global message_store, image_cache, image_fetcher, session_key_store
 
+    db_path_str = plugin_config.hermes_storage_db_path or ""
+    db_path = Path(db_path_str) if db_path_str else _default_db_path()
     if message_store is None:
-        db_path_str = plugin_config.hermes_storage_db_path or ""
-        db_path = Path(db_path_str) if db_path_str else _default_db_path()
         message_store = MessageStore(db_path=db_path)
+    if session_key_store is None:
+        # session key 映射跟着消息库同目录走:两者都是「重启必须还在」的运行时状态。
+        # 分文件存是因为消息库归 hermes-purge-media 的 vacuum 管,别让按天数/行数
+        # 淘汰的逻辑误伤会话映射。
+        session_key_store = SessionKeyStore(db_path=db_path.parent / "session_keys.db")
+        session_manager.bind_store(session_key_store)
     if image_cache is None:
         cache_dir_str = plugin_config.hermes_image_cache_dir or ""
         cache_dir = Path(cache_dir_str) if cache_dir_str else _default_image_cache_dir()
@@ -150,6 +159,8 @@ async def stop_storage() -> None:
         await image_fetcher.stop()
     if message_store is not None:
         message_store.close()
+    if session_key_store is not None:
+        session_key_store.close()
 
 
 def _on_server_task_done(task: asyncio.Task) -> None:

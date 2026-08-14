@@ -959,6 +959,18 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
 _PERSISTENCE_RETRY_DELAY_S = 1.0
 
 
+async def _chat_and_adopt_rotation(**chat_kwargs) -> ChatResult:
+    """调 chat();上游本轮换过 session(自动压缩触发)就立刻采纳新 id。
+
+    采纳必须发生在每一次 chat 之后而不只是最后一次:重试那轮同样可能碰上轮换,
+    漏掉就又把会话钉回已关闭的父会话。
+    """
+    result = await hermes_client.chat(**chat_kwargs)
+    if result.effective_session_key:
+        session_manager.adopt_session_key(chat_kwargs["session_key"], result.effective_session_key)
+    return result
+
+
 async def _chat_with_persistence_retry(label: str, /, **chat_kwargs) -> ChatResult:
     """调 chat();命中瞬时(locked)持久化失败时用**同一个** session_key 重试一次。
 
@@ -970,7 +982,7 @@ async def _chat_with_persistence_retry(label: str, /, **chat_kwargs) -> ChatResu
     Hermes 侧上下文当场清零。disk / unknown 直接不重试 —— 重发也写不进去,而持久化
     失败是在 turn 收尾阶段判定的(工具此时已经跑过),白重试一次等于让副作用再来一遍。
     """
-    result = await hermes_client.chat(**chat_kwargs)
+    result = await _chat_and_adopt_rotation(**chat_kwargs)
     if not result.is_persistence_error:
         return result
 
@@ -985,7 +997,7 @@ async def _chat_with_persistence_retry(label: str, /, **chat_kwargs) -> ChatResu
 
     logger.warning(f"[HERMES {label}] 上游 state.db 写锁冲突,{_PERSISTENCE_RETRY_DELAY_S}s 后按原 session 重试一次")
     await asyncio.sleep(_PERSISTENCE_RETRY_DELAY_S)
-    retried = await hermes_client.chat(**chat_kwargs)
+    retried = await _chat_and_adopt_rotation(**chat_kwargs)
     if retried.is_persistence_error:
         logger.error(f"[HERMES {label}] 重试后仍持久化失败 (cause={retried.persistence_cause}),放弃本轮")
     return retried
