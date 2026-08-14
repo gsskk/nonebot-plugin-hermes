@@ -305,6 +305,7 @@ T+5s  用户 B:  @bot 评价下上图
 |------|------|
 | `hermes-install-skill --force` | 把 `SKILL.md` 装到 `~/.hermes/skills/nonebot-bridge/`(覆盖已装版本要带 `--force`) |
 | `hermes-purge-media` | 清理消息库里内联的 base64 图片字节。默认只报告,`--apply` 写回,`--vacuum` 收缩文件 |
+| `hermes-repair-sessions` | 解开被 compression 血缘歧义卡死的 Hermes 会话。默认只报告,`--apply` 备份后修复 |
 
 `hermes-purge-media` 用于清理历史遗留:早期版本会把 agent 回复里 api_server 内联的
 `data:image/…;base64,…` 整段存进消息库,单条可达 MB 级。当前版本写入端与渲染端都已挡住,
@@ -317,6 +318,26 @@ hermes-purge-media --apply --vacuum   # 清理并收缩文件
 
 不删消息,只把图片 payload 换成 `[图片]` 占位;幂等,可反复运行。`--vacuum` 需要排它锁,
 拿不到时停掉 bot 再跑。
+
+`hermes-repair-sessions` 修的是 Hermes 侧 `state.db` 的会话血缘。症状是 Hermes 日志反复刷:
+
+```
+Session '…' is closed by compression; adopt its live continuation before appending messages
+compression skipped: … no unique live child could be adopted
+```
+
+成因见上文「会话轮换」:0.1.0 ~ 0.4.4 的插件不采纳轮换后的 session id,每压缩一次就从同一个
+已关闭的父会话再分叉一个快照子会话;live 子会话超过一个后上游判定歧义并 fail-closed,该会话
+从此写不进去 —— 对话记录冻结,上下文还会无限膨胀(压缩永远跑不完)。
+
+```bash
+hermes-repair-sessions            # 只报告:哪些会话卡住、会动哪些行
+hermes-repair-sessions --apply    # 整库备份后:重开父会话 + 退休快照子会话
+```
+
+不删任何消息行。**先把插件升级到 0.4.5+ 并重启**,再停掉 gateway 跑修复 —— 否则下一次压缩
+会把父会话再次关闭,几轮之内又卡回去。某个子会话若是被真正续写过的 continuation
+(消息跨度远超一次批量写入),脚本会跳过该会话并报告,交给人判断。
 
 ## 配置项
 

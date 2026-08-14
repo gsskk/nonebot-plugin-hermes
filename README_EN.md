@@ -309,6 +309,7 @@ If your Hermes backend model is weak and unreliably parses the `[m:<id>]` conven
 |------|------|
 | `hermes-install-skill --force` | Installs `SKILL.md` into `~/.hermes/skills/nonebot-bridge/` (`--force` is required to overwrite an existing install) |
 | `hermes-purge-media` | Purges inline base64 image bytes from the message database. Reports only by default; `--apply` writes back, `--vacuum` shrinks the file |
+| `hermes-repair-sessions` | Unsticks Hermes sessions deadlocked by ambiguous compression lineage. Reports only by default; `--apply` backs up the database first |
 
 `hermes-purge-media` cleans up a legacy artifact: earlier versions stored the whole
 `data:image/…;base64,…` payload that api_server inlines into agent replies straight into the
@@ -322,6 +323,30 @@ hermes-purge-media --apply --vacuum   # purge and shrink the file
 
 Messages are never deleted — the image payload is replaced with a `[图片]` placeholder. Idempotent,
 safe to re-run. `--vacuum` needs an exclusive lock; stop the bot first if it can't acquire one.
+
+`hermes-repair-sessions` repairs session lineage in Hermes' own `state.db`. The symptom is Hermes
+logging this over and over:
+
+```
+Session '…' is closed by compression; adopt its live continuation before appending messages
+compression skipped: … no unique live child could be adopted
+```
+
+See "Session Rotation" above for the cause: plugin versions 0.1.0 through 0.4.4 did not adopt the
+rotated session id, so every compression forked another snapshot child off the same closed parent.
+Once more than one live child exists the upstream lineage check fails closed and the session can no
+longer be written to — the transcript freezes and the context grows without bound (compression can
+never complete).
+
+```bash
+hermes-repair-sessions            # report only: which sessions are stuck, which rows would change
+hermes-repair-sessions --apply    # back up the database, then reopen parents + retire snapshots
+```
+
+No message row is ever deleted. **Upgrade the plugin to 0.4.5+ and restart it first**, then stop the
+gateway and run the repair — otherwise the next compression closes the parent again and it re-sticks
+within a few turns. If a child looks like a genuinely continued session (its messages span far more
+than a single batch write), the script skips that session and reports it for a human to judge.
 
 ## Configuration Options
 
