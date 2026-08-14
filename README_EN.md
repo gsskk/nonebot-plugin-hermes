@@ -244,7 +244,11 @@ After restart the bot will:
 
 ### Tell Hermes Agent about the plugin
 
-The plugin ships a `SKILL.md` (reactive decision contract + reverse-channel usage). From the bot project directory, run any of the following (all install SKILL.md into `~/.hermes/skills/nonebot-bridge/`):
+The plugin ships a `SKILL.md` (reactive decision contract + reverse-channel usage). It must land in
+`~/.hermes/skills/nonebot-bridge/` **on the Hermes host** — installed on the wrong machine, Hermes never
+reads it and the skill has no effect.
+
+When the bot and Hermes share a host, run any of the following from the bot project directory:
 
 ```bash
 # If you manage deps with uv
@@ -259,6 +263,18 @@ hermes-install-skill
 # Fallback module entry (any env that can import nonebot-plugin-hermes)
 python -m hermes_install_skill
 ```
+
+On a **split** deployment the Hermes host usually has no plugin install, and you do not need one: the
+script is stdlib-only, so a clone is enough. It reads `nonebot_plugin_hermes/skill/SKILL.md` by relative
+path, so bring the whole repo rather than the single file:
+
+```bash
+git clone https://github.com/gsskk/nonebot-plugin-hermes.git
+cd nonebot-plugin-hermes
+python3 hermes_install_skill.py
+```
+
+(Running it on the bot host and copying `~/.hermes/skills/nonebot-bridge/SKILL.md` across works too.)
 
 Then register the plugin's MCP server in `~/.hermes/config.yaml`, replacing `<HERMES_API_KEY>` with the same key you generated earlier (used for two-way auth):
 
@@ -305,11 +321,25 @@ If your Hermes backend model is weak and unreliably parses the `[m:<id>]` conven
 
 ### Command-line tools
 
-| Command | Description |
-|------|------|
-| `hermes-install-skill --force` | Installs `SKILL.md` into `~/.hermes/skills/nonebot-bridge/` (`--force` is required to overwrite an existing install) |
-| `hermes-purge-media` | Purges inline base64 image bytes from the message database. Reports only by default; `--apply` writes back, `--vacuum` shrinks the file |
-| `hermes-repair-sessions` | Unsticks Hermes sessions deadlocked by ambiguous compression lineage. Reports only by default; `--apply` backs up the database first |
+| Command | Runs on | Description |
+|------|---------|------|
+| `hermes-install-skill --force` | **Hermes host** | Installs `SKILL.md` into `~/.hermes/skills/nonebot-bridge/` (`--force` is required to overwrite an existing install) |
+| `hermes-purge-media` | **bot host** | Purges inline base64 image bytes from the plugin's `messages.db`. Reports only by default; `--apply` writes back, `--vacuum` shrinks the file |
+| `hermes-repair-sessions` | **Hermes host** | Unsticks sessions in Hermes' `state.db` deadlocked by ambiguous compression lineage. Reports only by default; `--apply` backs up the database first |
+
+"Runs on" follows the data each tool touches, not where the plugin happens to be installed. On a
+single-host setup all three commands are simply on PATH; on a **split deployment the Hermes host
+usually has no plugin install**, and you do not need to add one — all three are single files at the
+repository root, import nothing but the standard library, and never import the package itself:
+
+```bash
+git clone https://github.com/gsskk/nonebot-plugin-hermes.git
+cd nonebot-plugin-hermes
+python3 hermes_repair_sessions.py            # exactly equivalent to hermes-repair-sessions
+```
+
+(Copying just the one file over works too — except for `hermes-install-skill`, which reads
+`nonebot_plugin_hermes/skill/SKILL.md` from the same repo and therefore needs the repo directory.)
 
 `hermes-purge-media` cleans up a legacy artifact: earlier versions stored the whole
 `data:image/…;base64,…` payload that api_server inlines into agent replies straight into the
@@ -338,9 +368,14 @@ Once more than one live child exists the upstream lineage check fails closed and
 longer be written to — the transcript freezes and the context grows without bound (compression can
 never complete).
 
+Run it on the **Hermes host** (if the plugin is not installed there, use the `git clone` route above
+and call `python3 hermes_repair_sessions.py`):
+
 ```bash
+systemctl stop hermes-gateway     # the repair needs the write lock, and a running agent may hold stale session state
 hermes-repair-sessions            # report only: which sessions are stuck, which rows would change
 hermes-repair-sessions --apply    # back up the database, then reopen parents + retire snapshots
+systemctl start hermes-gateway
 ```
 
 No message row is ever deleted. **Upgrade the plugin to 0.4.5+ and restart it first**, then stop the

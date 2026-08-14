@@ -240,7 +240,10 @@ HERMES_MCP_ENABLED=true
 
 ### 把插件能力告诉 Hermes Agent
 
-插件自带一份 `SKILL.md`（reactive 决策契约 + 反向通道用法）。在 bot 项目目录下任选一种执行（都是把 SKILL.md 装到 `~/.hermes/skills/nonebot-bridge/`）：
+插件自带一份 `SKILL.md`（reactive 决策契约 + 反向通道用法），要装到 **Hermes 那台**的
+`~/.hermes/skills/nonebot-bridge/` —— 装错机器的话 Hermes 读不到,skill 不生效。
+
+bot 与 Hermes **同机**时,在 bot 项目目录下任选一种执行：
 
 ```bash
 # 用 uv 管理依赖
@@ -255,6 +258,17 @@ hermes-install-skill
 # 备用入口（任何能 import nonebot-plugin-hermes 的环境）
 python -m hermes_install_skill
 ```
+
+**分机**部署时,Hermes 那台一般没装插件,不必为此装一遍 —— 脚本只用标准库,克隆仓库直接跑即可
+（它按相对路径读同仓库的 `nonebot_plugin_hermes/skill/SKILL.md`,所以要整个仓库目录,不能只拷单文件）：
+
+```bash
+git clone https://github.com/gsskk/nonebot-plugin-hermes.git
+cd nonebot-plugin-hermes
+python3 hermes_install_skill.py
+```
+
+（也可以在 bot 那台跑完再把 `~/.hermes/skills/nonebot-bridge/SKILL.md` 拷过去,效果一样。）
 
 然后在 `~/.hermes/config.yaml` 注册插件 MCP server，把 `<HERMES_API_KEY>` 替换为你前面生成的同一把密钥（用于双向鉴权）：
 
@@ -301,11 +315,24 @@ T+5s  用户 B:  @bot 评价下上图
 
 ### 命令行工具
 
-| 命令 | 说明 |
-|------|------|
-| `hermes-install-skill --force` | 把 `SKILL.md` 装到 `~/.hermes/skills/nonebot-bridge/`(覆盖已装版本要带 `--force`) |
-| `hermes-purge-media` | 清理消息库里内联的 base64 图片字节。默认只报告,`--apply` 写回,`--vacuum` 收缩文件 |
-| `hermes-repair-sessions` | 解开被 compression 血缘歧义卡死的 Hermes 会话。默认只报告,`--apply` 备份后修复 |
+| 命令 | 在哪台跑 | 说明 |
+|------|---------|------|
+| `hermes-install-skill --force` | **Hermes 那台** | 把 `SKILL.md` 装到 `~/.hermes/skills/nonebot-bridge/`(覆盖已装版本要带 `--force`) |
+| `hermes-purge-media` | **bot 那台** | 清理插件消息库(`messages.db`)里内联的 base64 图片字节。默认只报告,`--apply` 写回,`--vacuum` 收缩文件 |
+| `hermes-repair-sessions` | **Hermes 那台** | 解开 Hermes `state.db` 里被 compression 血缘歧义卡死的会话。默认只报告,`--apply` 备份后修复 |
+
+「在哪台跑」取决于工具动的是谁的数据,不是谁装了插件。bot 与 Hermes 同机时三个命令都能直接敲;
+**分机部署时 Hermes 那台通常并没有装本插件**,此时不需要为了跑工具去装一遍——三个脚本都是仓库
+根目录下的单文件、只用标准库、也不 import 本包:
+
+```bash
+git clone https://github.com/gsskk/nonebot-plugin-hermes.git
+cd nonebot-plugin-hermes
+python3 hermes_repair_sessions.py            # 与 hermes-repair-sessions 完全等价
+```
+
+(只拷单个文件过去跑也行;`hermes-install-skill` 例外——它要读同仓库里的
+`nonebot_plugin_hermes/skill/SKILL.md`,得带上仓库目录。)
 
 `hermes-purge-media` 用于清理历史遗留:早期版本会把 agent 回复里 api_server 内联的
 `data:image/…;base64,…` 整段存进消息库,单条可达 MB 级。当前版本写入端与渲染端都已挡住,
@@ -330,9 +357,13 @@ compression skipped: … no unique live child could be adopted
 已关闭的父会话再分叉一个快照子会话;live 子会话超过一个后上游判定歧义并 fail-closed,该会话
 从此写不进去 —— 对话记录冻结,上下文还会无限膨胀(压缩永远跑不完)。
 
+在 **Hermes 那台**执行(没装插件就按上面的 git clone 方式跑 `python3 hermes_repair_sessions.py`):
+
 ```bash
+systemctl stop hermes-gateway     # 修复期间要拿写锁,跑着的 agent 也可能持有旧会话状态
 hermes-repair-sessions            # 只报告:哪些会话卡住、会动哪些行
 hermes-repair-sessions --apply    # 整库备份后:重开父会话 + 退休快照子会话
+systemctl start hermes-gateway
 ```
 
 不删任何消息行。**先把插件升级到 0.4.5+ 并重启**,再停掉 gateway 跑修复 —— 否则下一次压缩
