@@ -87,6 +87,50 @@ class SessionManager:
         logger.debug(f"[SESSION] 新建会话: {internal_id} -> {session_key}")
         return session_key
 
+    def get_memory_key(
+        self,
+        adapter_name: str,
+        is_private: bool,
+        user_id: str,
+        group_id: str | None = None,
+    ) -> str | None:
+        """长期记忆作用域 key,通过 X-Hermes-Session-Key 送给上游。
+
+        与 get_session_key 的三点关键区别:
+          - 不缓存、不持久化:纯模板渲染,无状态
+          - 不受 clear_session 影响:generation 不参与,/clear 只重置 transcript
+          - 不受上游轮换影响:压缩换掉的是 transcript id,记忆挂在这个稳定 key 上
+
+        上游 memory provider 把这个值当作记忆作用域名。不配它的话作用域由上游
+        strategy 兜底,典型后果是所有会话共写一份,或随 transcript 轮换而重置。
+
+        返回 None 表示本轮不发该头(功能关闭,或模板渲染失败)。
+        """
+        if not plugin_config.hermes_honcho_enabled:
+            return None
+
+        try:
+            if is_private:
+                return plugin_config.hermes_private_session_key_format.format(
+                    adapter=adapter_name,
+                    user_id=user_id,
+                )
+            gid = group_id or "unknown"
+            if plugin_config.hermes_group_sessions_per_user:
+                return plugin_config.hermes_group_per_user_session_key_format.format(
+                    adapter=adapter_name,
+                    group_id=gid,
+                    user_id=user_id,
+                )
+            return plugin_config.hermes_group_session_key_format.format(
+                adapter=adapter_name,
+                group_id=gid,
+            )
+        except (KeyError, IndexError, ValueError) as exc:
+            # 模板是用户可改的配置,写错只应该让"记不住",不该让整轮对话失败。
+            logger.error(f"[SESSION] 记忆 key 模板渲染失败({type(exc).__name__}: {exc}),本轮不发 X-Hermes-Session-Key")
+            return None
+
     def adopt_session_key(self, previous_key: str, new_key: str) -> bool:
         """采纳上游轮换后的 session key,返回是否命中一条映射。
 
