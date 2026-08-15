@@ -1031,6 +1031,12 @@ async def _run_passive_turn(
         user_id=user_id,
         group_id=group_id,
     )
+    memory_key = session_manager.get_memory_key(
+        adapter_name=adapter_name,
+        is_private=is_private,
+        user_id=user_id,
+        group_id=group_id,
+    )
 
     # 群聊 + 默认配置(active_session=false)+ perception_enabled:补回 0.1.6
     # 「@bot 时让 LLM 看到群里旁观历史」。before_ts=now_ms 排除 perception 在
@@ -1065,6 +1071,7 @@ async def _run_passive_turn(
         text="",
         image_urls=[],
         session_key=session_key,
+        memory_key=memory_key,
         user_id=user_id,
         group_id=group_id,
         adapter_name=adapter_name,
@@ -1198,6 +1205,12 @@ async def _run_reactive_turn(
         user_id=user_id,
         group_id=group_id,
     )
+    memory_key = session_manager.get_memory_key(
+        adapter_name=adapter_name,
+        is_private=False,
+        user_id=user_id,
+        group_id=group_id,
+    )
     # 注:user_content_override 已携带 user message 的全部内容(text + 多模态);
     # text/image_urls 在 chat() 中会被忽略(见 hermes_client.chat 文档),此处显式传 ""
     # /[] 让契约清晰,避免被读者误以为 image_urls 也参与了构造。
@@ -1206,6 +1219,7 @@ async def _run_reactive_turn(
         text="",
         image_urls=[],
         session_key=session_key,
+        memory_key=memory_key,
         user_id=user_id,
         group_id=group_id,
         adapter_name=adapter_name,
