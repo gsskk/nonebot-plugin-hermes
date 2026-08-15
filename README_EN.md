@@ -219,6 +219,50 @@ session, so this stayed silent for a long time; after the upstream 2026-07-23
 `fix(compression): recover rotated session lineage` it became a hard failure and the logs fill with
 `Session '…' is closed by compression`. Use `hermes-repair-sessions` to fix existing damage.
 
+### 🧠 Long-term Memory Scope (0.4.6+, off by default)
+
+Hermes' long-term memory provider (currently Honcho) does **not** separate groups on its own. When
+the plugin doesn't tell it which conversation a turn belongs to, it names the memory scope with its
+own fallback strategy — and both fallbacks are bad:
+
+- global / per-directory strategy → **every group writes into one shared memory**, so what the bot
+  learns in group A leaks into group B;
+- per-session strategy → the memory is keyed on the Hermes session id, which **rotates on every
+  automatic compression** (see the section above), so memory restarts from scratch each time.
+
+With this feature on, the plugin sends an explicit `X-Hermes-Session-Key` header. It is a second,
+independent dimension next to `X-Hermes-Session-Id`: the latter decides which transcript a turn
+continues and rotates on `/clear` and compression; the former decides who the memory belongs to and
+stays constant across both.
+
+```dotenv
+HERMES_HONCHO_ENABLED=true
+# Group memory granularity: false = one memory per group (members share it), true = per member
+HERMES_GROUP_SESSIONS_PER_USER=false
+```
+
+**Prerequisites** (miss either one and the feature silently does nothing):
+
+1. A memory provider configured on the Hermes side (`hermes honcho setup`). Honcho itself is either
+   Honcho Cloud (usage-billed) or a self-hosted Postgres + pgvector + FastAPI stack — not just a flag.
+2. `HERMES_API_KEY` set in the plugin. Upstream requires auth for this header; without a key the
+   plugin omits the header and warns at startup.
+
+**Cost of switching**: turning it on renames the memory scope, so memory accumulated under the old
+scope is no longer visible. The data stays on the Hermes side — turning the switch off restores the
+previous behaviour. Also note memory needs time to accumulate; the first week or two feels flat.
+
+The key defaults to `agent:main:nonebot-{adapter}:group:{group_id}`, matching the naming format of
+Hermes' native adapters. The `nonebot-` prefix prevents collisions when a native Hermes adapter
+writes into the same memory workspace. All three templates (group-shared / group-per-user / DM) can
+be overridden via `HERMES_*_SESSION_KEY_FORMAT`, though you rarely need to.
+
+> [!NOTE]
+> This switch isolates **memory** only. The `session_search` tool queries the whole state.db without
+> a per-group filter (see the toolset warning above); to close that too, drop the tool from
+> `platform_toolsets.api_server` on the Hermes side. Terminal/file tool workspaces are likewise
+> unaffected by this switch.
+
 ## Active Sessions + Reverse Channel (M1, experimental)
 
 When enabled, an @-mention puts the bot into a 5-minute "active window" — during which it hears every message in the group (no @ needed) and Hermes Agent uses a structured decision (`should_reply` / `should_exit_active`) to choose whether to speak. The plugin also runs a local MCP server so Hermes can proactively push messages into the chat (delayed replies, async notifications, etc.).
@@ -411,6 +455,11 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_ALLOW_GROUPS` | `[]` | Allowed group IDs (empty for all) |
 | `HERMES_ADMIN_USERS` | `[]` | Admin allowlist as `["telegram:<user_id>", "onebotv11:<user_id>"]`. **Empty = deny by default**; sensitive commands like `/hermes-status` only run if the caller's `adapter:user_id` is in this list |
 | `HERMES_SESSION_SHARE_GROUP` | `false` | Share session within group |
+| `HERMES_HONCHO_ENABLED` | `false` | Send `X-Hermes-Session-Key` so long-term memory is scoped per group/DM and survives compression rotation. Requires a memory provider upstream and `HERMES_API_KEY` here — see "Long-term Memory Scope" above |
+| `HERMES_GROUP_SESSIONS_PER_USER` | `false` | Group memory granularity. `false` = one memory per group (shared by members); `true` = one per member |
+| `HERMES_GROUP_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:group:{group_id}` | Template for group-shared memory keys |
+| `HERMES_GROUP_PER_USER_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:group:{group_id}:{user_id}` | Template for per-member group memory keys |
+| `HERMES_PRIVATE_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:dm:{user_id}` | Template for DM memory keys |
 | `HERMES_MAX_LENGTH` | `4000` | Max reply length (truncated if exceeded) |
 | `HERMES_IGNORE_PREFIX` | `["."]` | Ignore messages starting with these chars |
 | `HERMES_PERCEPTION_ENABLED` | `false` | In groups with active_session=false, inject bystander history into the LLM on @-mention. **Auto-implied when `HERMES_ACTIVE_SESSION_ENABLED=true`; this flag is then a no-op**. Never injected in private chats (Hermes session already covers it) |

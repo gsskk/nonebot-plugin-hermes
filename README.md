@@ -215,6 +215,43 @@ Hermes 容忍往已关闭会话追加,所以这个问题长期无声;上游 2026
 `fix(compression): recover rotated session lineage` 之后变成硬失败,日志会刷
 `Session '…' is closed by compression`。存量损坏用 `hermes-repair-sessions` 修。
 
+### 🧠 长期记忆作用域（0.4.6+，默认关）
+
+Hermes 侧的长期记忆(memory provider,目前是 Honcho)默认**不按群区分**。插件不告诉它
+"这段对话属于谁"时,它按自己的兜底策略给记忆命名,两种兜底都有问题:
+
+- 全局 / 按目录策略 → **所有群共写一份记忆**,bot 在 A 群知道的事会在 B 群说出来;
+- 按会话策略 → 以 Hermes 会话 id 为记忆键,而这个 id **每次自动压缩都会轮换**(见上一节),
+  于是记忆每压缩一次换一本,长期什么都攒不下来。
+
+开启本功能后,插件用 `X-Hermes-Session-Key` 请求头显式告诉上游记忆该记在谁名下。这个头与
+`X-Hermes-Session-Id` 是两个独立维度:后者管"接哪段对话历史",会随 `/clear` 和自动压缩轮换;
+前者管"记忆记在谁名下",跨 `/clear`、跨压缩恒定不变。
+
+```dotenv
+HERMES_HONCHO_ENABLED=true
+# 群记忆按群还是按人:false = 一个群一份,群成员共享;true = 群内每人一份
+HERMES_GROUP_SESSIONS_PER_USER=false
+```
+
+**前置条件**(缺任一条,功能静默无效):
+
+1. Hermes 端已配好 memory provider(`hermes honcho setup`)。Honcho 本身要么用 Honcho Cloud
+   (按量计费),要么自托管一套 Postgres + pgvector + FastAPI 服务,不是加个开关就有的东西。
+2. 插件配了 `HERMES_API_KEY`。上游对这个头要求鉴权,没 key 时插件不发头并在启动日志 WARN。
+
+**切换代价**:开启后记忆作用域改名,此前累积在旧作用域下的记忆不再被读到。数据仍在 Hermes
+侧,关掉开关即回原状。另外记忆需要累积,头一两周体感不明显。
+
+记忆 key 默认形如 `agent:main:nonebot-{adapter}:group:{group_id}`,对齐 Hermes 原生 adapter 的
+命名格式,`nonebot-` 前缀用于防止与 Hermes 原生 adapter 写进同一个 workspace 时撞名。三个模板
+(群共享 / 群按人 / 私聊)都可通过 `HERMES_*_SESSION_KEY_FORMAT` 覆盖,一般不需要。
+
+> [!NOTE]
+> 本开关只隔离**记忆**。`session_search` 工具搜的是整个 state.db,不分群(见上文
+> "限制 API Server 工具集"的警告),要一并堵住需在 Hermes 端的 `platform_toolsets.api_server`
+> 里移除该工具。终端 / 文件类工具的工作区同理不受本开关影响。
+
 ## 群活跃态 + 反向通道（M1，实验性）
 
 启用后，bot 在被 @ 之后会进入 5 分钟"活跃窗口"——期间能听到所有群消息（无需再 @），由 Hermes Agent 通过结构化决策（`should_reply` / `should_exit_active`）自行判断是否插话。同时插件起一个本地 MCP server，让 Hermes 可以主动 push 消息进群（延迟回复、异步通知等）。
@@ -397,6 +434,11 @@ systemctl start hermes-gateway
 | `HERMES_ALLOW_GROUPS` | `[]` | 允许响应的群组 ID 列表（空为全部允许） |
 | `HERMES_ADMIN_USERS` | `[]` | 管理员白名单,格式 `["telegram:<user_id>", "onebotv11:<user_id>"]`。**默认空集 = deny by default**;`/hermes-status` 等敏感命令必须命中此列表才执行 |
 | `HERMES_SESSION_SHARE_GROUP` | `false` | 群内是否共享同一个 session |
+| `HERMES_HONCHO_ENABLED` | `false` | 发送 `X-Hermes-Session-Key`,按群/私聊隔离 Hermes 侧长期记忆并让记忆不随压缩轮换重置。需要上游配了 memory provider + 本插件配了 `HERMES_API_KEY`,详见上文「长期记忆作用域」 |
+| `HERMES_GROUP_SESSIONS_PER_USER` | `false` | 群记忆按群还是按人。`false` = 一个群一份(成员共享);`true` = 群内每人一份 |
+| `HERMES_GROUP_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:group:{group_id}` | 群共享记忆 key 模板 |
+| `HERMES_GROUP_PER_USER_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:group:{group_id}:{user_id}` | 群按人记忆 key 模板 |
+| `HERMES_PRIVATE_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:dm:{user_id}` | 私聊记忆 key 模板 |
 | `HERMES_MAX_LENGTH` | `4000` | 单条回复最大长度（超出后截断） |
 | `HERMES_IGNORE_PREFIX` | `["."]` | 以这些字符开头的消息不触发回复 |
 | `HERMES_PERCEPTION_ENABLED` | `false` | 群聊 + active_session=false 下,是否在 @bot 时给 LLM 注入旁观历史。**`HERMES_ACTIVE_SESSION_ENABLED=true` 时自动隐含为 on,本开关无效**。私聊永远不注入(Hermes session 已覆盖) |
