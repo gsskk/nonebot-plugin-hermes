@@ -13,6 +13,10 @@ from nonebot import logger
 from ..config import plugin_config
 from .storage.session_key_store import SessionKeyStore
 
+# 上游对 X-Hermes-Session-Key 的长度上限:超出直接 400,整轮对话被打回。
+# 模板是用户可配的,所以渲染结果必须自己先量一遍。
+_MAX_MEMORY_KEY_LEN = 256
+
 
 class SessionManager:
     """管理 Hermes session key 的生成、采纳与过期"""
@@ -111,25 +115,37 @@ class SessionManager:
 
         try:
             if is_private:
-                return plugin_config.hermes_private_session_key_format.format(
+                key = plugin_config.hermes_private_session_key_format.format(
                     adapter=adapter_name,
                     user_id=user_id,
                 )
-            gid = group_id or "unknown"
-            if plugin_config.hermes_group_sessions_per_user:
-                return plugin_config.hermes_group_per_user_session_key_format.format(
-                    adapter=adapter_name,
-                    group_id=gid,
-                    user_id=user_id,
-                )
-            return plugin_config.hermes_group_session_key_format.format(
-                adapter=adapter_name,
-                group_id=gid,
-            )
+            else:
+                gid = group_id or "unknown"
+                if plugin_config.hermes_group_sessions_per_user:
+                    key = plugin_config.hermes_group_per_user_session_key_format.format(
+                        adapter=adapter_name,
+                        group_id=gid,
+                        user_id=user_id,
+                    )
+                else:
+                    key = plugin_config.hermes_group_session_key_format.format(
+                        adapter=adapter_name,
+                        group_id=gid,
+                    )
         except (KeyError, IndexError, ValueError) as exc:
             # 模板是用户可改的配置,写错只应该让"记不住",不该让整轮对话失败。
             logger.error(f"[SESSION] 记忆 key 模板渲染失败({type(exc).__name__}: {exc}),本轮不发 X-Hermes-Session-Key")
             return None
+
+        # 超长同理:发出去会被上游 400,该作用域下每一轮都失败。截断不行——两个不同
+        # 作用域可能截成同一个名字,记忆会串到一起去,那比记不住更糟。
+        if len(key) > _MAX_MEMORY_KEY_LEN:
+            logger.error(
+                f"[SESSION] 记忆 key 渲染后长度 {len(key)} 超过上游上限 {_MAX_MEMORY_KEY_LEN},"
+                "本轮不发 X-Hermes-Session-Key;请缩短 HERMES_*_SESSION_KEY_FORMAT"
+            )
+            return None
+        return key
 
     def adopt_session_key(self, previous_key: str, new_key: str) -> bool:
         """采纳上游轮换后的 session key,返回是否命中一条映射。
@@ -170,6 +186,35 @@ class SessionManager:
         # 被清掉的会话原地复活。
         self.get_session_key(adapter_name, is_private, user_id, group_id)
         logger.info(f"[SESSION] 会话已重置: {internal_id} (generation={gen})")
+
+
+def validate_memory_key_templates() -> list[str]:
+    """启动期试渲染三个记忆 key 模板,返回问题描述列表(空 = 全部可用)。
+
+    没有这一步,模板写错只在真的有人说话时才暴露,而且是每轮刷一条 error 日志;
+    有了它,启动日志里一次性说清哪个模板不可用。只描述不修正,也不抛。
+    """
+    samples = (
+        ("HERMES_GROUP_SESSION_KEY_FORMAT", plugin_config.hermes_group_session_key_format, {"group_id": "sample"}),
+        (
+            "HERMES_GROUP_PER_USER_SESSION_KEY_FORMAT",
+            plugin_config.hermes_group_per_user_session_key_format,
+            {"group_id": "sample", "user_id": "sample"},
+        ),
+        ("HERMES_PRIVATE_SESSION_KEY_FORMAT", plugin_config.hermes_private_session_key_format, {"user_id": "sample"}),
+    )
+    problems: list[str] = []
+    for name, template, fields in samples:
+        try:
+            rendered = template.format(adapter="sample", **fields)
+        except (KeyError, IndexError, ValueError) as exc:
+            problems.append(f"{name} 渲染失败({type(exc).__name__}: {exc}),该场景不会发 X-Hermes-Session-Key")
+            continue
+        if len(rendered) > _MAX_MEMORY_KEY_LEN:
+            problems.append(
+                f"{name} 渲染后 {len(rendered)} 字符,超过上游上限 {_MAX_MEMORY_KEY_LEN},该场景不会发 X-Hermes-Session-Key"
+            )
+    return problems
 
 
 # 全局会话管理器

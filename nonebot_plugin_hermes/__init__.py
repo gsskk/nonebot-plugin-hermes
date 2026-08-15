@@ -79,6 +79,10 @@ async def _hermes_m1_startup():
 
     if plugin_config.hermes_honcho_enabled:
         from .core.hermes_client import hermes_client, missing_memory_capabilities
+        from .core.session import validate_memory_key_templates
+
+        for problem in validate_memory_key_templates():
+            logger.error(f"[HERMES] 记忆 key 模板不可用:{problem}")
 
         if not plugin_config.hermes_api_key:
             logger.warning(

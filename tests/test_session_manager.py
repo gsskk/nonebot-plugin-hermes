@@ -135,3 +135,49 @@ def test_get_memory_key_orthogonal_to_share_group(monkeypatch):
     monkeypatch.setattr(cfg, "hermes_session_share_group", True)
     sm = SessionManager()
     assert sm.get_memory_key("ob11", False, "u1", "g1") == "agent:main:nonebot-ob11:group:g1"
+
+
+def test_get_memory_key_over_length_returns_none(monkeypatch):
+    """上游对 X-Hermes-Session-Key 超 256 字符直接 400 整轮打回。
+    模板是用户可配的,渲染超长时必须与模板写错同策略:不发头,而不是让每轮对话都失败。"""
+    cfg = _enable_memory_scope(monkeypatch)
+    monkeypatch.setattr(cfg, "hermes_group_session_key_format", "x" * 300 + "-{group_id}")
+    sm = SessionManager()
+    assert sm.get_memory_key("ob11", False, "u1", "g1") is None
+
+
+def test_get_memory_key_at_length_limit_still_renders(monkeypatch):
+    """边界:正好 256 合法,不能误杀。"""
+    cfg = _enable_memory_scope(monkeypatch)
+    monkeypatch.setattr(cfg, "hermes_group_session_key_format", "x" * 254 + "{group_id}")
+    sm = SessionManager()
+    key = sm.get_memory_key("ob11", False, "u1", "gg")
+    assert key is not None
+    assert len(key) == 256
+
+
+def test_validate_memory_key_templates_clean_by_default():
+    from nonebot_plugin_hermes.core.session import validate_memory_key_templates
+
+    assert validate_memory_key_templates() == []
+
+
+def test_validate_memory_key_templates_flags_bad_placeholder(monkeypatch):
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.core.session import validate_memory_key_templates
+
+    monkeypatch.setattr(plugin_config, "hermes_private_session_key_format", "{nope}")
+    problems = validate_memory_key_templates()
+    assert len(problems) == 1
+    assert "HERMES_PRIVATE_SESSION_KEY_FORMAT" in problems[0]
+
+
+def test_validate_memory_key_templates_flags_overlong(monkeypatch):
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.core.session import validate_memory_key_templates
+
+    monkeypatch.setattr(plugin_config, "hermes_group_session_key_format", "y" * 300 + "{group_id}")
+    problems = validate_memory_key_templates()
+    assert len(problems) == 1
+    assert "HERMES_GROUP_SESSION_KEY_FORMAT" in problems[0]
+    assert "256" in problems[0]
