@@ -180,3 +180,26 @@ def test_limit_respected(store):
 def test_close_idempotent(store):
     store.close()
     store.close()  # 二次关闭不抛
+
+
+def test_counts_by_scope_groups_private_and_group_scopes(store):
+    """按 scope 计数:群按 group_id 合并(不按发言人拆),私聊按 @private:<user_id>。
+
+    /hermes-status 靠它统计每个 bucket 的消息数;之前它直接摸 MessageBuffer._buckets,
+    而 SQLite 化之后那个属性已经不存在了。
+    """
+    store.append(_msg(1000, group="g1", user="u1", content="a"))
+    store.append(_msg(1001, group="g1", user="u2", content="b"))
+    store.append(_msg(1002, group="g2", user="u1", content="c"))
+    store.append(_msg(1003, group=None, user="u9", content="d"))
+
+    counts = store.counts_by_scope()
+
+    assert counts[("ob11", "g1")] == 2, "同群不同人要合并计数"
+    assert counts[("ob11", "g2")] == 1
+    assert counts[("ob11", "@private:u9")] == 1
+    assert set(counts) == set(store.known_groups()), "scope 口径必须与 known_groups 一致"
+
+
+def test_counts_by_scope_empty_store(store):
+    assert store.counts_by_scope() == {}

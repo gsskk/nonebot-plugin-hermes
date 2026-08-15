@@ -123,8 +123,16 @@ async def handle_status(bot: Bot, event: Event, matcher: Matcher):
         logger.debug(f"[HERMES] /hermes-status silent skip for {admin_key}")
         return  # block=True 已阻断后续 matcher,直接 return 即静默
 
-    now_ms = int(time.time() * 1000)
+    await alconna.UniMessage("\n".join(build_status_lines(int(time.time() * 1000)))).send(target=target, bot=bot)
 
+
+def build_status_lines(now_ms: int) -> list[str]:
+    """拼装 /hermes-status 的正文。
+
+    与 handler 分开是为了能脱离 matcher / adapter 直接测:这段代码读的全是运行时
+    单例的内部状态,最容易在重构后悄悄失配(SQLite 化之后 MessageBuffer 就没有
+    per-group 内存桶了)。
+    """
     # MCP 状态
     mcp_line = (
         f"on @ {plugin_config.hermes_mcp_host}:{plugin_config.hermes_mcp_port}"
@@ -144,16 +152,13 @@ async def handle_status(bot: Bot, event: Event, matcher: Matcher):
                 topic = f" topic={s.topic_hint}" if s.topic_hint else ""
                 active_details.append(f"  - {s.adapter}/{s.group_id} by {s.triggered_by} ttl={ttl_left}s{topic}")
 
-    # MessageBuffer:统计每个 bucket 的消息数
+    # MessageBuffer:按 scope 统计消息数(数据在 SQLite 里,不是内存桶)
     buf_lines: list[str] = []
     buf_total_msgs = 0
     if _mcp.message_buffer is not None:
-        for key in _mcp.message_buffer.known_groups():
-            bucket = _mcp.message_buffer._buckets.get(key)
-            if bucket is not None:
-                count = len(bucket)
-                buf_total_msgs += count
-                buf_lines.append(f"  - {key[0]}/{key[1]}: {count}")
+        for (adapter, scope_id), count in sorted(_mcp.message_buffer.counts_by_scope().items()):
+            buf_total_msgs += count
+            buf_lines.append(f"  - {adapter}/{scope_id}: {count}")
 
     # BotRegistry:统计已知路由
     reg_lines: list[str] = []
@@ -195,4 +200,4 @@ async def handle_status(bot: Bot, event: Event, matcher: Matcher):
     if len(reg_lines) > 5:
         lines.append(f"  ... +{len(reg_lines) - 5} more")
 
-    await alconna.UniMessage("\n".join(lines)).send(target=target, bot=bot)
+    return lines

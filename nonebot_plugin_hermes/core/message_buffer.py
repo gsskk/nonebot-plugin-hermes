@@ -82,3 +82,6 @@ class MessageBuffer:
 
     def known_groups(self) -> list[tuple[str, str]]:
         return self._store.known_groups()
+
+    def counts_by_scope(self) -> dict[tuple[str, str], int]:
+        return self._store.counts_by_scope()

@@ -214,6 +214,18 @@ class MessageStore:
             deleted += extra
         return deleted
 
+    def counts_by_scope(self) -> dict[tuple[str, str], int]:
+        """返回 (adapter, scope_id) → 消息条数。scope_id 口径同 known_groups。
+
+        群按 group_id 合并(不按发言人拆),私聊折成 `@private:<user_id>` —— 这个
+        折叠在 SQL 里做,省得把整表拉回来再在 Python 里分组。
+        """
+        rows = self._conn.execute(
+            "SELECT adapter, COALESCE(group_id, '@private:' || user_id) AS scope, COUNT(*) AS n "
+            "FROM messages GROUP BY adapter, scope"
+        ).fetchall()
+        return {(r["adapter"], r["scope"]): r["n"] for r in rows}
+
     def known_groups(self) -> list[tuple[str, str]]:
         """返回所有已有消息的 (adapter, scope_id) 唯一集合。
 
