@@ -242,3 +242,42 @@ async def test_unrecoverable_error_neither_retries_nor_resets_session(monkeypatc
     assert chat_mock.call_count == 1, "不可恢复的 cause 不该重试"
     assert session_manager.get_session_key("ob11", False, "u1", "g1") == init_key
     send_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_locked_error_after_rotation_retries_with_adopted_key(monkeypatch: MonkeyPatch):
+    """同一轮里既发生上游轮换又撞上写锁:重试必须用上游回传的新 key。
+
+    钉回已被 end_reason='compression' 关闭的父会话,写一定失败;而且第二次轮换
+    回传的新 key 会因为 adopt_session_key(旧 key, …) 找不到映射而被丢弃,
+    血缘从此对不上。采纳过就得把它带进重试。
+    """
+    bot, target = _passive_bot_and_target()
+
+    session_manager.clear_session("ob11", False, "u1", "g1")
+    init_key = session_manager.get_session_key("ob11", False, "u1", "g1")
+    rotated_key = "hermes-compression-child-1"
+
+    err = _err_result(_LOCKED_TEXT)
+    err.effective_session_key = rotated_key
+    success_result = ChatResult(raw_text="重试成功", media_urls=[])
+    chat_mock = AsyncMock(side_effect=[err, success_result])
+    monkeypatch.setattr("nonebot_plugin_hermes.handlers.message.hermes_client.chat", chat_mock)
+    monkeypatch.setattr("nonebot_plugin_hermes.handlers.message.send_text_with_media", AsyncMock())
+
+    await _run_passive_turn(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        is_private=False,
+        text="hello",
+        image_urls=[],
+        now_ms=1000,
+    )
+
+    assert chat_mock.call_count == 2
+    assert chat_mock.call_args_list[0].kwargs["session_key"] == init_key
+    assert chat_mock.call_args_list[1].kwargs["session_key"] == rotated_key, "重试必须用采纳后的新 key"
+    assert session_manager.get_session_key("ob11", False, "u1", "g1") == rotated_key

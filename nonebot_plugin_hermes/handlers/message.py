@@ -977,10 +977,14 @@ async def _chat_with_persistence_retry(label: str, /, **chat_kwargs) -> ChatResu
     label 走 positional-only,余下 kwargs 原样转给 hermes_client.chat,
     调用点因此和直接调 chat() 读起来一样。
 
-    不换 session_key:上游三类 cause(locked / disk / unknown)都指向同一个 state.db,
+    不主动换 session_key:上游三类 cause(locked / disk / unknown)都指向同一个 state.db,
     换 key 只是新开一个会话写同一个库,治不了锁也治不了满盘,代价是整个群的
     Hermes 侧上下文当场清零。disk / unknown 直接不重试 —— 重发也写不进去,而持久化
     失败是在 turn 收尾阶段判定的(工具此时已经跑过),白重试一次等于让副作用再来一遍。
+
+    **例外**:上游自己轮换了会话(同一轮里既压缩又撞锁)时,重试要跟上采纳后的新 key。
+    那不是"我们换 key",而是上游告知"活的会话已经是这个了";继续用旧 key 是往一个
+    已关闭的父会话里写,必然失败。
     """
     result = await _chat_and_adopt_rotation(**chat_kwargs)
     if not result.is_persistence_error:
@@ -995,7 +999,12 @@ async def _chat_with_persistence_retry(label: str, /, **chat_kwargs) -> ChatResu
         )
         return result
 
-    logger.warning(f"[HERMES {label}] 上游 state.db 写锁冲突,{_PERSISTENCE_RETRY_DELAY_S}s 后按原 session 重试一次")
+    if result.effective_session_key:
+        # 采纳只更新了 SessionManager 的映射,本轮的 kwargs 还攥着旧 key;
+        # 不同步过来,重试就把已关闭的父会话又钉回去了。
+        chat_kwargs["session_key"] = result.effective_session_key
+
+    logger.warning(f"[HERMES {label}] 上游 state.db 写锁冲突,{_PERSISTENCE_RETRY_DELAY_S}s 后重试一次")
     await asyncio.sleep(_PERSISTENCE_RETRY_DELAY_S)
     retried = await _chat_and_adopt_rotation(**chat_kwargs)
     if retried.is_persistence_error:
