@@ -241,6 +241,8 @@ HERMES_HONCHO_ENABLED=true
 HERMES_GROUP_SESSIONS_PER_USER=false
 ```
 
+A deployment example (compose file + config, with cost notes and verification steps) lives in [`honcho/`](honcho/).
+
 **Prerequisites** (miss either one and the feature silently does nothing):
 
 1. A memory provider configured on the Hermes side (`hermes honcho setup`). Honcho itself is either

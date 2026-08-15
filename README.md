@@ -234,6 +234,8 @@ HERMES_HONCHO_ENABLED=true
 HERMES_GROUP_SESSIONS_PER_USER=false
 ```
 
+部署 Honcho 的 compose 与配置示例见 [`honcho/`](honcho/) 目录(含成本说明与验证方法)。
+
 **前置条件**(缺任一条,功能静默无效):
 
 1. Hermes 端已配好 memory provider(`hermes honcho setup`)。Honcho 本身要么用 Honcho Cloud
