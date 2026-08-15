@@ -45,6 +45,51 @@ class Config(BaseModel):
     hermes_session_share_group: bool = False
     """群内是否共享同一个 session(False = 每人独立)"""
 
+    # --- 长期记忆作用域 (X-Hermes-Session-Key) ---
+    hermes_honcho_enabled: bool = False
+    """是否向 Hermes 发送 X-Hermes-Session-Key(长期记忆作用域)。
+
+    与 X-Hermes-Session-Id(短期 transcript)是两个独立维度:
+      - Session-Id 决定"这轮对话接哪段历史",/clear 与上游自动压缩都会让它轮换
+      - Session-Key 决定"长期记忆记在谁名下",跨 transcript、跨 /clear 稳定不变
+
+    关闭时(默认)不发该头,上游 memory provider 按自己的 strategy 兜底 ——
+    典型后果是所有群共写一份记忆,或记忆随压缩轮换而重新开始。
+
+    需要 Hermes 端已配置 memory provider(目前是 Honcho)才有实际效果;
+    没配时该头被忽略,无副作用。开启还要求本插件配了 HERMES_API_KEY ——
+    上游对这个头要求鉴权,没 key 时插件不发头并在启动日志 WARN。
+    """
+
+    hermes_group_sessions_per_user: bool = False
+    """群聊记忆作用域是否按人细分(与 Hermes 原生同名参数同语义)。
+
+    False(默认): 一个群一份记忆,群内成员共享。bot 记住的是"这个群"。
+    True:        群内每人一份记忆。bot 记住的是"这个群里的这个人",
+                 成员之间互不可见,代价是群级共识无处存放。
+    """
+
+    hermes_group_session_key_format: str = "agent:main:nonebot-{adapter}:group:{group_id}"
+    """群聊 + hermes_group_sessions_per_user=False 时的记忆 key 模板。
+
+    可用变量: adapter, group_id
+    默认值对齐 Hermes 原生 build_session_key 的 4 段格式,platform 段加 `nonebot-`
+    前缀防止与 Hermes 原生 adapter 写进同一个 memory workspace 时撞名。
+    自定义时建议保留该前缀。
+    """
+
+    hermes_group_per_user_session_key_format: str = "agent:main:nonebot-{adapter}:group:{group_id}:{user_id}"
+    """群聊 + hermes_group_sessions_per_user=True 时的记忆 key 模板。
+
+    可用变量: adapter, group_id, user_id
+    """
+
+    hermes_private_session_key_format: str = "agent:main:nonebot-{adapter}:dm:{user_id}"
+    """私聊记忆 key 模板。
+
+    可用变量: adapter, user_id
+    """
+
     # --- 消息 ---
     hermes_max_length: int = 4000
     """单条回复最大长度(超出截断,QQ 限制约 4500 字符)"""
