@@ -525,10 +525,20 @@ class HermesClient:
             self._timeout_cache = plugin_config.hermes_api_timeout
         return self._timeout_cache
 
-    def get_headers(self, session_key: str = "") -> dict[str, str]:
+    def get_headers(self, session_key: str = "", memory_key: str | None = None) -> dict[str, str]:
+        """拼装出向 header。
+
+        X-Hermes-Session-Id  = 短期 transcript 作用域(每轮必发)
+        X-Hermes-Session-Key = 长期记忆作用域(仅在调用方给了值且本地配了 api_key 时发)
+
+        没有 api_key 却发记忆头会被上游 403 整轮打回,所以这里与 Authorization
+        绑在同一个条件上。
+        """
         h = {"Content-Type": "application/json", "X-Hermes-Session-Id": session_key}
         if self.api_key:
             h["Authorization"] = f"Bearer {self.api_key}"
+            if memory_key:
+                h["X-Hermes-Session-Key"] = memory_key
         return h
 
     async def chat(
@@ -537,6 +547,7 @@ class HermesClient:
         text: str,
         image_urls: list[str] | None = None,
         session_key: str,
+        memory_key: str | None = None,
         user_id: str,
         group_id: str | None,
         adapter_name: str,
@@ -555,6 +566,9 @@ class HermesClient:
         - system_prompt: 由 prompt_builder 注入;None 走默认 Message Context 拼装。
           **注意**:外部传入 system_prompt 时,Platform/User/Group 上下文须由调用方
           自行包含,本方法不会再额外补。
+        - memory_key: 长期记忆作用域(X-Hermes-Session-Key)。None = 不发该头。
+          由 SessionManager.get_memory_key() 产出,与 session_key 相互独立:后者会随
+          /clear 与上游压缩轮换,前者不会。
         - user_content_override: 由 prompt_builder 直接给出 user message 的 content
           (str 或 OpenAI 多模态 parts 列表;text + image_urls 参数将被忽略)
         - mode 字段当前为路由元数据,chat() 内部不分支判断;Task 15 handler 据此决定
@@ -598,7 +612,7 @@ class HermesClient:
         }
         # 路径 B:不发 tools / tool_choice(Hermes 透传不可靠,P0-spike 已验)
 
-        headers = self.get_headers(session_key)
+        headers = self.get_headers(session_key, memory_key)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(url, json=payload, headers=headers)
