@@ -501,6 +501,22 @@ class ChatResult:
     """
 
 
+# 上游 /v1/capabilities 里与长期记忆作用域相关的能力键(见 api_server 的 features 块)。
+_MEMORY_CAPABILITY_KEYS = ("session_key_header",)
+
+
+def missing_memory_capabilities(caps: dict[str, Any]) -> list[str]:
+    """返回 caps 中缺失的长期记忆能力键。
+
+    上游把能力放在 {"features": {...}} 下;宽容处理平铺形状,避免因为
+    响应外壳变化就误报"上游不支持"。
+    """
+    features = caps.get("features")
+    if not isinstance(features, dict):
+        features = caps
+    return [key for key in _MEMORY_CAPABILITY_KEYS if not features.get(key)]
+
+
 class HermesClient:
     def __init__(self) -> None:
         self._api_url_cache: str | None = None
@@ -694,6 +710,18 @@ class HermesClient:
         # 普通文本路径(passive 或未要求结构化)
         cleaned, media_urls = extract_response_media(raw_text)
         return _out(ChatResult(raw_text=cleaned, media_urls=media_urls))
+
+    async def fetch_capabilities(self) -> dict[str, Any]:
+        """取 /v1/capabilities;任何失败都返回空 dict —— 探测不能阻塞启动。"""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{self.api_url}/v1/capabilities", headers=self.get_headers())
+                if resp.status_code != 200:
+                    return {}
+                data = resp.json()
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
     async def health_check(self) -> bool:
         try:

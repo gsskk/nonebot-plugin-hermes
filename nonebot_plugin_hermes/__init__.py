@@ -77,6 +77,24 @@ async def _hermes_m1_startup():
             "You can remove this env var safely."
         )
 
+    if plugin_config.hermes_honcho_enabled:
+        from .core.hermes_client import hermes_client, missing_memory_capabilities
+
+        if not plugin_config.hermes_api_key:
+            logger.warning(
+                "[HERMES] HERMES_HONCHO_ENABLED=true 但未配置 HERMES_API_KEY:"
+                "上游对 X-Hermes-Session-Key 要求鉴权,本次启动不会发送该头,长期记忆作用域不生效"
+            )
+        else:
+            missing = missing_memory_capabilities(await hermes_client.fetch_capabilities())
+            if missing:
+                logger.warning(
+                    f"[HERMES] 上游未报告长期记忆能力 {missing}(/v1/capabilities):"
+                    "可能是 Hermes 版本较旧或探测失败。头照发不误,上游不认则忽略"
+                )
+            else:
+                logger.info("[HERMES] 长期记忆作用域已启用(X-Hermes-Session-Key)")
+
     logger.info(
         f"Hermes Plugin loaded — API: {plugin_config.hermes_api_url} | "
         f"MCP: {'on ' + plugin_config.hermes_mcp_host + ':' + str(plugin_config.hermes_mcp_port) if plugin_config.hermes_mcp_enabled else 'off'} | "

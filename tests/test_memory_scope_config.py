@@ -58,3 +58,25 @@ def test_headers_omit_memory_key_without_api_key(monkeypatch):
 
     assert "X-Hermes-Session-Key" not in h
     assert "Authorization" not in h
+
+
+def test_missing_capabilities_detects_absent_header_support():
+    from nonebot_plugin_hermes.core.hermes_client import missing_memory_capabilities
+
+    assert missing_memory_capabilities({"features": {"session_key_header": "X-Hermes-Session-Key"}}) == []
+    assert missing_memory_capabilities({"features": {"session_continuity_header": "X-Hermes-Session-Id"}}) == [
+        "session_key_header"
+    ]
+
+
+def test_missing_capabilities_accepts_flat_shape():
+    """老版本 / 代理可能把 features 平铺在顶层,两种形状都认。"""
+    from nonebot_plugin_hermes.core.hermes_client import missing_memory_capabilities
+
+    assert missing_memory_capabilities({"session_key_header": "X-Hermes-Session-Key"}) == []
+
+
+def test_missing_capabilities_empty_payload_reports_missing():
+    from nonebot_plugin_hermes.core.hermes_client import missing_memory_capabilities
+
+    assert missing_memory_capabilities({}) == ["session_key_header"]
