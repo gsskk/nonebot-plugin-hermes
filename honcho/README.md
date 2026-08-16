@@ -50,13 +50,37 @@ plugins:
     - honcho
 ```
 
-装上 `honcho-ai` 依赖后重启 Hermes,再跑 `hermes honcho setup` 指向上面的地址。
-验证配置是否生效:
+装上 `honcho-ai` 依赖后重启 Hermes,再跑初始化向导:
 
 ```bash
-hermes honcho status      # 连接状态
+hermes memory setup       # 从 provider 列表里选 honcho
+```
+
+`hermes memory setup` 是框架入口,会扫描 `plugins/memory/` 下已启用的 provider 让你选;
+选中 honcho 后进入它自己的向导。插件启用之后,`hermes honcho <子命令>` 也会同时可用:
+
+```bash
+hermes honcho status      # 连接状态与完整配置
 hermes honcho strategy    # 当前 session 命名策略
 ```
+
+向导里按本插件的用途填:
+
+| 提问 | 填什么 | 说明 |
+|------|--------|------|
+| Cloud or local | 按你的部署 | 自托管选 `local`,地址即上面 compose 起的 `http://localhost:8000` |
+| Local JWT | 留空 | 对应服务端 `AUTH_USE_AUTH=false`;跨机访问时必须改为开启鉴权 |
+| Your name (user peer) | 随便填,**之后要删** | 见下一节,这是决定隔离是否完整的键 |
+| AI peer name | `hermes` | bot 在 Honcho 里的身份 |
+| Workspace ID | `hermes` | 顶层租户隔离;想和 CLI 数据彻底分开可以用单独的值 |
+| gateway users → peers | 默认 `[3]` | **对本插件无效**,只影响原生 gateway 平台,见下一节 |
+| Observation mode | `directional` | 默认即可 |
+| Write frequency | `async` | 后台线程写入,不阻塞回复 |
+| Recall mode | `context` | 见下方配置表 |
+| Context tokens | `1200` | 同上 |
+| Dialectic cadence | `5` | 同上 |
+| Reasoning level | `low` | 同上 |
+| Session strategy | `per-session` | 只影响 CLI;bot 走 `X-Hermes-Session-Key`,它优先级最高 |
 
 最后在 bot 的 `.env` 里打开插件侧开关:
 
@@ -67,6 +91,92 @@ HERMES_GROUP_SESSIONS_PER_USER=false   # 一个群一份记忆,群成员共享
 
 需要注意 Hermes 端必须配了 `API_SERVER_KEY`,插件端必须配了 `HERMES_API_KEY`——
 上游对 `X-Hermes-Session-Key` 要求鉴权,没有 key 时插件不发这个头并在启动日志 WARN。
+
+## 关键一步:删掉 `peerName`,否则隔离只做一半
+
+`hermes memory setup` 跑完后,**务必打开 `~/.hermes/honcho.json` 把 `peerName` 这个键删掉**。
+向导会把它默认成当前用户名(`root` 之类)且不接受留空,而这个值直接决定了群间隔离是否完整。
+
+Honcho 的记忆有两根正交的轴:
+
+| 轴 | 由谁决定 | 承载什么 |
+|----|---------|---------|
+| **session** | 本插件发的 `X-Hermes-Session-Key` | 对话记录、session summary |
+| **peer** | Hermes 端的 `peerName` / runtime user id | representation、peer card、dialectic 回答 |
+
+peer 的解析顺序是「`pinUserPeer` → runtime user id → `peerName` → 从 session key 派生」。
+本插件走 api_server,而 **api_server 不会把 user_id 传给 memory provider**,所以它跳过第二档:
+
+- **`peerName` 有值** → 所有群共用同一个 peer。对话记录按群分了,但**画像层跨群共享**——
+  A 群沉淀的用户画像会出现在 B 群的回复里,也就是最初要解决的那个问题。
+- **`peerName` 不存在** → 落到最后一档,peer 从 session key 派生,**每个群一个**,两根轴同时隔离。
+
+向导里那个「gateway users map to memory peers」的 1/2/3 选项**对本插件无效**——上游代码注释
+自己写明了那些键只影响能提供 runtime user id 的原生 gateway 平台(飞书 / Telegram / QQ 等)。
+按你那些原生渠道的需要选即可,默认 `[3]` 通常是对的。
+
+**代价**:同一个 Hermes 实例上的 CLI / TUI 会话同样不传 runtime user id,删掉 `peerName` 后
+它们的个人画像也会按 session 碎片化。如果这台 Hermes 你自己也开 CLI 用,就给 bot 单开一个
+profile(profile 目录就是独立的 `HERMES_HOME`,`honcho.json` 按 profile 分 host block 存),
+让两边互不影响。纯 bot 服务器则直接删,没有副作用。
+
+顺带一提,原生渠道(飞书 / QQ / Telegram 等)不受这个键影响——它们会传真实 user id,
+每个真人本来就有自己的 peer。
+
+## 建议的 `~/.hermes/honcho.json`
+
+向导跑完后的最终形态。注意**没有 `peerName` 这一行**:
+
+```json
+{
+  "hosts": {
+    "hermes": {
+      "baseUrl": "http://localhost:8000",
+      "workspace": "hermes",
+      "aiPeer": "hermes",
+
+      "recallMode": "context",
+      "contextTokens": 1200,
+      "dialecticCadence": 5,
+      "dialecticReasoningLevel": "low",
+      "reasoningLevelCap": "low",
+      "dialecticMaxChars": 600,
+
+      "writeFrequency": "async",
+      "observationMode": "directional",
+      "sessionStrategy": "per-session",
+
+      "pinUserPeer": false,
+      "userPeerAliases": {},
+      "runtimePeerPrefix": ""
+    }
+  }
+}
+```
+
+`hosts` 的键是按 Hermes profile 派生的,所以不同 profile 各有一份配置、互不影响。
+
+为什么这么调(向导默认值是按"单人用 CLI"设计的,群 bot 场景有三处会持续烧额度):
+
+| 键 | 向导默认 | 建议 | 理由 |
+|----|---------|------|------|
+| `recallMode` | `hybrid` | `context` | tools 模式下模型每调一次 `honcho_*` 就是一次完整的 agent round-trip(又一次 chat completion)。群聊里模型爱试探,开销不可控;context 一次注入拿完 |
+| `contextTokens` | uncapped | `1200` | 不封顶意味着 system prompt 随记忆增长而变长,既吃输入额度,又因为每轮内容都变而**破坏 prompt cache** |
+| `dialecticCadence` | `2` | `5` | 每次 dialectic 是 Honcho 后端的一次 LLM 调用。每两轮一次,在活跃群里是持续的后台开销 |
+| `reasoningLevelCap` | `high` | `low` | `reasoningHeuristic` 默认开着,会按需自动升档,cap 决定它最高能升到哪。群聊记忆用不着审计级分析 |
+| `writeFrequency` | `async` | 保持 | 后台线程写入,不占用回复路径 |
+| `sessionStrategy` | `per-session` | 保持 | 只影响 CLI。bot 走 `X-Hermes-Session-Key`,它在 Honcho 的 session 名解析里优先级最高,策略管不到 |
+| `pinUserPeer` / `userPeerAliases` / `runtimePeerPrefix` | 按向导选择 | 保持 | 只影响原生 gateway 平台,对本插件无效 |
+
+其中两项有子命令可改,不必手编 JSON:
+
+```bash
+hermes honcho mode context
+hermes honcho tokens --context 1200 --dialectic 600
+```
+
+`dialecticCadence` 和 `reasoningLevelCap` 没有对应子命令,要么手改 JSON,要么重跑向导时在
+对应提问处填。
 
 ## 验证链路通了
 

@@ -243,12 +243,17 @@ HERMES_GROUP_SESSIONS_PER_USER=false
 
 A deployment example (compose file + config, with cost notes and verification steps) lives in [`honcho/`](honcho/).
 
-**Prerequisites** (miss either one and the feature silently does nothing):
+**Prerequisites** (miss any one and the feature silently does nothing, or only half-works):
 
-1. A memory provider configured on the Hermes side (`hermes honcho setup`). Honcho itself is either
+1. A memory provider configured on the Hermes side (`hermes memory setup`). Honcho itself is either
    Honcho Cloud (usage-billed) or a self-hosted Postgres + pgvector + FastAPI stack — not just a flag.
 2. `HERMES_API_KEY` set in the plugin. Upstream requires auth for this header; without a key the
    plugin omits the header and warns at startup.
+3. **No `peerName` key** in `~/.hermes/honcho.json` on the Hermes side. When it is set, every group
+   shares one memory peer, so the derived layer (representation / peer card) is shared across groups
+   and only the transcript layer ends up isolated. The `hermes memory setup` wizard defaults it to
+   your username and won't accept a blank — delete the key afterwards. See
+   [`honcho/README.md`](honcho/README.md).
 
 **Cost of switching**: turning it on renames the memory scope, so memory accumulated under the old
 scope is no longer visible. The data stays on the Hermes side — turning the switch off restores the

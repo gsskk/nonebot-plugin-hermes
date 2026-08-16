@@ -238,9 +238,13 @@ HERMES_GROUP_SESSIONS_PER_USER=false
 
 **前置条件**(缺任一条,功能静默无效):
 
-1. Hermes 端已配好 memory provider(`hermes honcho setup`)。Honcho 本身要么用 Honcho Cloud
+1. Hermes 端已配好 memory provider(`hermes memory setup`)。Honcho 本身要么用 Honcho Cloud
    (按量计费),要么自托管一套 Postgres + pgvector + FastAPI 服务,不是加个开关就有的东西。
 2. 插件配了 `HERMES_API_KEY`。上游对这个头要求鉴权,没 key 时插件不发头并在启动日志 WARN。
+3. Hermes 端的 `~/.hermes/honcho.json` **不能有 `peerName` 这个键**。它有值时所有群共用一个
+   memory peer,画像层(representation / peer card)会跨群共享,隔离只做到对话记录那一层。
+   `hermes memory setup` 向导会把它默认成当前用户名且不接受留空,跑完要手动删掉。
+   详见 [`honcho/README.md`](honcho/README.md)。
 
 **切换代价**:开启后记忆作用域改名,此前累积在旧作用域下的记忆不再被读到。数据仍在 Hermes
 侧,关掉开关即回原状。另外记忆需要累积,头一两周体感不明显。
