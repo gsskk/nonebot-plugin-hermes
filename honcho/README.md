@@ -193,10 +193,16 @@ Honcho session key resolved: agent-main-nonebot-onebotv11-group-<群号>
 
 Honcho 不是装上就完事的组件,它持续烧 LLM 额度:
 
-- **deriver**:每条消息触发一次后台提炼——这是大头
+- **deriver**:每条消息触发一次后台提炼——按频次算是大头
+- **dream**:后台"睡眠期整理",两个自主 agent 回头翻已有观察做演绎与归纳。频次低
+  (攒够 50 条观察 / 闲置 60 分钟触发,两次至少隔 8 小时),但**单次最贵**——每个 agent
+  最多 20 轮工具迭代、每轮读 16k 上下文。**默认开着**,`.env.example` 里建议先关
 - **dialectic**:按轮次触发,一轮可能多发几次
 - **summary**:会话推进到一定长度跑一次
 - **embedding**:开启时每条消息一次(`.env.example` 里默认关掉)
+
+⚠️ Honcho **没有全局 base_url**,上面每个模块都要单独配 `..._MODEL_CONFIG__OVERRIDES__BASE_URL`。
+漏掉哪个,那个模块就直接打到 `api.openai.com` 并抛 401 —— 详见 `.env.example` 里的清单。
 
 群越活跃烧得越多,而且这些后台调用与 bot 回复用户**共用同一个额度池**。如果你的 LLM
 是按额度封顶的订阅制,强烈建议给 Honcho 单配一把便宜的 key,把后台提炼和主对话分开——
