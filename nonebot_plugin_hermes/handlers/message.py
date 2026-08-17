@@ -35,6 +35,7 @@ from ..core.prompt_builder import (
     build_reactive_system_prompt,
     build_reactive_user_content,
 )
+from ..core.routing import resolve_target
 from ..core.session import session_manager
 from ..utils import check_isolation, get_adapter_name
 
@@ -1037,6 +1038,7 @@ async def _run_passive_turn(
         user_id=user_id,
         group_id=group_id,
     )
+    hermes_target = resolve_target(adapter_name, is_private, group_id)
 
     # 群聊 + 默认配置(active_session=false)+ perception_enabled:补回 0.1.6
     # 「@bot 时让 LLM 看到群里旁观历史」。before_ts=now_ms 排除 perception 在
@@ -1080,6 +1082,7 @@ async def _run_passive_turn(
         expect_structured=False,
         system_prompt=system_prompt,
         user_content_override=user_content,
+        target=hermes_target,
     )
 
     # 上游 transport_error 同款保护(见 _run_reactive_turn 同名分支注释)。
@@ -1211,6 +1214,7 @@ async def _run_reactive_turn(
         user_id=user_id,
         group_id=group_id,
     )
+    hermes_target = resolve_target(adapter_name, False, group_id)
     # 注:user_content_override 已携带 user message 的全部内容(text + 多模态);
     # text/image_urls 在 chat() 中会被忽略(见 hermes_client.chat 文档),此处显式传 ""
     # /[] 让契约清晰,避免被读者误以为 image_urls 也参与了构造。
@@ -1229,6 +1233,7 @@ async def _run_reactive_turn(
         structured_tool_name="submit_decision",
         system_prompt=system_prompt,
         user_content_override=user_content,
+        target=hermes_target,
     )
 
     if result.parse_failed or result.structured is None:
