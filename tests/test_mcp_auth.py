@@ -169,7 +169,7 @@ def test_validate_push_context_checks_scope_before_session(monkeypatch):
 
     # g2 有活跃 session 且有路由,但不在这把 token 的范围内 → 报的必须是范围,
     # 而不是暴露 g2 的 session 状态。
-    with pytest.raises(PushContextError, match="not scoped"):
+    with pytest.raises(PushContextError, match="not authorized"):
         validate_push_context(
             adapter="ob11",
             group_id="g2",
@@ -187,7 +187,7 @@ def test_validate_push_context_missing_scope_is_refused():
     am.trigger("ob11", "g1", "u1", now_ms=0)
     br.upsert("ob11", "group", "g1", "bot", _FakeTarget(), ts=0)
 
-    with pytest.raises(PushContextError, match="not scoped"):
+    with pytest.raises(PushContextError, match="not authorized"):
         validate_push_context(
             adapter="ob11",
             group_id="g1",

@@ -45,18 +45,41 @@ def caller_scope_from_request() -> CallerScope | None:
     return resolve_caller_scope(headers.get("authorization"))
 
 
+def scope_refusal(adapter: str, group_id: str, scope: CallerScope | None) -> str | None:
+    """判定范围;放行返回 None,拒绝返回**给调用方看的**一句话(并留 bot 侧 WARNING)。
+
+    工具实现优先用这个而不是 assert_scope_allows:FastMCP 对**任何**从工具体里抛出的异常
+    都走 logger.exception(ToolError 也是 FastMCPError,同样落进那一支),于是每次越权都会在
+    bot 日志里刷一大段 traceback —— 而越权是预期内的正常判定结果,不是崩溃。
+    """
+    if scope is not None and scope.allows(adapter, group_id):
+        return None
+    # 拒绝必须留痕:否则现场症状是"bot 偶尔不吭声、只有某个群不行",极难查。
+    # 这里用 describe()(含被排除的别群标签),它只进日志;回给调用方的是 describe_for_caller()。
+    detail = "unresolved caller" if scope is None else scope.describe()
+    logger.warning(f"[HERMES MCP] 拒绝越权操作 ({adapter}, {group_id}) —— caller: {detail}")
+    if scope is None:
+        hint = "the bridge could not identify this caller's endpoint"
+    else:
+        hint = scope.describe_for_caller()
+    return (
+        f"not authorized for ({adapter}, {group_id}): {hint}. "
+        "This is a configuration boundary, not a transient failure — do not retry. "
+        "If it should be allowed, the operator has to align this endpoint's MCP token with "
+        "HERMES_GROUP_ENDPOINTS on the bot side."
+    )
+
+
 def assert_scope_allows(adapter: str, group_id: str, scope: CallerScope | None) -> None:
-    """受限调用方只能操作自己名下的群。scope=None(认不出)一律拒。
+    """scope_refusal 的抛异常版本,供已经把错误折进返回值的调用点使用
+    (push_message 的 validate_push_context 链)。
 
     Raises:
         PushContextError: 目标群不在该调用方范围内。
     """
-    if scope is not None and scope.allows(adapter, group_id):
-        return
-    # 拒绝必须留痕:否则现场症状是"bot 偶尔不吭声、只有某个群不行",极难查。
-    detail = "unresolved caller" if scope is None else scope.describe()
-    logger.warning(f"[HERMES MCP] 拒绝越权操作 ({adapter}, {group_id}) —— caller: {detail}")
-    raise PushContextError(f"caller is not scoped to ({adapter}, {group_id})")
+    refusal = scope_refusal(adapter, group_id, scope)
+    if refusal is not None:
+        raise PushContextError(refusal)
 
 
 def validate_push_context(

@@ -519,15 +519,50 @@ complement key (the default profile).
 >   in its `platform_toolsets.api_server` turns it on; the special `no_mcp` sentinel turns off all MCP
 >   tools for that profile; writing neither leaves its MCP name set empty, which also yields nothing.
 >   This layer is read per request — no restart needed.
-> - but **the scope does not vary per profile**: the plugin only ever sees that one shared token. It is
->   usually the global `HERMES_API_KEY` (scope = the complement), so **no agent can push into a routed
->   group** — refused and logged. Fail-closed, but it amounts to "routed groups have no reverse channel
->   under multiplexing".
+> - with the most obvious setup (one `nonebot` server on the default profile) **the scope does not vary
+>   per profile**: the plugin only ever sees that one shared token, usually the global
+>   `HERMES_API_KEY` (scope = the complement), so no agent can push into a routed group — refused and
+>   logged (fail-closed, but those groups effectively have no reverse channel).
 >
-> To scope the reverse channel **per endpoint**, run **one gateway process per profile** (`url` on its
-> own port, multiplexing off): each process then runs its own MCP discovery against its own
-> `config.yaml`, and the token really is per profile. `validate_endpoints()` warns at startup whenever
-> the routing table contains a `/p/<profile>` url while `HERMES_MCP_ENABLED=true`.
+> **You can still get per-endpoint tokens under multiplexing.** MCP tool names are namespaced by server
+> name (`mcp__<server>__<tool>`), so the same URL may be connected more than once under different names:
+>
+> ```yaml
+> # ~/.hermes/config.yaml (default profile — it owns every connection and token)
+> mcp_servers:
+>   nonebot-team-a:
+>     url: http://<bot>:8643/mcp
+>     headers: { Authorization: "Bearer <team-a's API_SERVER_KEY>" }
+>   nonebot-lab:
+>     url: http://<bot>:8643/mcp
+>     headers: { Authorization: "Bearer <lab's API_SERVER_KEY>" }
+> ```
+>
+> ```yaml
+> # ~/.hermes/profiles/team-a/config.yaml — declare only its own name
+> mcp_servers:
+>   nonebot-team-a: { url: http://<bot>:8643/mcp }   # url/headers inert; the name is what enables it
+> ```
+>
+> team-a's agent then sees only `mcp__nonebot_team_a__*` and its calls carry team-a's token, so the
+> plugin's scope resolution lines up per endpoint. **The default profile must allowlist itself too**,
+> or it gets every server name — and with it the ability to act on everyone else's groups:
+>
+> ```yaml
+> # ~/.hermes/config.yaml
+> platform_toolsets:
+>   api_server: [<your existing toolsets>, nonebot-default]   # only its own name
+> ```
+>
+> Three costs: **the default profile's `config.yaml` holds every endpoint's token** (it owns all
+> connections — so the default profile must be trusted and toolset-restricted; an agent there that can
+> read files can read every token), one live connection per server name, and the name must match in both
+> files (a typo means that profile silently gets no tools). If the Bearer is written as a
+> `${MCP_*_API_KEY}` reference, the variable has to live in the **default profile's `.env`** —
+> interpolation happens when the connection is made at startup, in the default scope.
+>
+> `validate_endpoints()` warns at startup whenever the routing table contains a `/p/<profile>` url while
+> `HERMES_MCP_ENABLED=true`, pointing at the setup above.
 
 Every refusal logs a WARNING on the bot side naming the caller's endpoint, its scope and the refused
 target — check that first when "the reverse channel stopped working for one group".

@@ -192,3 +192,48 @@ async def test_endpoint_key_authenticates_at_the_asgi_layer(_app):
             },
         )
     assert resp.status_code != 401
+
+
+@pytest.mark.asyncio
+async def test_out_of_scope_read_is_a_normal_result_not_a_traceback(_app, caplog):
+    """越权读:回一条正常结果(带 error 字段),bot 日志里**不能**出现 FastMCP 的异常栈。
+
+    FastMCP 对工具体里抛出的任何异常都走 logger.exception —— 包括 ToolError,因为它也是
+    FastMCPError。越权是预期内的判定结果,所以工具必须把它折进返回值。
+    """
+    import logging
+
+    from mcp.client.session import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+    from nonebot import logger as nb_logger
+
+    caplog.set_level(logging.INFO)
+    # bot 侧那条 WARNING 走 loguru,caplog(stdlib logging)抓不到 —— 自己挂个 sink。
+    warned: list[str] = []
+    sink_id = nb_logger.add(lambda m: warned.append(str(m)), level="WARNING")
+
+    try:
+        async with (
+            _serving(_app) as url,
+            # 全局 key = 补集 scope;g1 被路由到 team-a,所以补集不含它。
+            streamablehttp_client(url, headers={"Authorization": f"Bearer {_GLOBAL}"}) as (read, write, _sid),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            result = await session.call_tool("get_recent_messages", {"adapter": "ob11", "group_id": "g1"})
+    finally:
+        nb_logger.remove(sink_id)
+
+    assert result.isError is False, "越权不该被当成工具调用失败"
+    payload = json.loads(result.content[0].text)
+    assert payload["messages"] == []
+    assert "not authorized" in payload["error"]
+    assert "do not retry" in payload["error"]
+    # 别的群的路由配置不能随错误信息漏给调用方
+    assert "ob11:g3" not in payload["error"]
+
+    # FastMCP 的异常日志(以及任何带 exc_info 的记录)都不该出现
+    assert not [r for r in caplog.records if r.exc_info], "工具越权时不应有异常栈"
+    assert not [r for r in caplog.records if "Error calling tool" in r.getMessage()]
+    # 但 bot 侧那条可诊断的 WARNING 必须在(它带完整范围,含被排除的别群标签)
+    assert any("拒绝越权操作" in w for w in warned)

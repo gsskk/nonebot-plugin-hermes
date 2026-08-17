@@ -487,14 +487,47 @@ Hermes 侧既是它的 `API_SERVER_KEY` 也是它的 MCP token。轮换一次改
 > - 反过来,**要不要给某个 profile 反向通道是它自己说了算**:它的 `platform_toolsets.api_server`
 >   列出该 server 名 = 打开;放特殊哨兵 `no_mcp` = 该 profile 完全没有 MCP 工具;两者都不写则它的
 >   MCP 名单为空,同样拿不到。这一层每请求读、改完不用重启。
-> - 但**scope 不随 profile 变**:插件看到的永远是那把共享 token。它通常就是全局 `HERMES_API_KEY`
->   (scope = 补集),于是**进了路由表的群谁都推不进去** —— 会被拒并留 WARNING。方向是 fail-closed 的,
->   但等价于"被路由的群在多路复用下没有反向通道"。
+> - 照最直觉的配法(默认 profile 一个 `nonebot` server),**scope 不随 profile 变**:插件看到的永远
+>   是那把共享 token,通常就是全局 `HERMES_API_KEY`(scope = 补集),于是进了路由表的群谁都推不进去
+>   —— 会被拒并留 WARNING(fail-closed,但等于那些群没有反向通道)。
 >
-> 要让反向通道**按接入点**收敛,就用**每 profile 一个 gateway 进程**(`url` 填各自端口、别开多路
-> 复用):那时每个进程各自做一次 MCP 发现,各自读自己的 `config.yaml`,token 才真正按 profile 分。
-> 启动期 `validate_endpoints()` 会对"路由表里有 `/p/<profile>` 形式的 url 且 `HERMES_MCP_ENABLED=true`"
-> 这个组合直接告警。
+> **想在多路复用下让 token 也按接入点分开,可以做到** —— MCP 工具名按 server 名 namespace
+> (`mcp__<server>__<tool>`),所以同一个 URL 可以用不同名字连多次:
+>
+> ```yaml
+> # ~/.hermes/config.yaml(默认 profile —— 连接与 token 都由它建立)
+> mcp_servers:
+>   nonebot-team-a:
+>     url: http://<bot>:8643/mcp
+>     headers: { Authorization: "Bearer <team-a 的 API_SERVER_KEY>" }
+>   nonebot-lab:
+>     url: http://<bot>:8643/mcp
+>     headers: { Authorization: "Bearer <lab 的 API_SERVER_KEY>" }
+> ```
+>
+> ```yaml
+> # ~/.hermes/profiles/team-a/config.yaml —— 只声明属于自己的那个名字
+> mcp_servers:
+>   nonebot-team-a: { url: http://<bot>:8643/mcp }   # url/headers 不生效,声明名字即开启
+> ```
+>
+> 这样 team-a 的 agent 只看到 `mcp__nonebot_team_a__*`,发出的请求带 team-a 那把 token,插件的
+> scope 判定就按接入点成立了。**默认 profile 自己也要显式 allowlist**,否则它会拿到全部 server 名、
+> 也就拿到了操作别人群的能力:
+>
+> ```yaml
+> # ~/.hermes/config.yaml
+> platform_toolsets:
+>   api_server: [<你原来那些工具集>, nonebot-default]   # 只列自己那个名字
+> ```
+>
+> 三个代价:**默认 profile 的 config.yaml 里握着全部接入点的 token**(所有连接都由它建,所以默认
+> profile 必须可信 + 受限工具集,它的 agent 能读文件就能拿到全部 token);每个 server 名一条常驻
+> 连接;名字两处必须一致,拼错就是那个 profile 静默没有工具。Bearer 若写成 `${MCP_*_API_KEY}`
+> 引用形式,变量必须在**默认 profile 的 `.env`** 里 —— 插值发生在启动建连时的默认作用域下。
+>
+> 启动期 `validate_endpoints()` 会对"路由表里有 `/p/<profile>` 形式的 url 且
+> `HERMES_MCP_ENABLED=true`"这个组合告警,提醒你按上面这样配。
 
 被拒时 bot 侧会留一条 WARNING,写清调用方属于哪个接入点、它的范围、被拒的目标 —— 排查
 "某个群的反向推送忽然不工作"时先看这条。

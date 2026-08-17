@@ -116,12 +116,28 @@ class CallerScope:
         return label not in isolated_labels()
 
     def describe(self) -> str:
-        """给日志用的自述。**不含 token 本身。**"""
+        """给**日志**用的自述。**不含 token 本身。**
+
+        含别的群的标签(补集要列出被排除的),所以只能进 bot 侧日志,不能回给调用方 ——
+        回给调用方的版本见 describe_for_caller()。
+        """
         if self.kind == _KIND_DEV:
             return "dev-mode(未配置任何 key)"
         if self.kind == _KIND_LISTED:
             return f"endpoint={self.endpoint_url} groups={sorted(self.labels)}"
         return f"endpoint={_DEFAULT_LABEL} groups=补集(排除 {sorted(isolated_labels())})"
+
+    def describe_for_caller(self) -> str:
+        """回给 MCP 调用方的范围说明:只说它自己的范围,不泄露别的群。
+
+        listed 那档报的是调用方名下的群(本来就是它自己的);complement 那档**不能**列出被
+        排除的标签(那是别的群的路由配置),改用一句话描述。
+        """
+        if self.kind == _KIND_DEV:
+            return "all groups (no API key configured on the bridge)"
+        if self.kind == _KIND_LISTED:
+            return "this endpoint covers: " + ", ".join(sorted(self.labels))
+        return "this token only covers groups that are NOT routed to a dedicated endpoint"
 
 
 def isolated_labels() -> frozenset[str]:
@@ -200,17 +216,20 @@ def validate_endpoints() -> list[str]:
             problems.append(f"{label} 的 key 短于 {_MIN_KEY_LEN} 字符,上游会判为未配置并拒绝请求")
 
     # 多路复用形态 + 反向通道:上游把 MCP 分成两层 —— **连接**按默认 profile 的 config 在进程启动
-    # 时建一次(注册表全进程共享),**可用性**才按被路由到的 profile 每请求解析。于是命名 profile
-    # 里配的 url/headers 不生效,所有拿到该工具的 profile 都呈默认 profile 那一把 token,插件只能
-    # 把它们判成同一个 scope。要按接入点收敛反向通道,只能让每个 profile 跑自己的 gateway 进程。
+    # 时建一次(注册表全进程共享),**可用性**才按被路由到的 profile 每请求解析。所以命名 profile
+    # 里写的 Bearer 不生效,默认配法下所有 profile 呈同一把 token、被判成同一个 scope。
+    # 解法不是放弃多路复用:MCP 工具名按 server 名 namespace(mcp__<server>__<tool>),所以可以在
+    # 默认 profile 里为每个接入点配一个同 URL、不同名字、不同 Bearer 的 server,各 profile 只声明
+    # 自己那个名字 —— token 就按 profile 分开了。这里只能提醒,插件无法从自己这侧核实对面怎么配。
     if plugin_config.hermes_mcp_enabled:
         multiplexed = sorted(label for label, entry in entries.items() if "/p/" in entry.url)
         if multiplexed:
             problems.append(
                 f"{multiplexed} 走多路复用前缀(/p/<profile>):上游的 MCP 连接按默认 profile 的配置在"
-                f"进程启动时建立并全局共享,命名 profile 里写的 Bearer 不会生效 —— 反向通道无法按接入点"
-                f"收敛,这些群的 push/读会按共享 token 的范围(通常是补集)判定而被拒。"
-                f"要按群隔离反向通道,改用每 profile 一个 gateway 进程的部署形态"
+                f"进程启动时建立并全局共享,命名 profile 里写的 Bearer 不生效。要让反向通道按接入点收敛,"
+                f"须在默认 profile 里为每个接入点各配一个同 URL、不同 server 名、不同 Bearer 的 MCP "
+                f"server,并让各 profile 只在自己的 mcp_servers 里声明对应的那个名字;否则所有 profile "
+                f"共用一把 token,这些群的 push/读会按共享 token 的范围(通常是补集)判定而被拒"
             )
 
     # 同一个接入点配了多把不同的 key —— 其中至少一把必然 401。

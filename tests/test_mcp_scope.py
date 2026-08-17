@@ -210,11 +210,13 @@ async def test_push_message_refuses_out_of_scope_group(monkeypatch):
     )
 
     assert result.ok is False
-    assert "not scoped" in (result.error or "")
+    assert "not authorized" in (result.error or "")
 
 
 @pytest.mark.asyncio
 async def test_get_recent_messages_refuses_out_of_scope_group(monkeypatch):
+    """越权走返回值里的 error,**不抛异常** —— FastMCP 会把任何异常打成 traceback,
+    而越权是预期内的判定结果,不该在 bot 日志里刷崩溃栈。"""
     from nonebot_plugin_hermes.core.routing import resolve_caller_scope
     from nonebot_plugin_hermes.mcp.tools.get_recent_messages import (
         GetRecentMessagesInput,
@@ -228,12 +230,59 @@ async def test_get_recent_messages_refuses_out_of_scope_group(monkeypatch):
         def get_recent(self, **kwargs):  # pragma: no cover - 不该被调用到
             raise AssertionError("越权调用不该走到取数")
 
-    with pytest.raises(ValueError, match="not scoped"):
-        await get_recent_messages_impl(
-            GetRecentMessagesInput(adapter="ob11", group_id="g3"),
-            message_buffer=_Buffer(),
-            scope=scope,
-        )
+    result = await get_recent_messages_impl(
+        GetRecentMessagesInput(adapter="ob11", group_id="g3"),
+        message_buffer=_Buffer(),
+        scope=scope,
+    )
+
+    assert result.messages == []
+    assert result.error is not None
+    assert "not authorized" in result.error
+    assert "do not retry" in result.error
+
+
+@pytest.mark.asyncio
+async def test_get_recent_messages_refusal_does_not_leak_other_groups(monkeypatch):
+    """回给调用方的话里不能出现别的群 —— 那是别人的路由配置。"""
+    from nonebot_plugin_hermes.core.routing import resolve_caller_scope
+    from nonebot_plugin_hermes.mcp.tools.get_recent_messages import (
+        GetRecentMessagesInput,
+        get_recent_messages_impl,
+    )
+
+    _two_profiles(monkeypatch)
+    # 补集 scope(全局 key):它的 describe() 会列出被排除的群,describe_for_caller() 不能。
+    scope = resolve_caller_scope(f"Bearer {_GLOBAL}")
+
+    class _Buffer:
+        def get_recent(self, **kwargs):  # pragma: no cover
+            raise AssertionError("越权调用不该走到取数")
+
+    result = await get_recent_messages_impl(
+        GetRecentMessagesInput(adapter="ob11", group_id="g1"),
+        message_buffer=_Buffer(),
+        scope=scope,
+    )
+
+    assert result.error is not None
+    for other in ("g2", "g3"):
+        assert f"ob11:{other}" not in result.error
+    # 被拒的那个群本身可以出现(调用方自己传的)
+    assert "g1" in result.error
+
+
+def test_describe_for_caller_never_lists_other_groups(monkeypatch):
+    from nonebot_plugin_hermes.core.routing import resolve_caller_scope
+
+    _two_profiles(monkeypatch)
+    complement = resolve_caller_scope(f"Bearer {_GLOBAL}").describe_for_caller()
+    for label in ("ob11:g1", "ob11:g2", "ob11:g3"):
+        assert label not in complement
+
+    listed = resolve_caller_scope(f"Bearer {_TEAM_A}").describe_for_caller()
+    assert "ob11:g1" in listed and "ob11:g2" in listed
+    assert "ob11:g3" not in listed
 
 
 @pytest.mark.asyncio
