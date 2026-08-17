@@ -376,6 +376,23 @@ hermes gateway restart
 profile 的 config.yaml 里启用 `api_server` —— 端口绑定类平台留在默认 profile,次级 profile 靠
 `/p/<profile>/` 前缀被访问。反过来,如果你选的是"独立进程"形态,那就**别开**多路复用。
 
+`hermes config set gateway.multiplex_profiles true` 可能会打印一条 `not a recognized config key`
+并建议你改成 `gateway.multiplex_profile_allowlist` —— **别照着改**。这个键运行时确实会被读
+(`gateway/config.py` 里有专门认它的分支,注释直接点名这条命令),告警只是上游 CLI 的键表没登记
+嵌套形式;想消掉就用顶层形式 `hermes config set multiplex_profiles true`(等价)或加 `--force`。
+`multiplex_profile_allowlist` 是另一件事:哪些命名 profile 被多路复用器服务,**留空不配 = 全部服务**,
+设成 `[]`(或写错类型 fail-safe 成 `[]`)则只服务默认 profile,你的 `/p/teamA/` 会 404。
+
+改完重启,然后用这条确认前缀真的生效(唯一的 ground truth):
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer <teamA 自己的 API_SERVER_KEY>" \
+  http://<hermes-host>:8642/p/teamA/v1/models
+# 200 = 生效;401 = 前缀被静默忽略(当默认 profile 处理了,等于没开);
+# 404 = 前缀被拒(profile 不存在,或被 allowlist 排除)
+```
+
 每个新接入点各一次:
 
 ```bash

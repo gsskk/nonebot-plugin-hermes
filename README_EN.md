@@ -397,6 +397,25 @@ platforms stay on the default profile and secondary profiles are reached through
 `/p/<profile>/` prefix. Conversely, if you picked the "separate processes" shape, leave multiplexing
 **off**.
 
+`hermes config set gateway.multiplex_profiles true` may print `not a recognized config key` and
+suggest `gateway.multiplex_profile_allowlist` — **do not follow that suggestion**. The key *is* read at
+runtime (`gateway/config.py` has a branch specifically for it, whose comment names this exact
+command); the warning is only the upstream CLI's key table missing the nested form. To silence it, use
+the equivalent top-level form `hermes config set multiplex_profiles true`, or pass `--force`.
+`multiplex_profile_allowlist` is a different setting — which named profiles the multiplexer serves.
+**Leaving it unset serves all of them**; setting it to `[]` (or to a malformed value, which fails safe
+to `[]`) serves only the default profile and your `/p/teamA/` will 404.
+
+After restarting, confirm the prefix really took effect (the only ground truth):
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer <teamA's own API_SERVER_KEY>" \
+  http://<hermes-host>:8642/p/teamA/v1/models
+# 200 = live; 401 = prefix silently ignored (served as the default profile, i.e. not enabled);
+# 404 = prefix rejected (profile missing, or excluded by the allowlist)
+```
+
 Per new endpoint:
 
 ```bash
