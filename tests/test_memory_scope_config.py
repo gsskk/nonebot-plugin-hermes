@@ -33,7 +33,6 @@ def test_headers_carry_memory_key_when_set(monkeypatch):
     from nonebot_plugin_hermes.core.hermes_client import HermesClient
 
     monkeypatch.setattr(plugin_config, "hermes_api_key", "secret-key")
-    # 新建实例:属性缓存是懒加载的,新实例才会读到 monkeypatch 后的配置
     h = HermesClient().get_headers("hermes-sid", "agent:main:nonebot-ob11:group:g1")
 
     assert h["X-Hermes-Session-Id"] == "hermes-sid"

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
+import pytest
+
 
 def test_group_endpoints_empty_by_default():
     from nonebot_plugin_hermes.config import plugin_config
@@ -193,3 +197,127 @@ def test_validate_endpoints_silent_when_clean(monkeypatch):
     monkeypatch.setattr(plugin_config, "hermes_api_url", "http://127.0.0.1:8642")
     _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8643", "key": "sk-a-at-least-16-ch"}})
     assert validate_endpoints() == []
+
+
+class _FakeResponse:
+    status_code = 200
+    headers: ClassVar[dict] = {}
+
+    @staticmethod
+    def json():
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+
+class _CapturingAsyncClient:
+    """记录 chat() 实际用了哪个 URL / header / timeout。"""
+
+    calls: ClassVar[list[dict]] = []
+
+    def __init__(self, timeout=None):
+        self._timeout = timeout
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None, headers=None):
+        type(self).calls.append({"url": url, "headers": headers, "timeout": self._timeout})
+        return _FakeResponse()
+
+
+@pytest.mark.asyncio
+async def test_chat_uses_target_url_key_and_timeout(monkeypatch):
+    import httpx
+
+    from nonebot_plugin_hermes.core import hermes_client as client_mod
+    from nonebot_plugin_hermes.core.routing import HermesTarget
+
+    _CapturingAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _CapturingAsyncClient)
+
+    tgt = HermesTarget(base_url="http://127.0.0.1:8642/p/teamA", api_key="sk-a", timeout=42, label="ob11:g1")
+    await client_mod.HermesClient().chat(
+        text="hi",
+        session_key="hermes-sid",
+        user_id="u1",
+        group_id="g1",
+        adapter_name="ob11",
+        is_private=False,
+        target=tgt,
+    )
+
+    call = _CapturingAsyncClient.calls[0]
+    assert call["url"] == "http://127.0.0.1:8642/p/teamA/v1/chat/completions"
+    assert call["headers"]["Authorization"] == "Bearer sk-a"
+    assert call["timeout"] == 42
+
+
+@pytest.mark.asyncio
+async def test_chat_without_target_uses_default(monkeypatch):
+    import httpx
+
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.core import hermes_client as client_mod
+
+    _CapturingAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _CapturingAsyncClient)
+    monkeypatch.setattr(plugin_config, "hermes_api_url", "http://127.0.0.1:8642")
+    monkeypatch.setattr(plugin_config, "hermes_api_key", "sk-global")
+
+    await client_mod.HermesClient().chat(
+        text="hi",
+        session_key="hermes-sid",
+        user_id="u1",
+        group_id=None,
+        adapter_name="ob11",
+        is_private=True,
+    )
+
+    call = _CapturingAsyncClient.calls[0]
+    assert call["url"] == "http://127.0.0.1:8642/v1/chat/completions"
+    assert call["headers"]["Authorization"] == "Bearer sk-global"
+
+
+def test_get_headers_explicit_api_key_overrides_global(monkeypatch):
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.core.hermes_client import HermesClient
+
+    monkeypatch.setattr(plugin_config, "hermes_api_key", "sk-global")
+    h = HermesClient().get_headers("hermes-sid", api_key="sk-a")
+    assert h["Authorization"] == "Bearer sk-a"
+
+
+@pytest.mark.asyncio
+async def test_health_check_probes_the_given_target(monkeypatch):
+    """/hermes-status 逐接入点体检要靠这个:探的是 target 自己的 url 与 key。"""
+    import httpx
+
+    from nonebot_plugin_hermes.core.hermes_client import HermesClient
+    from nonebot_plugin_hermes.core.routing import HermesTarget
+
+    seen: dict = {}
+
+    class _GetClient:
+        def __init__(self, timeout=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, headers=None):
+            seen.update({"url": url, "headers": headers})
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _GetClient)
+    ok = await HermesClient().health_check(
+        HermesTarget(base_url="http://127.0.0.1:8643", api_key="sk-b", timeout=9, label="ob11:g2")
+    )
+
+    assert ok is True
+    assert seen["url"] == "http://127.0.0.1:8643/v1/models"
+    assert seen["headers"]["Authorization"] == "Bearer sk-b"
