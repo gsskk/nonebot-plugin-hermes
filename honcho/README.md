@@ -210,7 +210,65 @@ Honcho 不是装上就完事的组件,它持续烧 LLM 额度:
 是按额度封顶的订阅制,强烈建议给 Honcho 单配一把便宜的 key,把后台提炼和主对话分开——
 否则后台把额度啃完时,表现是 bot 该说话时说不了,排查起来会绕远路。
 
-省钱的三个旋钮:flash 档模型、`DERIVER_WORKERS=1`、`EMBED_MESSAGES=false`。
+省钱的旋钮:flash 档模型、`DERIVER_WORKERS=1`、`DREAM_ENABLED=false`、把
+`dialecticCadence` 调稀。`EMBED_MESSAGES=false` 只省聊天消息那一路的向量,
+省不掉 observation 的。
+
+## 冷启动期的 dialectic 风暴
+
+刚部署完会在 Hermes 日志里看到:
+
+```
+WARNING plugins.memory.honcho.session: Honcho dialectic query failed: Request timed out after 30.0s
+```
+
+而 Honcho 侧是一串工具调用:`search_memory` 只返回一两百字符,随后反复 `grep_messages`
+/ `get_messages_by_date_range`,每次回来上万字符且 `was_truncated=true`,直到
+`Tool execution loop reached max iterations` 护栏兜底。
+
+**这是空库的正常行为,不是配错了。** `_handle_search_memory` 里有段兜底:memory 为空时
+自动转去搜消息历史,免得模型误判"这里什么都没有"。于是 dialectic 在空库上把工具预算烧光。
+
+看 `PERFORMANCE dialectic_chat` 那行能量化代价——冷库下 `low` 档很容易跑到十余次工具调用、
+数万输入 token、两分钟量级。而 **Hermes 侧 30 秒就超时放弃了,Honcho 侧还在继续跑:
+这些 token 白烧,没人接收结果**。按 `dialecticCadence=2` 算,活跃群里每两轮来一发;
+prompt cache 也只能命中一半,未缓存的部分正是每次都不同的历史 dump。
+
+冷启动期先压住,`honcho.json` 的 host block:
+
+```json
+"dialecticReasoningLevel": "minimal",
+"dialecticDepth": 1
+```
+
+`minimal` 档 `MAX_TOOL_ITERATIONS=1`,一次工具调用就收工,这串风暴直接消失。反正空库也没什么
+可召回的。Honcho 侧 `.env` 顺手给那些 dump 封顶:
+
+```bash
+DIALECTIC_MAX_INPUT_TOKENS=32000     # 默认 100000
+DIALECTIC_HISTORY_TOKEN_LIMIT=4096   # 默认 8192
+```
+
+**怎么判断收敛。** 那段兜底的触发条件是 `total_count == 0` —— 严格的"这个 peer 的
+observation 库**完全为空**"(`_handle_search_memory`)。所以它是全有或全无:只要
+`search_memory` 有任何一条命中,那段翻消息历史的逻辑整个跳过。你不会看到它渐变,而是某天
+起那种 `len` 上万、`was_truncated=true` 的 `grep_messages` / `get_messages_by_date_range`
+**突然不再出现**。判据从强到弱:
+
+1. Honcho 日志里不再有上万字符的历史 dump,dialectic 只剩几百字符的 `search_memory` 结果 —— 最硬
+2. `PERFORMANCE dialectic_chat` 行的 `tool_calls` 落到个位数低端、`total_duration` 稳定远低于 30 秒
+3. 不再出现 `Tool execution loop reached max iterations`
+
+三条要连续几天、覆盖冷群热群都成立再算数。
+
+**怎么拆防护(一次一样,每步盯 1~2 天 `PERFORMANCE` 行)。** 分两类:
+
+- `DIALECTIC_MAX_INPUT_TOKENS` / `DIALECTIC_HISTORY_TOKEN_LIMIT` 是给单次 dump 封顶,库满后
+  本就用不到,留着零成本还能防将来某个 peer 冷启动再炸一次 —— **不必拆**。
+- `dialecticDepth` 先拆(`1` → 默认),它直接乘工具调用量,收敛后放开最安全。
+- `dialecticReasoningLevel` 从 `minimal` 提到 `low` **不急**:多出来的是召回深度和 token,
+  而群聊记忆要的是"这个群聊过什么",`minimal` 往往够用。等真觉得 bot 记性差了再提;提完
+  `total_duration` 若又逼近 30 秒,退回 `minimal`。
 
 ## 预期
 
