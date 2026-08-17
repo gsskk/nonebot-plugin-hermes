@@ -56,7 +56,7 @@ async def test_reactive_turn_routes_configured_group(monkeypatch, _runtime):
     monkeypatch.setattr(
         plugin_config,
         "hermes_group_endpoints",
-        {"ob11:g1": HermesEndpoint(url="http://127.0.0.1:8642/p/teamA", key="sk-a-at-least-16-ch")},
+        {"ob11:g1": HermesEndpoint(url="http://127.0.0.1:8642/p/team-a", key="sk-a-at-least-16-ch")},
     )
 
     captured: dict = {}
@@ -83,7 +83,7 @@ async def test_reactive_turn_routes_configured_group(monkeypatch, _runtime):
     )
 
     assert captured["target"].label == "ob11:g1"
-    assert captured["target"].base_url == "http://127.0.0.1:8642/p/teamA"
+    assert captured["target"].base_url == "http://127.0.0.1:8642/p/team-a"
     assert captured["target"].api_key == "sk-a-at-least-16-ch"
 
 

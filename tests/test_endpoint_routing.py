@@ -61,10 +61,10 @@ def test_resolve_target_matches_adapter_and_group(monkeypatch):
     monkeypatch.setattr(plugin_config, "hermes_api_url", "http://127.0.0.1:8642")
     monkeypatch.setattr(plugin_config, "hermes_api_key", "sk-global")
     monkeypatch.setattr(plugin_config, "hermes_api_timeout", 300)
-    _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8642/p/teamA/", "key": "sk-a", "timeout": 120}})
+    _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8642/p/team-a/", "key": "sk-a", "timeout": 120}})
 
     hit = resolve_target("ob11", False, "g1")
-    assert hit.base_url == "http://127.0.0.1:8642/p/teamA"
+    assert hit.base_url == "http://127.0.0.1:8642/p/team-a"
     assert hit.api_key == "sk-a"
     assert hit.timeout == 120
     assert hit.label == "ob11:g1"
@@ -125,7 +125,7 @@ def test_validate_endpoints_flags_missing_key(monkeypatch):
 
     monkeypatch.setattr(plugin_config, "hermes_api_url", "http://127.0.0.1:8642")
     monkeypatch.setattr(plugin_config, "hermes_api_key", "sk-global-at-least-16")
-    _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8642/p/teamA"}})
+    _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8642/p/team-a"}})
 
     problems = validate_endpoints()
     assert len(problems) == 1
@@ -168,7 +168,7 @@ def test_validate_endpoints_flags_short_key(monkeypatch):
     from nonebot_plugin_hermes.core.routing import validate_endpoints
 
     monkeypatch.setattr(plugin_config, "hermes_api_url", "http://127.0.0.1:8642")
-    _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8642/p/teamA", "key": "short"}})
+    _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8642/p/team-a", "key": "short"}})
 
     assert any("16" in p for p in validate_endpoints())
 
@@ -182,12 +182,12 @@ def test_validate_endpoints_flags_same_url_different_keys(monkeypatch):
     _set_table(
         monkeypatch,
         {
-            "ob11:g1": {"url": "http://127.0.0.1:8642/p/teamA", "key": "key-one-at-least-16"},
-            "ob11:g2": {"url": "http://127.0.0.1:8642/p/teamA", "key": "key-two-at-least-16"},
+            "ob11:g1": {"url": "http://127.0.0.1:8642/p/team-a", "key": "key-one-at-least-16"},
+            "ob11:g2": {"url": "http://127.0.0.1:8642/p/team-a", "key": "key-two-at-least-16"},
         },
     )
 
-    assert any("teamA" in p for p in validate_endpoints())
+    assert any("team-a" in p for p in validate_endpoints())
 
 
 def test_validate_endpoints_silent_when_clean(monkeypatch):
@@ -237,7 +237,7 @@ async def test_chat_uses_target_url_key_and_timeout(monkeypatch):
     _CapturingAsyncClient.calls = []
     monkeypatch.setattr(httpx, "AsyncClient", _CapturingAsyncClient)
 
-    tgt = HermesTarget(base_url="http://127.0.0.1:8642/p/teamA", api_key="sk-a", timeout=42, label="ob11:g1")
+    tgt = HermesTarget(base_url="http://127.0.0.1:8642/p/team-a", api_key="sk-a", timeout=42, label="ob11:g1")
     await client_mod.HermesClient().chat(
         text="hi",
         session_key="hermes-sid",
@@ -249,7 +249,7 @@ async def test_chat_uses_target_url_key_and_timeout(monkeypatch):
     )
 
     call = _CapturingAsyncClient.calls[0]
-    assert call["url"] == "http://127.0.0.1:8642/p/teamA/v1/chat/completions"
+    assert call["url"] == "http://127.0.0.1:8642/p/team-a/v1/chat/completions"
     assert call["headers"]["Authorization"] == "Bearer sk-a"
     assert call["timeout"] == 42
 

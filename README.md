@@ -337,7 +337,7 @@ mcp_servers:
 
 ```dotenv
 # 键是 {adapter}:{group_id};未列出的群和所有私聊走默认的 HERMES_API_URL
-HERMES_GROUP_ENDPOINTS='{"onebotv11:12345": {"url": "http://127.0.0.1:8642/p/teamA", "key": "<teamA 的 API_SERVER_KEY>"}}'
+HERMES_GROUP_ENDPOINTS='{"onebotv11:12345": {"url": "http://127.0.0.1:8642/p/team-a", "key": "<team-a 的 API_SERVER_KEY>"}}'
 ```
 
 两种部署形态共用同一个 `url` 字段:
@@ -348,6 +348,11 @@ HERMES_GROUP_ENDPOINTS='{"onebotv11:12345": {"url": "http://127.0.0.1:8642/p/tea
 | 独立进程 | 每个 profile 各起一个 api server | `http://host:8643`(各自端口) |
 
 `key` 留空会沿用全局 `HERMES_API_KEY`,`timeout` 留空沿用 `HERMES_API_TIMEOUT`。
+
+> [!WARNING]
+> **profile 名必须全小写**(合法字符 `[a-z0-9][a-z0-9_-]{0,63}`)。`hermes profile create TeamA` 会把名字
+> 归一化成小写再落盘(`profiles/teama/`),但 URL 前缀**不做归一化** —— 上游只 `strip()` 后直接和目录名
+> 集合比对,所以 `/p/TeamA/` 对着 `profiles/teama/` 会直接 **404**。名字里想分词就用 `-` 或 `_`。
 
 > [!IMPORTANT]
 > **指向命名 profile 时 `key` 必填,而且必须与默认 profile 的不同、不短于 16 字符。** 三个原因:
@@ -381,14 +386,14 @@ profile 的 config.yaml 里启用 `api_server` —— 端口绑定类平台留�
 (`gateway/config.py` 里有专门认它的分支,注释直接点名这条命令),告警只是上游 CLI 的键表没登记
 嵌套形式;想消掉就用顶层形式 `hermes config set multiplex_profiles true`(等价)或加 `--force`。
 `multiplex_profile_allowlist` 是另一件事:哪些命名 profile 被多路复用器服务,**留空不配 = 全部服务**,
-设成 `[]`(或写错类型 fail-safe 成 `[]`)则只服务默认 profile,你的 `/p/teamA/` 会 404。
+设成 `[]`(或写错类型 fail-safe 成 `[]`)则只服务默认 profile,你的 `/p/team-a/` 会 404。
 
 改完重启,然后用这条确认前缀真的生效(唯一的 ground truth):
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' \
-  -H "Authorization: Bearer <teamA 自己的 API_SERVER_KEY>" \
-  http://<hermes-host>:8642/p/teamA/v1/models
+  -H "Authorization: Bearer <team-a 自己的 API_SERVER_KEY>" \
+  http://<hermes-host>:8642/p/team-a/v1/models
 # 200 = 生效;401 = 前缀被静默忽略(当默认 profile 处理了,等于没开);
 # 404 = 前缀被拒(profile 不存在,或被 allowlist 排除)
 ```
@@ -396,9 +401,9 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 每个新接入点各一次:
 
 ```bash
-export TEAM_HOME=~/.hermes/profiles/teamA
+export TEAM_HOME=~/.hermes/profiles/team-a
 
-hermes profile create teamA                       # 独立 state.db / 记忆 / skills / config.yaml
+hermes profile create team-a                       # 独立 state.db / 记忆 / skills / config.yaml
 echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # 必须与默认 profile 不同
 
 # 这个群能用什么能力 —— 本功能唯一不可替代的价值就在这一步。

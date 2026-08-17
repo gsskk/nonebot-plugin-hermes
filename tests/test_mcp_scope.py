@@ -22,8 +22,8 @@ def _two_profiles(monkeypatch):
     _table(
         monkeypatch,
         {
-            "ob11:g1": {"url": "http://h:8642/p/teamA", "key": _TEAM_A},
-            "ob11:g2": {"url": "http://h:8642/p/teamA", "key": _TEAM_A},
+            "ob11:g1": {"url": "http://h:8642/p/team-a", "key": _TEAM_A},
+            "ob11:g2": {"url": "http://h:8642/p/team-a", "key": _TEAM_A},
             "ob11:g3": {"url": "http://h:8643", "key": _TEAM_B},
         },
     )
@@ -150,7 +150,7 @@ def test_scope_describe_names_the_endpoint_and_groups(monkeypatch):
 
     _two_profiles(monkeypatch)
     listed = resolve_caller_scope(f"Bearer {_TEAM_A}").describe()
-    assert "teamA" in listed
+    assert "team-a" in listed
     assert "ob11:g1" in listed
 
     complement = resolve_caller_scope(f"Bearer {_GLOBAL}").describe()

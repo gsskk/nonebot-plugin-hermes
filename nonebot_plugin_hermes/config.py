@@ -54,7 +54,7 @@ class Config(BaseModel):
     或条目没有自己 key 的那些群)。没有第二张 token 表。
 
     .env 里写 JSON:
-        HERMES_GROUP_ENDPOINTS='{"onebotv11:12345": {"url": "http://127.0.0.1:8642/p/teamA", "key": "sk-a"}}'
+        HERMES_GROUP_ENDPOINTS='{"onebotv11:12345": {"url": "http://127.0.0.1:8642/p/team-a", "key": "sk-a"}}'
 
     每多一个接入点,Hermes 侧就要多维护一份 profile(含独立的 API_SERVER_KEY 与
     skill 安装),所以这张表是给"少数需要特殊待遇的群"手工指定的,不适合按群自动扩。

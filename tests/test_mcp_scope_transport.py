@@ -48,7 +48,7 @@ def _app(monkeypatch, tmp_path):
         plugin_config,
         "hermes_group_endpoints",
         {
-            "ob11:g1": HermesEndpoint(url="http://h:8642/p/teamA", key=_TEAM_A),
+            "ob11:g1": HermesEndpoint(url="http://h:8642/p/team-a", key=_TEAM_A),
             "ob11:g3": HermesEndpoint(url="http://h:8643", key=_TEAM_B),
         },
     )
@@ -134,7 +134,7 @@ async def test_scope_follows_the_current_request_not_the_session_owner(_app):
         first = await session.call_tool("list_active_sessions", {})
         assert {s["group_id"] for s in json.loads(first.content[0].text)["sessions"]} == {"g1"}
 
-        # 同一个 session id,换成 teamB 的 token 直接发原始 POST。
+        # 同一个 session id,换成 team-b 的 token 直接发原始 POST。
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 url,

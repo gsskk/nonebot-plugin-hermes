@@ -353,7 +353,7 @@ the price of one more `HERMES_HOME` to maintain per endpoint.
 
 ```dotenv
 # Keys are {adapter}:{group_id}; unlisted groups and all private chats use HERMES_API_URL
-HERMES_GROUP_ENDPOINTS='{"onebotv11:12345": {"url": "http://127.0.0.1:8642/p/teamA", "key": "<teamA API_SERVER_KEY>"}}'
+HERMES_GROUP_ENDPOINTS='{"onebotv11:12345": {"url": "http://127.0.0.1:8642/p/team-a", "key": "<team-a API_SERVER_KEY>"}}'
 ```
 
 Both deployment shapes share the same `url` field:
@@ -365,6 +365,12 @@ Both deployment shapes share the same `url` field:
 
 An empty `key` falls back to the global `HERMES_API_KEY`; an empty `timeout` falls back to
 `HERMES_API_TIMEOUT`.
+
+> [!WARNING]
+> **Profile names must be lowercase** (`[a-z0-9][a-z0-9_-]{0,63}`). `hermes profile create TeamA`
+> normalizes the name before writing it to disk (`profiles/teama/`), but the URL prefix is **not**
+> normalized — upstream only `strip()`s it and compares against the on-disk directory names, so
+> `/p/TeamA/` against `profiles/teama/` is a hard **404**. Use `-` or `_` to separate words.
 
 > [!IMPORTANT]
 > **When the url points at a named profile, `key` is mandatory** — different from the default
@@ -404,14 +410,14 @@ command); the warning is only the upstream CLI's key table missing the nested fo
 the equivalent top-level form `hermes config set multiplex_profiles true`, or pass `--force`.
 `multiplex_profile_allowlist` is a different setting — which named profiles the multiplexer serves.
 **Leaving it unset serves all of them**; setting it to `[]` (or to a malformed value, which fails safe
-to `[]`) serves only the default profile and your `/p/teamA/` will 404.
+to `[]`) serves only the default profile and your `/p/team-a/` will 404.
 
 After restarting, confirm the prefix really took effect (the only ground truth):
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' \
-  -H "Authorization: Bearer <teamA's own API_SERVER_KEY>" \
-  http://<hermes-host>:8642/p/teamA/v1/models
+  -H "Authorization: Bearer <team-a's own API_SERVER_KEY>" \
+  http://<hermes-host>:8642/p/team-a/v1/models
 # 200 = live; 401 = prefix silently ignored (served as the default profile, i.e. not enabled);
 # 404 = prefix rejected (profile missing, or excluded by the allowlist)
 ```
@@ -419,9 +425,9 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 Per new endpoint:
 
 ```bash
-export TEAM_HOME=~/.hermes/profiles/teamA
+export TEAM_HOME=~/.hermes/profiles/team-a
 
-hermes profile create teamA                       # own state.db / memory / skills / config.yaml
+hermes profile create team-a                       # own state.db / memory / skills / config.yaml
 echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # must differ from the default profile
 
 # what this group is allowed to do — the one thing this feature cannot be replaced for.
