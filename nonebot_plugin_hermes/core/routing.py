@@ -199,17 +199,17 @@ def validate_endpoints() -> list[str]:
         elif entry.key and len(entry.key) < _MIN_KEY_LEN:
             problems.append(f"{label} 的 key 短于 {_MIN_KEY_LEN} 字符,上游会判为未配置并拒绝请求")
 
-    # 多路复用形态 + 反向通道:上游的 MCP 发现是**进程级**的 —— gateway 启动时在没有 profile
-    # scope 的情况下读一次默认 profile 的 config.yaml,注册表全局共享。于是命名 profile 自己的
-    # mcp_servers 根本不会被连接,所有 profile 的 agent 呈同一把 token,插件这边只能把它们判成
-    # 同一个 scope。要按接入点收敛反向通道,只能让每个 profile 跑自己的 gateway 进程。
+    # 多路复用形态 + 反向通道:上游把 MCP 分成两层 —— **连接**按默认 profile 的 config 在进程启动
+    # 时建一次(注册表全进程共享),**可用性**才按被路由到的 profile 每请求解析。于是命名 profile
+    # 里配的 url/headers 不生效,所有拿到该工具的 profile 都呈默认 profile 那一把 token,插件只能
+    # 把它们判成同一个 scope。要按接入点收敛反向通道,只能让每个 profile 跑自己的 gateway 进程。
     if plugin_config.hermes_mcp_enabled:
         multiplexed = sorted(label for label, entry in entries.items() if "/p/" in entry.url)
         if multiplexed:
             problems.append(
-                f"{multiplexed} 走多路复用前缀(/p/<profile>),而上游的 MCP 发现是进程级的:"
-                f"命名 profile 自己的 mcp_servers 不会被连接,所有 profile 共用默认 profile 的那把 "
-                f"MCP token —— 反向通道无法按接入点收敛。这些群的 push/读会按补集判定而被拒。"
+                f"{multiplexed} 走多路复用前缀(/p/<profile>):上游的 MCP 连接按默认 profile 的配置在"
+                f"进程启动时建立并全局共享,命名 profile 里写的 Bearer 不会生效 —— 反向通道无法按接入点"
+                f"收敛,这些群的 push/读会按共享 token 的范围(通常是补集)判定而被拒。"
                 f"要按群隔离反向通道,改用每 profile 一个 gateway 进程的部署形态"
             )
 

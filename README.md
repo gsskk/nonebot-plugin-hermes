@@ -422,9 +422,9 @@ echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # 必须与�
 
 HERMES_HOME=$TEAM_HOME hermes-install-skill       # skill 按 profile 分别装
 
-# 只有需要反向通道的 profile 才做这一步(不做 = 该 profile 完全没有反向通道,最干脆的隔离)。
-# 注意:这一步**只在"独立进程"形态下有效** —— 多路复用下上游的 MCP 发现是进程级的,
-# 命名 profile 自己的 mcp_servers 不会被连接,见下面「反向通道自动跟着收敛」小节。
+# 反向通道:只给需要它的 profile 配。**两种部署形态写法不同**,见下面
+# 「反向通道自动跟着收敛」小节 —— 多路复用下 Bearer 必须配在默认 profile 上,
+# 这里写的 header 不会生效。独立进程形态才是下面这条:
 HERMES_HOME=$TEAM_HOME hermes mcp add nonebot --url http://<bot>:8643/mcp
 #   Bearer 填上面那把 API_SERVER_KEY
 ```
@@ -472,17 +472,27 @@ Hermes 侧既是它的 `API_SERVER_KEY` 也是它的 MCP token。轮换一次改
 (默认 profile)照样能读能推。
 
 > [!IMPORTANT]
-> **反向通道按接入点收敛只在"独立进程"形态下成立。** 上游的 MCP 发现是**进程级**的:gateway 在
-> 启动时、没有任何 profile scope 的情况下读一次**默认 profile** 的 `config.yaml`,注册表全进程共享
-> (`gateway/run.py` 在 `runner.start()` 之前调 `discover_mcp_tools()`,之后除了 `/reload-mcp` 再没有
-> 第二个调用点)。所以多路复用下:
+> **多路复用下,"哪个 profile 有反向通道"可以按 profile 控;"它呈哪把 token"不行。** 上游把这件事
+> 分成两层:
 >
-> - 命名 profile 自己 `hermes mcp add` 的 server **不会被连接**,写了也不生效;
-> - 所有 profile 的 agent 共用默认 profile 里那一把 MCP token,插件只能把它们判成同一个 scope;
-> - 那把 token 通常就是全局 `HERMES_API_KEY`(scope = 补集),于是**进了路由表的群谁都推不进去**
->   —— 会被拒并留 WARNING。方向是 fail-closed 的,但等价于"被路由的群在多路复用下没有反向通道"。
+> | 层 | 读谁的 config | 时机 |
+> |---|---|---|
+> | **连接**(进程里有没有这个 MCP client) | **默认 profile** 的 `config.yaml` | gateway 启动一次,注册表全进程共享 |
+> | **可用性**(agent 拿不拿到这些工具) | **被路由到的那个 profile** 的 `config.yaml` | 每请求读 |
 >
-> 要按群隔离反向通道,就用**每 profile 一个 gateway 进程**(`url` 填各自端口、别开多路复用)。
+> 所以多路复用下:
+>
+> - **Bearer 必须配在默认 profile 上**。命名 profile 里 `hermes mcp add` 写的 `url` / `headers`
+>   不会生效 —— 同名 server 全进程共用默认 profile 建的那一个连接。
+> - 反过来,**要不要给某个 profile 反向通道是它自己说了算**:它的 `platform_toolsets.api_server`
+>   列出该 server 名 = 打开;放特殊哨兵 `no_mcp` = 该 profile 完全没有 MCP 工具;两者都不写则它的
+>   MCP 名单为空,同样拿不到。这一层每请求读、改完不用重启。
+> - 但**scope 不随 profile 变**:插件看到的永远是那把共享 token。它通常就是全局 `HERMES_API_KEY`
+>   (scope = 补集),于是**进了路由表的群谁都推不进去** —— 会被拒并留 WARNING。方向是 fail-closed 的,
+>   但等价于"被路由的群在多路复用下没有反向通道"。
+>
+> 要让反向通道**按接入点**收敛,就用**每 profile 一个 gateway 进程**(`url` 填各自端口、别开多路
+> 复用):那时每个进程各自做一次 MCP 发现,各自读自己的 `config.yaml`,token 才真正按 profile 分。
 > 启动期 `validate_endpoints()` 会对"路由表里有 `/p/<profile>` 形式的 url 且 `HERMES_MCP_ENABLED=true`"
 > 这个组合直接告警。
 
