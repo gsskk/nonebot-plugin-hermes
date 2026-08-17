@@ -219,7 +219,7 @@ session, so this stayed silent for a long time; after the upstream 2026-07-23
 `fix(compression): recover rotated session lineage` it became a hard failure and the logs fill with
 `Session '…' is closed by compression`. Use `hermes-repair-sessions` to fix existing damage.
 
-### 🧠 Long-term Memory Scope (0.4.6+, off by default)
+### 🧠 Long-term Memory Scope (0.5.0+, off by default)
 
 Hermes' long-term memory provider (currently Honcho) does **not** separate groups on its own. When
 the plugin doesn't tell it which conversation a turn belongs to, it names the memory scope with its

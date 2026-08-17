@@ -215,7 +215,7 @@ Hermes 容忍往已关闭会话追加,所以这个问题长期无声;上游 2026
 `fix(compression): recover rotated session lineage` 之后变成硬失败,日志会刷
 `Session '…' is closed by compression`。存量损坏用 `hermes-repair-sessions` 修。
 
-### 🧠 长期记忆作用域（0.4.6+，默认关）
+### 🧠 长期记忆作用域（0.5.0+，默认关）
 
 Hermes 侧的长期记忆(memory provider,目前是 Honcho)默认**不按群区分**。插件不告诉它
 "这段对话属于谁"时,它按自己的兜底策略给记忆命名,两种兜底都有问题:
