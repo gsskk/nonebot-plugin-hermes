@@ -379,9 +379,16 @@ hermes config set gateway.multiplex_profiles true
 hermes gateway restart
 ```
 
-多路复用打开后,**不要**再为次级 profile 单独 `hermes gateway start`(上游会硬报错),也不要在次级
-profile 的 config.yaml 里启用 `api_server` —— 端口绑定类平台留在默认 profile,次级 profile 靠
-`/p/<profile>/` 前缀被访问。反过来,如果你选的是"独立进程"形态,那就**别开**多路复用。
+多路复用打开后,**不要**再为次级 profile 单独 `hermes gateway start`,也不要在次级 profile 的
+config.yaml 里启用 `api_server` —— 端口绑定类平台留在默认 profile,次级 profile 靠 `/p/<profile>/`
+前缀被访问。反过来,如果你选的是"独立进程"形态,那就**别开**多路复用。
+
+`hermes profile create` 结尾打印的 `Next steps` 里那条 `<name> gateway start` 是写给默认的
+"一进程一 profile"部署的,**多路复用下别执行**(`<name> setup` 要执行,`<name> chat` 可以用来
+验证 key 配好了)。上游确实有守卫会拒绝它并让你改用默认 profile 的 `hermes gateway restart`,
+但那个守卫有两个前提、不能当保险:它要**默认 gateway 正在运行**才探测得到(默认 gateway 停着时
+这条命令会成功起一个独立进程,之后拉起多路复用器就双绑:同一 bot token 两个 poller、端口冲突),
+而且要该 profile 在 `multiplex_profile_allowlist` 的服务范围内,被排除掉时守卫直接放行。
 
 `hermes config set gateway.multiplex_profiles true` 可能会打印一条 `not a recognized config key`
 并建议你改成 `gateway.multiplex_profile_allowlist` —— **别照着改**。这个键运行时确实会被读

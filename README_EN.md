@@ -398,11 +398,19 @@ hermes config set gateway.multiplex_profiles true
 hermes gateway restart
 ```
 
-With multiplexing on, do **not** run `hermes gateway start` for a secondary profile (upstream makes
-that a hard error), and do not enable `api_server` in a secondary profile's config.yaml — port-binding
-platforms stay on the default profile and secondary profiles are reached through their
-`/p/<profile>/` prefix. Conversely, if you picked the "separate processes" shape, leave multiplexing
-**off**.
+With multiplexing on, do **not** run `hermes gateway start` for a secondary profile, and do not enable
+`api_server` in a secondary profile's config.yaml — port-binding platforms stay on the default profile
+and secondary profiles are reached through their `/p/<profile>/` prefix. Conversely, if you picked the
+"separate processes" shape, leave multiplexing **off**.
+
+The `Next steps` block printed by `hermes profile create` ends with `<name> gateway start`, which is
+written for the default one-process-per-profile shape — **do not run it under multiplexing** (do run
+`<name> setup`; `<name> chat` is a cheap way to confirm its key works). Upstream does guard against it
+and points you at the default profile's `hermes gateway restart`, but that guard is not insurance: it
+only fires while the **default gateway is running** (with it stopped, the command happily starts a
+separate process and you double-bind once the multiplexer comes back — two pollers on one bot token,
+port conflicts), and only when the profile is inside `multiplex_profile_allowlist`; an excluded profile
+is waved through.
 
 `hermes config set gateway.multiplex_profiles true` may print `not a recognized config key` and
 suggest `gateway.multiplex_profile_allowlist` — **do not follow that suggestion**. The key *is* read at
