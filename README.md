@@ -365,7 +365,16 @@ profile 的凭证读取保留了 `os.environ` 回落)。要迁的只有**新增�
 
 ### Hermes 侧要做的事
 
-一次性:`hermes config set gateway.multiplex_profiles true` + 重启 gateway。
+一次性(在**默认 profile** 上做,它才是多路复用器):
+
+```bash
+hermes config set gateway.multiplex_profiles true
+hermes gateway restart
+```
+
+多路复用打开后,**不要**再为次级 profile 单独 `hermes gateway start`(上游会硬报错),也不要在次级
+profile 的 config.yaml 里启用 `api_server` —— 端口绑定类平台留在默认 profile,次级 profile 靠
+`/p/<profile>/` 前缀被访问。反过来,如果你选的是"独立进程"形态,那就**别开**多路复用。
 
 每个新接入点各一次:
 
@@ -375,8 +384,9 @@ export TEAM_HOME=~/.hermes/profiles/teamA
 hermes profile create teamA                       # 独立 state.db / 记忆 / skills / config.yaml
 echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # 必须与默认 profile 不同
 
-# 这个群能用什么能力 —— 本功能唯一不可替代的价值就在这一步
-HERMES_HOME=$TEAM_HOME hermes config set platform_toolsets.api_server '[...]'
+# 这个群能用什么能力 —— 本功能唯一不可替代的价值就在这一步。
+# 编辑 $TEAM_HOME/config.yaml 的 platform_toolsets.api_server,工具集选法见上文
+# 「限制 API Server 工具集」那张表。
 
 HERMES_HOME=$TEAM_HOME hermes-install-skill       # skill 按 profile 分别装
 

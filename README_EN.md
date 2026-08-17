@@ -384,7 +384,18 @@ credential read). Only **newly added named profiles** need their key in their ow
 
 ### What to do on the Hermes side
 
-Once: `hermes config set gateway.multiplex_profiles true` + restart the gateway.
+Once, on the **default profile** (it is the multiplexer):
+
+```bash
+hermes config set gateway.multiplex_profiles true
+hermes gateway restart
+```
+
+With multiplexing on, do **not** run `hermes gateway start` for a secondary profile (upstream makes
+that a hard error), and do not enable `api_server` in a secondary profile's config.yaml — port-binding
+platforms stay on the default profile and secondary profiles are reached through their
+`/p/<profile>/` prefix. Conversely, if you picked the "separate processes" shape, leave multiplexing
+**off**.
 
 Per new endpoint:
 
@@ -394,8 +405,9 @@ export TEAM_HOME=~/.hermes/profiles/teamA
 hermes profile create teamA                       # own state.db / memory / skills / config.yaml
 echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # must differ from the default profile
 
-# what this group is allowed to do — the one thing this feature cannot be replaced for
-HERMES_HOME=$TEAM_HOME hermes config set platform_toolsets.api_server '[...]'
+# what this group is allowed to do — the one thing this feature cannot be replaced for.
+# Edit platform_toolsets.api_server in $TEAM_HOME/config.yaml; see the toolset table under
+# "Security Best Practice: Restricting API Server Toolsets" above.
 
 HERMES_HOME=$TEAM_HOME hermes-install-skill       # skills are installed per profile
 
