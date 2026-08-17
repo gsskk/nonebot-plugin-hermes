@@ -413,7 +413,7 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 export TEAM_HOME=~/.hermes/profiles/team-a
 
 hermes profile create team-a                       # 独立 state.db / 记忆 / skills / config.yaml
-team-a setup                                       # 给它自己的 provider key(见下方 WARNING,别跳过)
+team-a setup                                       # 给它自己的大模型 API key(见下方 WARNING,别跳过)
 echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # 必须与默认 profile 不同
 
 # 这个群能用什么能力 —— 本功能唯一不可替代的价值就在这一步。
@@ -441,12 +441,23 @@ Hermes 侧既是它的 `API_SERVER_KEY` 也是它的 MCP token。轮换一次改
   `HERMES_HOME=`。
 
 > [!WARNING]
-> **多路复用下必须给命名 profile 自己的 provider key。** `hermes profile create` 结尾会提示
-> "否则会继承你 shell 环境里的 key" —— 那只在单 profile 部署成立。多路复用打开后,凭证读取以
-> profile 的 secret scope 为权威且**不回落 `os.environ`**(全局豁免表里只有 PATH / HOME /
-> `API_SERVER_HOST|PORT|ENABLED` 这类部署项,没有任何 provider key),所以 `.env` 空着的 profile
-> 里 agent 一次都跑不起来。跑 `<name> setup`,或把 provider key 直接写进
-> `profiles/<name>/.env`。
+> **多路复用下必须给命名 profile 自己的 LLM provider key** —— 就是大模型厂商那把 API key
+> (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `NOUS_API_KEY` /
+> `GEMINI_API_KEY` 之类),没有它 agent 连一次推理都发不出去。注意它与本节另外两把 key 是三件
+> 不同的东西:
+>
+> | 这把 key | 谁验它 | 放哪 |
+> |---|---|---|
+> | LLM provider key(如 `ANTHROPIC_API_KEY`) | 大模型厂商 | `profiles/<name>/.env` |
+> | `API_SERVER_KEY` | Hermes 自己的 api_server 入站鉴权 | `profiles/<name>/.env` |
+> | 插件的 `HERMES_API_KEY` / 条目 `key` | 同上,是插件出向呈上的那一把 | bot 的 `.env` |
+>
+> `hermes profile create` 结尾会提示"否则会继承你 shell 环境里的 key" —— 那只在单 profile 部署
+> 成立。多路复用打开后,凭证读取以 profile 的 secret scope 为权威且**不回落 `os.environ`**
+> (全局豁免表里只有 PATH / HOME / `API_SERVER_HOST|PORT|ENABLED` 这类部署项,没有任何 API key),
+> 所以 `.env` 空着的 profile 里 agent 一次都跑不起来。跑 `<name> setup`,或把 key 直接写进
+> `profiles/<name>/.env`。**同一条规则适用于该 profile 用到的所有凭证**,不止 LLM ——
+> 搜索(`EXA_API_KEY` 等)、图片生成、memory provider 的 key 也都要在它自己的 `.env` 里。
 
 ### 反向通道自动跟着收敛
 

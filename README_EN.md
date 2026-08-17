@@ -437,7 +437,7 @@ Per new endpoint:
 export TEAM_HOME=~/.hermes/profiles/team-a
 
 hermes profile create team-a                       # own state.db / memory / skills / config.yaml
-team-a setup                                       # its own provider key — see the WARNING below
+team-a setup                                       # its own LLM provider key — see the WARNING below
 echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # must differ from the default profile
 
 # what this group is allowed to do — the one thing this feature cannot be replaced for.
@@ -467,13 +467,25 @@ and its MCP token. Rotating it means editing two places and covers both directio
   plugin's** own CLI, not a hermes subcommand, so it still needs `HERMES_HOME=`.
 
 > [!WARNING]
-> **Under multiplexing a named profile must have its own provider key.** `hermes profile create`
-> ends with a hint saying it will otherwise "inherit keys from your shell environment" — that only
-> holds for single-profile deployments. With multiplexing on, credential reads are authoritative to
-> the profile's secret scope and do **not** fall back to `os.environ` (the global exemption list only
-> covers deployment-ish vars like PATH / HOME / `API_SERVER_HOST|PORT|ENABLED` — no provider keys).
-> A profile with an empty `.env` cannot run a single turn. Run `<name> setup`, or write the provider
-> key straight into `profiles/<name>/.env`.
+> **Under multiplexing a named profile needs its own LLM provider key** — the model vendor's API key
+> (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `NOUS_API_KEY` /
+> `GEMINI_API_KEY`, …). Without it the agent cannot issue a single inference call. Note that this is
+> a different key from the other two in this section:
+>
+> | Key | Who validates it | Where it lives |
+> |---|---|---|
+> | LLM provider key (e.g. `ANTHROPIC_API_KEY`) | the model vendor | `profiles/<name>/.env` |
+> | `API_SERVER_KEY` | Hermes' own api_server inbound auth | `profiles/<name>/.env` |
+> | the plugin's `HERMES_API_KEY` / entry `key` | same as above — it is what the plugin presents | the bot's `.env` |
+>
+> `hermes profile create` ends with a hint saying it will otherwise "inherit keys from your shell
+> environment" — that only holds for single-profile deployments. With multiplexing on, credential
+> reads are authoritative to the profile's secret scope and do **not** fall back to `os.environ` (the
+> global exemption list only covers deployment-ish vars like PATH / HOME /
+> `API_SERVER_HOST|PORT|ENABLED` — no API keys at all). A profile with an empty `.env` cannot run a
+> single turn. Run `<name> setup`, or write the key straight into `profiles/<name>/.env`. **The same
+> rule covers every credential that profile uses**, not just the LLM one — search
+> (`EXA_API_KEY`, …), image generation and memory-provider keys all have to be in its own `.env`.
 
 ### The reverse channel narrows automatically
 
