@@ -324,6 +324,97 @@ mcp_servers:
 
 后续插件 SKILL.md 升级时,用上面同样的入口加 `--force` 重装,例如 `uv run hermes-install-skill --force` 或 `.venv/bin/hermes-install-skill --force`。
 
+## 按群路由到不同 Hermes 接入点（0.5.1+，默认关）
+
+让指定的群走各自的 Hermes **profile**,从而拥有该群独占的工具集、模型和文件工作区。
+
+**先确认你要的是不是这个**:只想让 bot 别把 A 群的事在 B 群说出来,用上文的
+`HERMES_HONCHO_ENABLED` 就够了 —— 单进程、不改部署、不用为每个群维护一份 profile。本节解决的是
+另一件事:**A 群只能查资料、B 群能跑代码**这种按群给不同能力。它顺带也隔离了记忆(profile 各有
+自己的 state.db),代价是每多一个接入点,Hermes 侧就多一份要维护的 `HERMES_HOME`。
+
+### 配置
+
+```dotenv
+# 键是 {adapter}:{group_id};未列出的群和所有私聊走默认的 HERMES_API_URL
+HERMES_GROUP_ENDPOINTS='{"onebotv11:12345": {"url": "http://127.0.0.1:8642/p/teamA", "key": "<teamA 的 API_SERVER_KEY>"}}'
+```
+
+两种部署形态共用同一个 `url` 字段:
+
+| 形态 | Hermes 侧 | `url` 填 |
+|------|-----------|----------|
+| 多路复用(推荐) | `hermes config set gateway.multiplex_profiles true` 后重启 gateway | `http://host:8642/p/<profile>` |
+| 独立进程 | 每个 profile 各起一个 api server | `http://host:8643`(各自端口) |
+
+`key` 留空会沿用全局 `HERMES_API_KEY`,`timeout` 留空沿用 `HERMES_API_TIMEOUT`。
+
+> [!IMPORTANT]
+> **指向命名 profile 时 `key` 必填,而且必须与默认 profile 的不同、不短于 16 字符。** 三个原因:
+> 上游校验的是该 profile 自己的 `API_SERVER_KEY`(沿用全局 key 必然 401);它是反向通道认身份的
+> 依据(见下);而且它是**"忘开 `gateway.multiplex_profiles`"唯一的告警器** —— 多路复用关闭时上游会
+> **静默忽略** `/p/<profile>/` 前缀、把请求当默认 profile 处理,此时只有 key 不匹配才会报 401,
+> 否则你会看到"一切正常"但零隔离。
+
+### 老的默认接入点不会失效
+
+打开多路复用后,原来那个监听器仍由**默认 profile** 持有:不带前缀的老 URL、老 key 继续可用,
+`API_SERVER_KEY` 放在 systemd `Environment=` / docker `environment:` 里也照样读得到(上游对默认
+profile 的凭证读取保留了 `os.environ` 回落)。要迁的只有**新增的命名 profile**,它的 key 必须放在
+该 profile 自己的 `.env` 里。
+
+### Hermes 侧要做的事
+
+一次性:`hermes config set gateway.multiplex_profiles true` + 重启 gateway。
+
+每个新接入点各一次:
+
+```bash
+export TEAM_HOME=~/.hermes/profiles/teamA
+
+hermes profile create teamA                       # 独立 state.db / 记忆 / skills / config.yaml
+echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # 必须与默认 profile 不同
+
+# 这个群能用什么能力 —— 本功能唯一不可替代的价值就在这一步
+HERMES_HOME=$TEAM_HOME hermes config set platform_toolsets.api_server '[...]'
+
+HERMES_HOME=$TEAM_HOME hermes-install-skill       # skill 按 profile 分别装
+
+# 只有需要反向通道的 profile 才做这一步(不做 = 该 profile 完全没有反向通道,最干脆的隔离)
+HERMES_HOME=$TEAM_HOME hermes mcp add nonebot --url http://<bot>:8643/mcp
+#   Bearer 填上面那把 API_SERVER_KEY
+```
+
+**两边唯一需要一致的值就是这把 `API_SERVER_KEY`**:插件侧写进 `HERMES_GROUP_ENDPOINTS[...].key`,
+Hermes 侧既是它的 `API_SERVER_KEY` 也是它的 MCP token。轮换一次改两处、覆盖两个方向。
+
+### 反向通道自动跟着收敛
+
+反向通道(`push_message` / `get_recent_messages` / `get_message_images` / `list_active_sessions`)
+**没有第二张 token 表**:调用方呈上哪个接入点的 key,就只能操作该接入点名下的群;呈上全局
+`HERMES_API_KEY` 则只能操作**补集**(不在路由表里、或条目没有自己 key 的那些群);两者都不是就 401。
+不配路由表时补集 = 全部群,行为与 0.5.0 完全一致。
+
+也就是说:**想被保护的群必须进路由表并指向一个命名 profile**。留在补集里的群,补集那把 key 的持有者
+(默认 profile)照样能读能推。
+
+被拒时 bot 侧会留一条 WARNING,写清调用方属于哪个接入点、它的范围、被拒的目标 —— 排查
+"某个群的反向推送忽然不工作"时先看这条。
+
+### 运维成本与已知限制
+
+- 每个 profile 是一份完整的 `HERMES_HOME`:`hermes-repair-sessions` 要按 profile 分别跑,
+  skill 升级要按 profile 分别装。
+- **改动某个群的路由条目后要对该群 `/clear`**:session 血缘不带接入点维度,旧 session id 在新
+  profile 里不存在,上游会静默开一段新会话,同名 session 分居两份 state.db。
+- `/ping` 只探当前会话自己的接入点(它对普通用户开放,不能列别群的路由键);逐接入点体检在
+  管理员命令 `/hermes-status` 里。
+- 启动期的上游能力探测(`/v1/capabilities`)只探默认接入点,命名 profile 的 Hermes 版本偏旧不会告警。
+- 启动日志会对路由表里"永远匹配不上的键 / 非 http(s) 地址 / 缺 key / key 过短 / 同一接入点多把 key"
+  逐条 WARN。
+- `session_search` 仍是另一条跨群通道:分了 profile 自然分开;不分 profile 又想堵,在该 profile 的
+  `platform_toolsets.api_server` 里移除该工具。
+
 ## 历史图片召回（0.3+，实验性）
 
 在 0.3 起,消息感知 + 反向通道一起开启时,bot 自动启用一条"按消息 id 精确召回历史图"的通路。典型场景:
@@ -433,6 +524,7 @@ systemctl start hermes-gateway
 | `HERMES_API_URL` | `http://127.0.0.1:8642` | Hermes API Server 地址 |
 | `HERMES_API_KEY` | (空) | API 密钥（建议设置以启用会话持久化） |
 | `HERMES_API_TIMEOUT` | `300` | API 请求超时时间（秒） |
+| `HERMES_GROUP_ENDPOINTS` | `{}` | 按群路由的接入点表,键 `{adapter}:{group_id}`,值 `{"url": …, "key": …, "timeout": …}`。空表 = 全部走 `HERMES_API_URL`。也是反向通道 scope 的唯一来源,详见上文「按群路由到不同 Hermes 接入点」 |
 | `HERMES_GROUP_TRIGGER` | `at` | 群聊触发方式: `at` / `all` / `keyword` |
 | `HERMES_KEYWORDS` | `["/ai"]` | `keyword` 模式下的触发关键词 |
 | `HERMES_PRIVATE_TRIGGER` | `all` | 私聊触发方式: `all` / `allowlist` |

@@ -338,6 +338,108 @@ mcp_servers:
 
 When the plugin's `SKILL.md` later changes, re-run with `--force` using any of the entries above, e.g. `uv run hermes-install-skill --force` or `.venv/bin/hermes-install-skill --force`.
 
+## Per-group endpoint routing (0.5.1+, off by default)
+
+Route specific groups to their own Hermes **profile**, so each of those groups gets its own toolset,
+model and file workspace.
+
+**First check this is what you want:** if you only need the bot to stop mentioning group A's business
+in group B, `HERMES_HONCHO_ENABLED` above is enough — single process, no deployment change, no
+per-group profile to maintain. This section solves a different problem: **group A can only look things
+up, group B may run code**. It happens to isolate memory too (each profile has its own state.db), at
+the price of one more `HERMES_HOME` to maintain per endpoint.
+
+### Configuration
+
+```dotenv
+# Keys are {adapter}:{group_id}; unlisted groups and all private chats use HERMES_API_URL
+HERMES_GROUP_ENDPOINTS='{"onebotv11:12345": {"url": "http://127.0.0.1:8642/p/teamA", "key": "<teamA API_SERVER_KEY>"}}'
+```
+
+Both deployment shapes share the same `url` field:
+
+| Shape | On the Hermes side | `url` |
+|-------|--------------------|-------|
+| Multiplexed (recommended) | `hermes config set gateway.multiplex_profiles true`, then restart the gateway | `http://host:8642/p/<profile>` |
+| Separate processes | one api server per profile | `http://host:8643` (its own port) |
+
+An empty `key` falls back to the global `HERMES_API_KEY`; an empty `timeout` falls back to
+`HERMES_API_TIMEOUT`.
+
+> [!IMPORTANT]
+> **When the url points at a named profile, `key` is mandatory** — different from the default
+> profile's and at least 16 characters. Three reasons: upstream validates that profile's own
+> `API_SERVER_KEY` (the global key always 401s); it doubles as the reverse channel's identity (below);
+> and it is **the only alarm for "I forgot to enable `gateway.multiplex_profiles`"** — with
+> multiplexing off, upstream **silently ignores** the `/p/<profile>/` prefix and serves the request as
+> the default profile, so only a key mismatch turns that into a visible 401 instead of "everything
+> looks fine" with zero isolation.
+
+### The original default endpoint does not go away
+
+With multiplexing on, the listener is still owned by the **default profile**: the old prefix-less URL
+and the old key keep working, and `API_SERVER_KEY` supplied through systemd `Environment=` / docker
+`environment:` still resolves (upstream keeps an `os.environ` fallback for the default profile's
+credential read). Only **newly added named profiles** need their key in their own profile `.env`.
+
+### What to do on the Hermes side
+
+Once: `hermes config set gateway.multiplex_profiles true` + restart the gateway.
+
+Per new endpoint:
+
+```bash
+export TEAM_HOME=~/.hermes/profiles/teamA
+
+hermes profile create teamA                       # own state.db / memory / skills / config.yaml
+echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # must differ from the default profile
+
+# what this group is allowed to do — the one thing this feature cannot be replaced for
+HERMES_HOME=$TEAM_HOME hermes config set platform_toolsets.api_server '[...]'
+
+HERMES_HOME=$TEAM_HOME hermes-install-skill       # skills are installed per profile
+
+# only for profiles that need the reverse channel (skipping it = no reverse channel at all,
+# which is the cleanest isolation of all)
+HERMES_HOME=$TEAM_HOME hermes mcp add nonebot --url http://<bot>:8643/mcp
+#   use the API_SERVER_KEY above as the Bearer token
+```
+
+**The only value that must match on both sides is that `API_SERVER_KEY`**: on the plugin side it goes
+into `HERMES_GROUP_ENDPOINTS[...].key`; on the Hermes side it is both the profile's `API_SERVER_KEY`
+and its MCP token. Rotating it means editing two places and covers both directions.
+
+### The reverse channel narrows automatically
+
+The reverse channel (`push_message` / `get_recent_messages` / `get_message_images` /
+`list_active_sessions`) has **no second token table**: whichever endpoint's key a caller presents, it
+may only act on that endpoint's groups; the global `HERMES_API_KEY` may only act on the
+**complement** (groups not in the routing table, or whose entry has no key of its own); anything else
+is a 401. With no routing table the complement is every group, i.e. exactly 0.5.0 behaviour.
+
+In other words: **a group you want protected must be in the routing table and point at a named
+profile**. Groups left in the complement are still readable and pushable by the holder of the
+complement key (the default profile).
+
+Every refusal logs a WARNING on the bot side naming the caller's endpoint, its scope and the refused
+target — check that first when "the reverse channel stopped working for one group".
+
+### Operational cost and known limits
+
+- Each profile is a full `HERMES_HOME`: `hermes-repair-sessions` must be run per profile, and skill
+  upgrades installed per profile.
+- **After changing a group's routing entry, run `/clear` in that group**: session lineage carries no
+  endpoint dimension, so the old session id does not exist in the new profile — upstream silently
+  starts a fresh one and the same session name ends up in two state.db files.
+- `/ping` probes only the caller's own endpoint (it is open to regular users, so it must not list
+  other groups' routing keys); the per-endpoint roll-call lives in the admin-only `/hermes-status`.
+- The startup capability probe (`/v1/capabilities`) only covers the default endpoint, so an outdated
+  Hermes behind a named profile will not be flagged.
+- Startup logs WARN per entry for: keys that can never match, non-http(s) urls, a missing key, a key
+  shorter than 16 chars, and one endpoint configured with several different keys.
+- `session_search` is still a separate cross-group channel: profiles separate it naturally; without
+  profiles, remove that tool from `platform_toolsets.api_server`.
+
 ## Historical image recall (0.3+, experimental)
 
 Starting in 0.3, when perception and the reverse channel are both enabled the bot turns on a "precise per-msg-id historical image recall" path. Typical scenario:
@@ -455,6 +557,7 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_API_URL` | `http://127.0.0.1:8642` | Hermes API Server URL |
 | `HERMES_API_KEY` | (Empty) | API Key (Recommended for session persistence) |
 | `HERMES_API_TIMEOUT` | `300` | API request timeout (seconds) |
+| `HERMES_GROUP_ENDPOINTS` | `{}` | Per-group endpoint table, keyed `{adapter}:{group_id}`, value `{"url": …, "key": …, "timeout": …}`. Empty = everything goes to `HERMES_API_URL`. Also the single source of the reverse channel's scope — see "Per-group endpoint routing" above |
 | `HERMES_GROUP_TRIGGER` | `at` | Group trigger mode: `at` / `all` / `keyword` |
 | `HERMES_KEYWORDS` | `["/ai"]` | Trigger keywords for `keyword` mode |
 | `HERMES_PRIVATE_TRIGGER` | `all` | Private trigger mode: `all` / `allowlist` |
