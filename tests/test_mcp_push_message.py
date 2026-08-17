@@ -15,11 +15,16 @@ import pytest
 from nonebot_plugin_hermes.core.active_session import ActiveSessionManager
 from nonebot_plugin_hermes.core.bot_registry import BotRegistry
 from nonebot_plugin_hermes.core.message_buffer import BufferedMessage
+from nonebot_plugin_hermes.core.routing import CallerScope
 from nonebot_plugin_hermes.mcp.tools.push_message import (
     PushMessageInput,
     PushMessageResult,
     push_message_impl,
 )
+
+# 这些用例测的是工具自身的行为,不是反向通道的范围收敛(那在 test_mcp_scope.py),
+# 所以统一给开发模式 scope。scope 是必填参数:漏传是 TypeError 而不是静默放行。
+_ANY_SCOPE = CallerScope.dev()
 
 
 class _RecordingBuffer:
@@ -71,7 +76,7 @@ def _populated_managers(*, now_ms: int = 0):
 async def test_push_returns_error_when_text_and_images_both_empty():
     am, br = _populated_managers()
     inp = _make_inp(text="", image_urls=[])
-    result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+    result = await push_message_impl(inp, active_sessions=am, bot_registry=br, scope=_ANY_SCOPE)
     assert isinstance(result, PushMessageResult)
     assert result.ok is False
     assert result.error == "text and image_urls both empty"
@@ -90,7 +95,7 @@ async def test_push_returns_error_when_no_active_session():
     br.upsert("ob11", "group", "g1", "bot-001", _FakeTarget(), ts=0)
 
     inp = _make_inp()
-    result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+    result = await push_message_impl(inp, active_sessions=am, bot_registry=br, scope=_ANY_SCOPE)
     assert result.ok is False
     assert "no active reactive session" in (result.error or "")
 
@@ -111,7 +116,7 @@ async def test_push_returns_error_when_target_unknown():
     # Mock time so push_message_impl 看到的 now_ms 还在 300s TTL 内
     with patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time:
         mock_time.time.return_value = 1.0  # 1000 ms,well within TTL
-        result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, scope=_ANY_SCOPE)
     assert result.ok is False
     # 锁定具体错误形态:validate_push_context 在 session 通过、target 缺失时
     # 抛 "unknown target",其他 error 形态(如 "send failed")会引人误判
@@ -133,7 +138,7 @@ async def test_push_returns_error_when_bot_offline():
         patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
     ):
         mock_time.time.return_value = 1.0  # 1000 ms — within TTL
-        result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, scope=_ANY_SCOPE)
 
     assert result.ok is False
     assert "bot offline" in (result.error or "")
@@ -160,7 +165,7 @@ async def test_push_success_touches_session():
     ):
         # Fix time so now_ms used inside push_message_impl is within TTL
         mock_time.time.return_value = 1.0  # 1000 ms — well within 300-s TTL
-        result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, scope=_ANY_SCOPE)
 
     assert result.ok is True
     assert result.error is None
@@ -199,7 +204,7 @@ async def test_push_returns_error_when_send_fails():
         patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
     ):
         mock_time.time.return_value = 1.0
-        result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, scope=_ANY_SCOPE)
 
     assert result.ok is False
     assert "send failed" in (result.error or "")
@@ -227,7 +232,7 @@ async def test_push_accepts_image_only_message():
         patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
     ):
         mock_time.time.return_value = 1.0
-        result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, scope=_ANY_SCOPE)
 
     assert result.ok is True
 
@@ -267,7 +272,7 @@ async def test_push_success_marks_bot_replied():
         patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
     ):
         mock_time.time.return_value = 1.5  # → now_ms 内部 = 1500
-        result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, scope=_ANY_SCOPE)
 
     assert result.ok is True
     assert am.get("ob11", "g1").last_bot_reply_at == 1500
@@ -291,7 +296,7 @@ async def test_push_success_appends_buffer_with_bot_message():
         patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
     ):
         mock_time.time.return_value = 2.0
-        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, message_buffer=buf)
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, message_buffer=buf, scope=_ANY_SCOPE)
 
     assert result.ok is True
     assert len(buf.appended) == 1
@@ -325,7 +330,9 @@ async def test_push_buffer_optional_when_none():
         patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
     ):
         mock_time.time.return_value = 1.0
-        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, message_buffer=None)
+        result = await push_message_impl(
+            inp, active_sessions=am, bot_registry=br, message_buffer=None, scope=_ANY_SCOPE
+        )
 
     assert result.ok is True
     # last_bot_reply_at 仍要写;buffer 缺失不影响这件
@@ -355,7 +362,7 @@ async def test_push_send_failed_does_not_mark_or_append():
         patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
     ):
         mock_time.time.return_value = 1.0
-        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, message_buffer=buf)
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, message_buffer=buf, scope=_ANY_SCOPE)
 
     assert result.ok is False
     assert am.get("ob11", "g1").last_bot_reply_at == 0
@@ -388,7 +395,7 @@ async def test_push_reports_undeliverable_local_path():
         patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
     ):
         mock_time.time.return_value = 1.0  # 固定在 TTL 内
-        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, message_buffer=buf)
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, message_buffer=buf, scope=_ANY_SCOPE)
 
     assert result.ok is True, "文本发出去了,整体不算失败"
     assert result.skipped_images == [local]
@@ -410,7 +417,7 @@ async def test_push_fails_when_only_undeliverable_images_and_no_text():
         patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
     ):
         mock_time.time.return_value = 1.0
-        result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, scope=_ANY_SCOPE)
 
     assert result.ok is False
     assert "nothing deliverable" in (result.error or "")
@@ -431,7 +438,7 @@ async def test_push_keeps_http_and_data_urls():
         patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
     ):
         mock_time.time.return_value = 1.0
-        result = await push_message_impl(inp, active_sessions=am, bot_registry=br)
+        result = await push_message_impl(inp, active_sessions=am, bot_registry=br, scope=_ANY_SCOPE)
 
     assert result.ok is True
     assert mock_send.await_args.kwargs["media_urls"] == urls

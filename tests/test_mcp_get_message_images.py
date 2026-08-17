@@ -9,12 +9,17 @@ import pytest
 from pydantic import ValidationError
 
 from nonebot_plugin_hermes.core.message_buffer import BufferedMessage
+from nonebot_plugin_hermes.core.routing import CallerScope
 from nonebot_plugin_hermes.core.storage.image_cache import ImageCache
 from nonebot_plugin_hermes.core.storage.message_store import MessageStore
 from nonebot_plugin_hermes.mcp.tools.get_message_images import (
     GetMessageImagesInput,
     get_message_images_impl,
 )
+
+# 这些用例测的是工具自身的行为,不是反向通道的范围收敛(那在 test_mcp_scope.py),
+# 所以统一给开发模式 scope。scope 是必填参数:漏传是 TypeError 而不是静默放行。
+_ANY_SCOPE = CallerScope.dev()
 
 
 @pytest.fixture
@@ -45,7 +50,7 @@ def test_happy_path_returns_text_and_image_blocks(setup):
     store, cache = setup
     msg_id, _sha = _seed_image(store, cache, b"\xff\xd8\xff\xe0FAKE_JPEG_BYTES")
     inp = GetMessageImagesInput(message_ids=[msg_id])
-    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache))
+    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache, scope=_ANY_SCOPE))
     # content[0] 是 JSON header,后面成对 (marker TextContent, ImageContent)
     assert len(result) >= 3
     assert result[0].type == "text"
@@ -74,7 +79,7 @@ def test_cache_miss_marks_unavailable(setup):
     store.append(msg)
     # 没 update_image_sha → sha 仍为 NULL
     inp = GetMessageImagesInput(message_ids=[msg.id])
-    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache))
+    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache, scope=_ANY_SCOPE))
     header = json.loads(result[0].text)
     assert header["results"][0]["available"] is False
     assert header["results"][0]["reason"] == "cache_miss"
@@ -90,7 +95,7 @@ def test_cache_miss_when_file_deleted_externally(setup):
         if p.name.startswith(sha):
             p.unlink()
     inp = GetMessageImagesInput(message_ids=[msg_id])
-    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache))
+    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache, scope=_ANY_SCOPE))
     header = json.loads(result[0].text)
     assert header["results"][0]["available"] is False
     assert header["results"][0]["reason"] == "cache_miss"
@@ -99,7 +104,7 @@ def test_cache_miss_when_file_deleted_externally(setup):
 def test_not_found_for_unknown_msg_id(setup):
     store, cache = setup
     inp = GetMessageImagesInput(message_ids=[9999])
-    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache))
+    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache, scope=_ANY_SCOPE))
     header = json.loads(result[0].text)
     assert header["results"][0]["available"] is False
     assert header["results"][0]["reason"] == "not_found"
@@ -110,7 +115,7 @@ def test_too_large_marks_unavailable(setup):
     huge = b"X" * (6 * 1024 * 1024)  # 6MB > 5MB cap
     msg_id, _ = _seed_image(store, cache, huge)
     inp = GetMessageImagesInput(message_ids=[msg_id])
-    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache))
+    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache, scope=_ANY_SCOPE))
     header = json.loads(result[0].text)
     assert header["results"][0]["available"] is False
     assert header["results"][0]["reason"] == "too_large"
@@ -145,7 +150,7 @@ def test_multi_image_message_returns_all_images(setup):
     store.update_image_sha(msg.id, 1, sha_b, "image/png")
 
     inp = GetMessageImagesInput(message_ids=[msg.id])
-    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache))
+    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache, scope=_ANY_SCOPE))
     header = json.loads(result[0].text)
     assert len(header["results"]) == 2
     assert all(r["available"] for r in header["results"])
@@ -158,7 +163,7 @@ def test_mixed_available_and_not_found(setup):
     store, cache = setup
     msg_id, _sha = _seed_image(store, cache, b"\xff\xd8\xff\xe0BYTES")
     inp = GetMessageImagesInput(message_ids=[msg_id, 9999])
-    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache))
+    result = asyncio.run(get_message_images_impl(inp, store=store, cache=cache, scope=_ANY_SCOPE))
     header = json.loads(result[0].text)
     assert len(header["results"]) == 2
     by_msg = {r["message_id"]: r for r in header["results"]}

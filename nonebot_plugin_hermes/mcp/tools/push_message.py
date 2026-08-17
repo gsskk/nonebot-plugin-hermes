@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from ...core.message_buffer import BufferedMessage
 from ...core.outbound import send_text_with_media
+from ...core.routing import CallerScope
 from ..auth import PushContextError, validate_push_context
 
 if TYPE_CHECKING:
@@ -68,8 +69,11 @@ async def push_message_impl(
     *,
     active_sessions,
     bot_registry,
+    scope: CallerScope | None,
     message_buffer: MessageBuffer | None = None,
 ) -> PushMessageResult:
+    """scope 是调用方的可操作范围,**没有默认值**:漏传会是 TypeError 而不是静默放行。
+    None = 认不出调用方,一律拒(见 auth.assert_scope_allows)。"""
     if not inp.text and not inp.image_urls:
         return PushMessageResult(ok=False, error="text and image_urls both empty")
 
@@ -81,6 +85,7 @@ async def push_message_impl(
             active_sessions=active_sessions,
             bot_registry=bot_registry,
             now_ms=now_ms,
+            scope=scope,
         )
     except PushContextError as exc:
         logger.warning(f"[MCP push_message] context invalid: {exc}")

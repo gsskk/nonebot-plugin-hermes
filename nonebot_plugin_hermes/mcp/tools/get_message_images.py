@@ -19,7 +19,10 @@ import json
 from typing import Any
 
 from mcp.types import ImageContent, TextContent
+from nonebot import logger
 from pydantic import BaseModel, Field
+
+from ...core.routing import CallerScope
 
 
 class GetMessageImagesInput(BaseModel):
@@ -42,6 +45,7 @@ async def get_message_images_impl(
     *,
     store,
     cache,
+    scope: CallerScope | None,
 ) -> list:
     """按 input message_ids 顺序取图,返回 MCP content[] 数组。
 
@@ -49,8 +53,22 @@ async def get_message_images_impl(
       cache_miss    — sha256 NULL 或文件被淘汰
       too_large     — 单图超 5MB
       cap_exceeded  — 累计字节超 25MB 或 cap 触发
-      not_found     — message_id 在 DB 不存在
+      not_found     — message_id 在 DB 不存在,**或不在调用方范围内**
     """
+    # 范围判定必须按行做:入参的 adapter/group_id 是调用方自报的(而且是可选的),
+    # message_id 是自增小整数、可枚举,所以真正的归属只能从 DB 反查。
+    # 越权 id 一律按 not_found 处理 —— 回一个专门的 reason 等于给越权方一个
+    # "这个 id 存在"的探测口。
+    owners = store.get_message_owners(inp.message_ids)
+    denied = {
+        mid for mid, (adapter, group_id) in owners.items() if scope is None or not scope.allows(adapter, group_id or "")
+    }
+    if denied:
+        logger.warning(
+            f"[HERMES MCP] get_message_images 越权 message_id 已按 not_found 处理: {sorted(denied)} "
+            f"(caller: {'unresolved' if scope is None else scope.describe()})"
+        )
+
     metas = store.get_message_images_meta(inp.message_ids)
     results: list[dict[str, Any]] = []
     content_blocks: list[Any] = []
@@ -59,7 +77,7 @@ async def get_message_images_impl(
 
     # 严格按入参顺序处理;同条消息内按 idx 升序(get_message_images_meta 已按此排)
     for message_id in inp.message_ids:
-        if message_id not in metas or not metas[message_id]:
+        if message_id in denied or message_id not in metas or not metas[message_id]:
             results.append(
                 {
                     "message_id": message_id,

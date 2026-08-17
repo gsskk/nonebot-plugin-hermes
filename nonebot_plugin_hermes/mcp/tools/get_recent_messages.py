@@ -10,6 +10,8 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from ...config import plugin_config
+from ...core.routing import CallerScope
+from ..auth import PushContextError, assert_scope_allows
 
 
 class GetRecentMessagesInput(BaseModel):
@@ -40,7 +42,14 @@ async def get_recent_messages_impl(
     inp: GetRecentMessagesInput,
     *,
     message_buffer,
+    scope: CallerScope | None,
 ) -> GetRecentMessagesResult:
+    # 读也要收敛:能读别的群的历史,隔离同样是破的。判定在取数之前。
+    try:
+        assert_scope_allows(inp.adapter, inp.group_id, scope)
+    except PushContextError as exc:
+        raise ValueError(str(exc)) from exc
+
     cap = plugin_config.hermes_mcp_recent_limit_max
     effective_limit = min(inp.limit, cap)
     rows = message_buffer.get_recent(

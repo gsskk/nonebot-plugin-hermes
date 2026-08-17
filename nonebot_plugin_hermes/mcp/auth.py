@@ -1,16 +1,21 @@
 """MCP 鉴权 + 工具上下文校验。
 
-两个层次:
-  1. HTTP 层 Bearer:check_bearer(authorization_header, expected)
-  2. 工具层 push_message 上下文:validate_push_context(...)
+三个层次:
+  1. HTTP 层身份:resolve_caller_scope(authorization) —— 认不出就是 401(见 mcp/server.py)
+  2. 工具层范围:caller_scope_from_request() + assert_scope_allows(...)
+  3. 工具层上下文:validate_push_context(...)(活跃 session + BotRegistry 路由)
+
+第 1、2 层用的是同一个函数:身份不需要独立的 token 表,呈上哪个接入点的 key 就说明是
+哪个接入点,范围从路由表派生(见 core/routing.py 的 CallerScope)。
 """
 
 from __future__ import annotations
 
-import hmac
+from nonebot import logger
 
 from ..core.active_session import ActiveSessionManager
 from ..core.bot_registry import BotRegistry
+from ..core.routing import CallerScope, resolve_caller_scope
 
 
 class AuthError(Exception):
@@ -18,32 +23,40 @@ class AuthError(Exception):
 
 
 class PushContextError(Exception):
-    """push_message 工具上下文不满足,应映射成 422。"""
+    """工具上下文不满足(含越权),应映射成 422。"""
 
 
-def check_bearer(authorization_header: str | None, expected: str) -> None:
-    """HTTP 层 Bearer 校验。
+def caller_scope_from_request() -> CallerScope | None:
+    """从**当前**这一次 MCP 请求解析调用方范围。None = 认不出 → 拒。
 
-    Args:
-        authorization_header: Request 头中 Authorization 字段值,或 None。
-        expected: 期望的 token。**空字符串 = 开发模式,完全跳过校验**——
-            参数类型为 str 而非 Optional[str],防未来 config 类型变 Optional[str]
-            时 None 触发 falsy 静默 bypass。
+    走 FastMCP 的 get_http_headers 而不是自己在 ASGI 中间件里放 ContextVar:
+    stateful streamable HTTP 的工具体跑在 session 创建时 spawn 的 server task 里,
+    ContextVar 会被钉死在建 session 那一次请求的 token 上(实测),后续换 token 调用
+    读到的仍是旧值 —— 而把取不到当成"不限"就是静默不设防。get_http_headers 读的是
+    MCP SDK 逐消息挂载的 request_context,才是当前这一次调用的头。
+    """
+    try:
+        from fastmcp.server.dependencies import get_http_headers
+
+        # get_http_headers 默认剔除 authorization,必须显式 include。
+        headers = get_http_headers(include={"authorization"})
+    except Exception:  # pragma: no cover - 没有 HTTP 上下文(直调 impl 的单测)
+        return None
+    return resolve_caller_scope(headers.get("authorization"))
+
+
+def assert_scope_allows(adapter: str, group_id: str, scope: CallerScope | None) -> None:
+    """受限调用方只能操作自己名下的群。scope=None(认不出)一律拒。
 
     Raises:
-        AuthError: header 缺失 / scheme 错 / token 不匹配。
+        PushContextError: 目标群不在该调用方范围内。
     """
-    # 注:expected="" 是开发模式约定,与 hermes_api_key 同口径。
-    if not expected:
+    if scope is not None and scope.allows(adapter, group_id):
         return
-    if not authorization_header:
-        raise AuthError("missing Authorization header")
-    parts = authorization_header.strip().split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise AuthError("expected scheme Bearer")
-    # 容忍尾部空白:客户端偶有意外空格,这里 strip 后再常时间比较
-    if not hmac.compare_digest(parts[1].strip(), expected):
-        raise AuthError("token mismatch")
+    # 拒绝必须留痕:否则现场症状是"bot 偶尔不吭声、只有某个群不行",极难查。
+    detail = "unresolved caller" if scope is None else scope.describe()
+    logger.warning(f"[HERMES MCP] 拒绝越权操作 ({adapter}, {group_id}) —— caller: {detail}")
+    raise PushContextError(f"caller is not scoped to ({adapter}, {group_id})")
 
 
 def validate_push_context(
@@ -53,19 +66,22 @@ def validate_push_context(
     active_sessions: ActiveSessionManager,
     bot_registry: BotRegistry,
     now_ms: int,
+    scope: CallerScope | None,
 ) -> None:
     """守卫 push_message MCP 工具调用的前置上下文。
 
     M1 规则:必须存在 (adapter, group_id) 的活跃 reactive session,
     且 BotRegistry 有对应路由(target+bot_self_id)才允许 push。
-    检查顺序:先 session 后 target——session 缺失更常见(TTL 过期),
-    优先报这条更直观。
+    检查顺序:范围 → session → target。session 缺失比 target 缺失更常见(TTL 过期),
+    优先报那条更直观;但**范围必须排在两者之前**,否则越权调用方能通过报错差异
+    探知别的群有没有活跃会话。
 
     M2 将增加 bg_task 路径(执行中的任务允许 push 即使无 reactive session)。
 
     Raises:
         PushContextError: 任一前置不满足;调用方映射 HTTP 422。
     """
+    assert_scope_allows(adapter, group_id, scope)
     if not active_sessions.is_active(adapter, group_id, now_ms):
         raise PushContextError(f"no active reactive session for ({adapter}, {group_id})")
     if bot_registry.get(adapter, "group", group_id) is None:

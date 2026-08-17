@@ -11,6 +11,7 @@ Hermes 把工具集、模型、文件工作区都绑在 profile(一份独立的 
 
 from __future__ import annotations
 
+import hmac
 from dataclasses import dataclass
 
 from ..config import HermesEndpoint, plugin_config
@@ -70,6 +71,95 @@ def all_targets() -> list[HermesTarget]:
     for label, entry in plugin_config.hermes_group_endpoints.items():
         targets.append(_from_entry(label, entry))
     return targets
+
+
+# --- 反向通道:调用方范围 -------------------------------------------------
+#
+# 出向隔离做完后,MCP 反向通道仍是缺口:一把全局 Bearer 意味着任何接入点的 agent 都能
+# 往任意群推消息、读任意群历史。这里不引入第二张 token 表 —— 每个接入点已经有一把必填
+# 的 key(命名 profile 必须有自己的 API_SERVER_KEY),呈上哪把就说明是哪个接入点,
+# 范围随用随从路由表派生。表变了范围立刻跟着变,不会有第二处登记漂移。
+
+_KIND_DEV = "dev"
+_KIND_COMPLEMENT = "complement"
+_KIND_LISTED = "listed"
+
+
+@dataclass(frozen=True)
+class CallerScope:
+    """一个反向通道调用方能操作的群范围。
+
+    三种形态,没有"不受限"这一档:
+      - listed:     某些条目共用的 key → 那些条目的群
+      - complement: 全局 key(= 默认接入点)→ 不在表内、或条目没有自己 key 的群
+      - dev:        全局 key 与条目 key 都没配,维持"未配置即不校验"的开发模式
+
+    刻意不留 master token:全局 key 的值就是默认 profile 自己的 API_SERVER_KEY,
+    留一把能推任意群的钥匙等于给它发全权通行证,而这正是本层要消掉的能力。
+    """
+
+    kind: str
+    labels: frozenset[str]
+    endpoint_url: str = ""
+
+    @classmethod
+    def dev(cls) -> CallerScope:
+        """开发模式(未配置任何 key)。直调 impl 的单测也用它。"""
+        return cls(kind=_KIND_DEV, labels=frozenset())
+
+    def allows(self, adapter: str, group_id: str) -> bool:
+        if self.kind == _KIND_DEV:
+            return True
+        label = f"{adapter}:{group_id}"
+        if self.kind == _KIND_LISTED:
+            return label in self.labels
+        return label not in isolated_labels()
+
+    def describe(self) -> str:
+        """给日志用的自述。**不含 token 本身。**"""
+        if self.kind == _KIND_DEV:
+            return "dev-mode(未配置任何 key)"
+        if self.kind == _KIND_LISTED:
+            return f"endpoint={self.endpoint_url} groups={sorted(self.labels)}"
+        return f"endpoint={_DEFAULT_LABEL} groups=补集(排除 {sorted(isolated_labels())})"
+
+
+def isolated_labels() -> frozenset[str]:
+    """有自己 key、因而拥有独立反向权限的条目。补集判定要排除它们。"""
+    return frozenset(label for label, entry in plugin_config.hermes_group_endpoints.items() if entry.key)
+
+
+def _parse_bearer(authorization_header: str | None) -> str | None:
+    if not authorization_header:
+        return None
+    parts = authorization_header.strip().split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    # 容忍尾部空白:客户端偶有意外空格。
+    return parts[1].strip() or None
+
+
+def resolve_caller_scope(authorization_header: str | None) -> CallerScope | None:
+    """认出反向通道调用方并给出它的范围。
+
+    返回 None = 认不出,调用方必须拒(HTTP 层 401 / 工具层拒绝)。**不得回落成"不限"。**
+    """
+    global_key = plugin_config.hermes_api_key
+    keyed = {label: entry for label, entry in plugin_config.hermes_group_endpoints.items() if entry.key}
+    if not global_key and not keyed:
+        return CallerScope.dev()
+
+    token = _parse_bearer(authorization_header)
+    if token is None:
+        return None
+    if global_key and hmac.compare_digest(token, global_key):
+        return CallerScope(kind=_KIND_COMPLEMENT, labels=frozenset())
+    # 逐个 compare_digest 而不是 dict 查表:命中与否不该由比较耗时泄露。
+    hits = {label for label, entry in keyed.items() if hmac.compare_digest(token, entry.key)}
+    if hits:
+        urls = sorted({keyed[label].url.rstrip("/") for label in hits})
+        return CallerScope(kind=_KIND_LISTED, labels=frozenset(hits), endpoint_url=urls[0])
+    return None
 
 
 def _normalize_adapter(raw: str) -> str:
