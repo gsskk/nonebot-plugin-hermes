@@ -404,6 +404,7 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 export TEAM_HOME=~/.hermes/profiles/team-a
 
 hermes profile create team-a                       # 独立 state.db / 记忆 / skills / config.yaml
+team-a setup                                       # 给它自己的 provider key(见下方 WARNING,别跳过)
 echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # 必须与默认 profile 不同
 
 # 这个群能用什么能力 —— 本功能唯一不可替代的价值就在这一步。
@@ -419,6 +420,24 @@ HERMES_HOME=$TEAM_HOME hermes mcp add nonebot --url http://<bot>:8643/mcp
 
 **两边唯一需要一致的值就是这把 `API_SERVER_KEY`**:插件侧写进 `HERMES_GROUP_ENDPOINTS[...].key`,
 Hermes 侧既是它的 `API_SERVER_KEY` 也是它的 MCP token。轮换一次改两处、覆盖两个方向。
+
+`hermes profile create` 还会在 `~/.local/bin/<name>` 生成一个 wrapper(内容是
+`exec hermes -p <name> "$@"`),于是:
+
+- **profile 名会变成一个 shell 命令。** 保留名只有 `hermes` / `test` / `tmp` / `root` / `sudo`,
+  像 `web`、`top`、`docker` 这种照样能建,并且会在 PATH 里抢在原命令前面 —— 起名前先
+  `command -v <name>` 看一眼。
+- 之后该 profile 的 hermes 子命令可以直接 `team-a config set …` / `team-a mcp add …`,不必写
+  `HERMES_HOME=…`。但 `hermes-install-skill` 是**本插件**的独立 CLI,不走这个 wrapper,仍要带
+  `HERMES_HOME=`。
+
+> [!WARNING]
+> **多路复用下必须给命名 profile 自己的 provider key。** `hermes profile create` 结尾会提示
+> "否则会继承你 shell 环境里的 key" —— 那只在单 profile 部署成立。多路复用打开后,凭证读取以
+> profile 的 secret scope 为权威且**不回落 `os.environ`**(全局豁免表里只有 PATH / HOME /
+> `API_SERVER_HOST|PORT|ENABLED` 这类部署项,没有任何 provider key),所以 `.env` 空着的 profile
+> 里 agent 一次都跑不起来。跑 `<name> setup`,或把 provider key 直接写进
+> `profiles/<name>/.env`。
 
 ### 反向通道自动跟着收敛
 

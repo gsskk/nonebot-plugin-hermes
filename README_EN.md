@@ -428,6 +428,7 @@ Per new endpoint:
 export TEAM_HOME=~/.hermes/profiles/team-a
 
 hermes profile create team-a                       # own state.db / memory / skills / config.yaml
+team-a setup                                       # its own provider key — see the WARNING below
 echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # must differ from the default profile
 
 # what this group is allowed to do — the one thing this feature cannot be replaced for.
@@ -445,6 +446,25 @@ HERMES_HOME=$TEAM_HOME hermes mcp add nonebot --url http://<bot>:8643/mcp
 **The only value that must match on both sides is that `API_SERVER_KEY`**: on the plugin side it goes
 into `HERMES_GROUP_ENDPOINTS[...].key`; on the Hermes side it is both the profile's `API_SERVER_KEY`
 and its MCP token. Rotating it means editing two places and covers both directions.
+
+`hermes profile create` also drops a wrapper at `~/.local/bin/<name>` containing
+`exec hermes -p <name> "$@"`, which means:
+
+- **the profile name becomes a shell command.** Only `hermes` / `test` / `tmp` / `root` / `sudo` are
+  reserved, so names like `web`, `top` or `docker` are accepted and will shadow the real command if
+  `~/.local/bin` comes first on PATH — run `command -v <name>` before picking a name.
+- hermes subcommands for that profile can then be written as `team-a config set …` /
+  `team-a mcp add …` instead of `HERMES_HOME=… hermes …`. But `hermes-install-skill` is **this
+  plugin's** own CLI, not a hermes subcommand, so it still needs `HERMES_HOME=`.
+
+> [!WARNING]
+> **Under multiplexing a named profile must have its own provider key.** `hermes profile create`
+> ends with a hint saying it will otherwise "inherit keys from your shell environment" — that only
+> holds for single-profile deployments. With multiplexing on, credential reads are authoritative to
+> the profile's secret scope and do **not** fall back to `os.environ` (the global exemption list only
+> covers deployment-ish vars like PATH / HOME / `API_SERVER_HOST|PORT|ENABLED` — no provider keys).
+> A profile with an empty `.env` cannot run a single turn. Run `<name> setup`, or write the provider
+> key straight into `profiles/<name>/.env`.
 
 ### The reverse channel narrows automatically
 
