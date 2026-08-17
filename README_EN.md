@@ -447,7 +447,9 @@ echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # must differ
 HERMES_HOME=$TEAM_HOME hermes-install-skill       # skills are installed per profile
 
 # only for profiles that need the reverse channel (skipping it = no reverse channel at all,
-# which is the cleanest isolation of all)
+# which is the cleanest isolation of all). NOTE: this step only takes effect in the
+# "separate processes" shape — under multiplexing, upstream's MCP discovery is per-process and a
+# named profile's own mcp_servers are never connected. See "The reverse channel narrows" below.
 HERMES_HOME=$TEAM_HOME hermes mcp add nonebot --url http://<bot>:8643/mcp
 #   use the API_SERVER_KEY above as the Bearer token
 ```
@@ -498,6 +500,23 @@ is a 401. With no routing table the complement is every group, i.e. exactly 0.5.
 In other words: **a group you want protected must be in the routing table and point at a named
 profile**. Groups left in the complement are still readable and pushable by the holder of the
 complement key (the default profile).
+
+> [!IMPORTANT]
+> **Per-endpoint reverse-channel scoping only holds in the "separate processes" shape.** Upstream's
+> MCP discovery is **per-process**: the gateway calls `discover_mcp_tools()` once at startup, with no
+> profile scope installed, so it reads the **default** profile's `config.yaml` into a process-global
+> registry (there is no second call site besides `/reload-mcp`). Under multiplexing, therefore:
+>
+> - a server added with `hermes mcp add` inside a named profile is **never connected**;
+> - every profile's agent shares the single MCP token configured on the default profile, so the plugin
+>   can only resolve them all to one scope;
+> - that token is usually the global `HERMES_API_KEY` (scope = the complement), so **no agent can push
+>   into a routed group** — the call is refused and logged. Fail-closed, but it amounts to "routed
+>   groups have no reverse channel under multiplexing".
+>
+> To isolate the reverse channel per group, run **one gateway process per profile** (`url` on its own
+> port, multiplexing off). `validate_endpoints()` warns at startup whenever the routing table contains
+> a `/p/<profile>` url while `HERMES_MCP_ENABLED=true`.
 
 Every refusal logs a WARNING on the bot side naming the caller's endpoint, its scope and the refused
 target — check that first when "the reverse channel stopped working for one group".

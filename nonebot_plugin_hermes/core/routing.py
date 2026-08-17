@@ -199,6 +199,20 @@ def validate_endpoints() -> list[str]:
         elif entry.key and len(entry.key) < _MIN_KEY_LEN:
             problems.append(f"{label} 的 key 短于 {_MIN_KEY_LEN} 字符,上游会判为未配置并拒绝请求")
 
+    # 多路复用形态 + 反向通道:上游的 MCP 发现是**进程级**的 —— gateway 启动时在没有 profile
+    # scope 的情况下读一次默认 profile 的 config.yaml,注册表全局共享。于是命名 profile 自己的
+    # mcp_servers 根本不会被连接,所有 profile 的 agent 呈同一把 token,插件这边只能把它们判成
+    # 同一个 scope。要按接入点收敛反向通道,只能让每个 profile 跑自己的 gateway 进程。
+    if plugin_config.hermes_mcp_enabled:
+        multiplexed = sorted(label for label, entry in entries.items() if "/p/" in entry.url)
+        if multiplexed:
+            problems.append(
+                f"{multiplexed} 走多路复用前缀(/p/<profile>),而上游的 MCP 发现是进程级的:"
+                f"命名 profile 自己的 mcp_servers 不会被连接,所有 profile 共用默认 profile 的那把 "
+                f"MCP token —— 反向通道无法按接入点收敛。这些群的 push/读会按补集判定而被拒。"
+                f"要按群隔离反向通道,改用每 profile 一个 gateway 进程的部署形态"
+            )
+
     # 同一个接入点配了多把不同的 key —— 其中至少一把必然 401。
     keys_by_url: dict[str, set[str]] = {}
     for entry in entries.values():

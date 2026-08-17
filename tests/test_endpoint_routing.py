@@ -389,3 +389,45 @@ def test_status_lines_have_no_annotation_when_table_empty(monkeypatch):
     _set_table(monkeypatch, {})
     api_line = next(ln for ln in build_status_lines(0) if ln.startswith("hermes_api:"))
     assert "接入点" not in api_line
+
+
+def test_validate_endpoints_flags_multiplex_reverse_channel_limit(monkeypatch):
+    """多路复用形态(/p/<profile> url)+ 反向通道开着 = scope 无法按接入点收敛,启动时要说。
+
+    上游的 MCP 发现是进程级的:gateway 启动时在**没有 profile scope** 的情况下读一次默认
+    profile 的 config.yaml,注册表全局共享。所以命名 profile 自己的 mcp_servers 不会被连接,
+    所有 profile 的 agent 呈同一把 token。
+    """
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.core.routing import validate_endpoints
+
+    monkeypatch.setattr(plugin_config, "hermes_api_url", "http://127.0.0.1:8642")
+    monkeypatch.setattr(plugin_config, "hermes_mcp_enabled", True)
+    _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8642/p/team-a", "key": "k-at-least-16-chars"}})
+
+    problems = validate_endpoints()
+    assert any("多路复用" in p and "反向通道" in p for p in problems)
+
+
+def test_validate_endpoints_no_multiplex_warning_for_separate_processes(monkeypatch):
+    """独立进程形态(各自端口)下反向通道能按接入点收敛,不该告警。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.core.routing import validate_endpoints
+
+    monkeypatch.setattr(plugin_config, "hermes_api_url", "http://127.0.0.1:8642")
+    monkeypatch.setattr(plugin_config, "hermes_mcp_enabled", True)
+    _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8643", "key": "k-at-least-16-chars"}})
+
+    assert validate_endpoints() == []
+
+
+def test_validate_endpoints_no_multiplex_warning_when_mcp_off(monkeypatch):
+    """没开反向通道就没这个问题。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.core.routing import validate_endpoints
+
+    monkeypatch.setattr(plugin_config, "hermes_api_url", "http://127.0.0.1:8642")
+    monkeypatch.setattr(plugin_config, "hermes_mcp_enabled", False)
+    _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8642/p/team-a", "key": "k-at-least-16-chars"}})
+
+    assert validate_endpoints() == []

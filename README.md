@@ -422,7 +422,9 @@ echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # 必须与�
 
 HERMES_HOME=$TEAM_HOME hermes-install-skill       # skill 按 profile 分别装
 
-# 只有需要反向通道的 profile 才做这一步(不做 = 该 profile 完全没有反向通道,最干脆的隔离)
+# 只有需要反向通道的 profile 才做这一步(不做 = 该 profile 完全没有反向通道,最干脆的隔离)。
+# 注意:这一步**只在"独立进程"形态下有效** —— 多路复用下上游的 MCP 发现是进程级的,
+# 命名 profile 自己的 mcp_servers 不会被连接,见下面「反向通道自动跟着收敛」小节。
 HERMES_HOME=$TEAM_HOME hermes mcp add nonebot --url http://<bot>:8643/mcp
 #   Bearer 填上面那把 API_SERVER_KEY
 ```
@@ -468,6 +470,21 @@ Hermes 侧既是它的 `API_SERVER_KEY` 也是它的 MCP token。轮换一次改
 
 也就是说:**想被保护的群必须进路由表并指向一个命名 profile**。留在补集里的群,补集那把 key 的持有者
 (默认 profile)照样能读能推。
+
+> [!IMPORTANT]
+> **反向通道按接入点收敛只在"独立进程"形态下成立。** 上游的 MCP 发现是**进程级**的:gateway 在
+> 启动时、没有任何 profile scope 的情况下读一次**默认 profile** 的 `config.yaml`,注册表全进程共享
+> (`gateway/run.py` 在 `runner.start()` 之前调 `discover_mcp_tools()`,之后除了 `/reload-mcp` 再没有
+> 第二个调用点)。所以多路复用下:
+>
+> - 命名 profile 自己 `hermes mcp add` 的 server **不会被连接**,写了也不生效;
+> - 所有 profile 的 agent 共用默认 profile 里那一把 MCP token,插件只能把它们判成同一个 scope;
+> - 那把 token 通常就是全局 `HERMES_API_KEY`(scope = 补集),于是**进了路由表的群谁都推不进去**
+>   —— 会被拒并留 WARNING。方向是 fail-closed 的,但等价于"被路由的群在多路复用下没有反向通道"。
+>
+> 要按群隔离反向通道,就用**每 profile 一个 gateway 进程**(`url` 填各自端口、别开多路复用)。
+> 启动期 `validate_endpoints()` 会对"路由表里有 `/p/<profile>` 形式的 url 且 `HERMES_MCP_ENABLED=true`"
+> 这个组合直接告警。
 
 被拒时 bot 侧会留一条 WARNING,写清调用方属于哪个接入点、它的范围、被拒的目标 —— 排查
 "某个群的反向推送忽然不工作"时先看这条。
