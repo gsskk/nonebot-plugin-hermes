@@ -284,7 +284,9 @@ HERMES_MCP_ENABLED=true
 ### 把插件能力告诉 Hermes Agent
 
 插件自带一份 `SKILL.md`（reactive 决策契约 + 反向通道用法），要装到 **Hermes 那台**的
-`~/.hermes/skills/nonebot-bridge/` —— 装错机器的话 Hermes 读不到,skill 不生效。
+`<HERMES_HOME>/skills/nonebot-bridge/`(默认 `~/.hermes/skills/nonebot-bridge/`)—— 装错机器的话
+Hermes 读不到,skill 不生效。安装位置跟随 `HERMES_HOME`(0.5.1+),所以多 profile 部署下按 profile
+分别装:`HERMES_HOME=~/.hermes/profiles/<name> hermes-install-skill`。
 
 bot 与 Hermes **同机**时,在 bot 项目目录下任选一种执行：
 

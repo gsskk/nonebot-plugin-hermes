@@ -296,7 +296,8 @@ After restart the bot will:
 ### Tell Hermes Agent about the plugin
 
 The plugin ships a `SKILL.md` (reactive decision contract + reverse-channel usage). It must land in
-`~/.hermes/skills/nonebot-bridge/` **on the Hermes host** — installed on the wrong machine, Hermes never
+`<HERMES_HOME>/skills/nonebot-bridge/` (default `~/.hermes/skills/nonebot-bridge/`) **on the Hermes
+host** — installed on the wrong machine, Hermes never
 reads it and the skill has no effect.
 
 When the bot and Hermes share a host, run any of the following from the bot project directory:
