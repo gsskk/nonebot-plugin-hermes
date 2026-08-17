@@ -675,11 +675,11 @@ async def test_reactive_turn_marks_bot_replied_after_send(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_reactive_turn_suppresses_submit_reply_after_mid_turn_push(monkeypatch):
-    """同一 chat() agent loop 内,Hermes 先调 push_message(写 mark_bot_replied),
-    又返 should_reply=True 同主题答案 → 群里收到两条几乎同样的回复。
-    _run_reactive_turn 在 send submit_decision 之前应识别"本 turn 内
-    last_bot_reply_at 已被推进",抑制第二条。
+async def test_run_reactive_turn_suppresses_submit_reply_restating_the_push(monkeypatch):
+    """同一 chat() agent loop 内先 push,又返 should_reply=True 且**内容是复述** →
+    抑制第二条,否则群里收到两条一样的话。
+
+    注意判据是"复述",不是"push 过":内容不同的第二条必须放行(见下面两个用例)。
     """
     from nonebot_plugin_hermes.handlers import message as handler_mod
 
@@ -687,8 +687,8 @@ async def test_run_reactive_turn_suppresses_submit_reply_after_mid_turn_push(mon
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
     async def chat_pushes_then_replies(**kwargs):
-        # 模拟 agent loop 内调 push_message 的副作用:写 mark_bot_replied
-        _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 100)
+        # 模拟 agent loop 内调 push_message 的副作用:写 mark_bot_replied(带原文)
+        _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 100, text="duplicate body")
         # 紧接着又返 should_reply=True 同主题答案
         return _make_chat_result(
             structured={
@@ -1145,7 +1145,7 @@ async def test_mid_turn_push_without_media_still_delivers_decision_image(monkeyp
 
     async def chat_then_push(**kwargs):
         # 模拟 agent loop 里 push_message 先答了文本、没投出任何媒体
-        _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 1_000, media_count=0)
+        _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 1_000, media_count=0, text="图来啦")
         return ChatResult(
             raw_text="x",
             structured={"should_reply": True, "reply_text": f"图来啦 ![image]({data_url})"},
@@ -1184,7 +1184,7 @@ async def test_mid_turn_push_with_media_still_suppresses(monkeypatch):
     _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
 
     async def chat_then_push(**kwargs):
-        _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 1_000, media_count=1)
+        _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 1_000, media_count=1, text="图来啦")
         return ChatResult(
             raw_text="x",
             structured={"should_reply": True, "reply_text": "图来啦 ![image](https://example.com/a.png)"},
@@ -1207,3 +1207,139 @@ async def test_mid_turn_push_with_media_still_suppresses(monkeypatch):
     )
 
     send_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 同 turn push + submit_decision:只有"复述"才抑制
+#
+# 旧规则是"本 turn 内 push 过就整条抑制",把最自然的用法(push 一句「在查」、
+# decision 给真答案)也一起打死 —— 答案被静默吞掉,agent 还以为发出去了。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mid_turn_push_then_different_answer_sends_both(monkeypatch):
+    """push「在查,稍等」+ decision 给真答案 → 答案必须发出去。"""
+    from nonebot_plugin_hermes.core.hermes_client import ChatResult
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 22_000_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    async def chat_acks_then_answers(**kwargs):
+        _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 500, text="稍等,我查一下")
+        return ChatResult(
+            raw_text="x",
+            structured={"should_reply": True, "reply_text": "查到了:明天下午三点开始"},
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_acks_then_answers)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    await handler_mod._run_reactive_turn(
+        bot=_fake_bot(),
+        target=_FakeTarget(id="g1", private=False),
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="@bot 几点开始",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now,
+    )
+
+    send_mock.assert_awaited_once()
+    assert send_mock.await_args.kwargs["text"] == "查到了:明天下午三点开始"
+
+
+@pytest.mark.asyncio
+async def test_mid_turn_push_quoted_in_a_longer_reply_still_sends(monkeypatch):
+    """decision 把刚 push 的话整段引用了、但后面补了新内容 → 仍要发。
+
+    包含关系不能当复述判据:引用+补充是合法的第二条。
+    """
+    from nonebot_plugin_hermes.core.hermes_client import ChatResult
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 23_000_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+    pushed = "第一批结果:A、B"
+
+    async def chat_quotes_then_adds(**kwargs):
+        _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 500, text=pushed)
+        return ChatResult(
+            raw_text="x",
+            structured={
+                "should_reply": True,
+                "reply_text": f"刚发的「{pushed}」之外,还查到 C 和 D,其中 D 需要你确认一下权限",
+            },
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_quotes_then_adds)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    await handler_mod._run_reactive_turn(
+        bot=_fake_bot(),
+        target=_FakeTarget(id="g1", private=False),
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="@bot 查一下",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now,
+    )
+
+    send_mock.assert_awaited_once()
+    assert "C 和 D" in send_mock.await_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_mid_turn_push_with_only_punctuation_diff_is_still_a_restatement(monkeypatch):
+    """只差标点 / 空白 / 大小写 → 仍算复述,抑制。"""
+    from nonebot_plugin_hermes.core.hermes_client import ChatResult
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    now = 24_000_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+
+    async def chat_restates(**kwargs):
+        _mcp.active_sessions.mark_bot_replied("ob11", "g1", now_ms=now + 500, text="任务已经跑完了")
+        return ChatResult(
+            raw_text="x",
+            structured={"should_reply": True, "reply_text": "任务已经跑完了!"},
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat_restates)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    await handler_mod._run_reactive_turn(
+        bot=_fake_bot(),
+        target=_FakeTarget(id="g1", private=False),
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="@bot 跑完了吗",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now,
+    )
+
+    send_mock.assert_not_awaited()
+
+
+def test_is_restatement_thresholds():
+    """判据刻意很窄:失败方向选「宁可多发一条,不可吞答案」。"""
+    from nonebot_plugin_hermes.handlers.message import _is_restatement
+
+    assert _is_restatement("一样的话", "一样的话")
+    assert _is_restatement("一样的话", " 一样的话!! ")
+    # 引用 + 补充新内容 → 放行
+    assert not _is_restatement("在查", "在查,结果是明天下午三点,地点在 B 座")
+    # 完全不同 → 放行
+    assert not _is_restatement("稍等", "答案是 42")
+    # 没记到 push 原文(老 session / 外部调用)→ 放行,绝不因为不知道就吞
+    assert not _is_restatement("", "任何内容")

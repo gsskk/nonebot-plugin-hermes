@@ -443,3 +443,42 @@ async def test_push_keeps_http_and_data_urls():
     assert result.ok is True
     assert mock_send.await_args.kwargs["media_urls"] == urls
     assert result.skipped_images == ["/local/b.png"]
+
+
+@pytest.mark.asyncio
+async def test_push_success_tells_the_caller_it_has_spoken():
+    """成功 push 后必须在返回值里提醒调用方"这一轮你已经说过话了"。
+
+    agent 是拿到这个结果之后才写 submit_decision 的,所以这里是唯一能在它决策**之前**
+    把"再回一条就是第二条消息"告诉它的地方 —— 只写进 SKILL.md 是不够的,线上就出现过
+    agent 两个都用、然后向用户汇报"两条都发了"(实际第二条被当复述丢了)。
+    """
+    am = ActiveSessionManager(default_ttl_sec=300)
+    br = BotRegistry()
+    am.trigger("ob11", "g1", "u1", now_ms=0)
+    br.upsert("ob11", "group", "g1", "999", _FakeTarget(), ts=0)
+    buffer = _RecordingBuffer()
+
+    with (
+        patch("nonebot_plugin_hermes.mcp.tools.push_message.time") as mock_time,
+        patch("nonebot_plugin_hermes.mcp.tools.push_message.get_bot", return_value=MagicMock()),
+        patch(
+            "nonebot_plugin_hermes.mcp.tools.push_message.send_text_with_media",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        mock_time.time.return_value = 10.0
+        result = await push_message_impl(
+            PushMessageInput(adapter="ob11", group_id="g1", text="已经在查了"),
+            active_sessions=am,
+            bot_registry=br,
+            message_buffer=buffer,
+            scope=_ANY_SCOPE,
+        )
+
+    assert result.ok is True
+    assert result.note is not None
+    assert "already" in result.note.lower() or "have now spoken" in result.note
+    assert "should_reply=false" in result.note
+    # 原文要落进 session,供同 turn 去重判断复述
+    assert am.get("ob11", "g1").last_bot_reply_text == "已经在查了"
