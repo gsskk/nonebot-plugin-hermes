@@ -8,6 +8,30 @@ from nonebot import get_plugin_config
 from pydantic import BaseModel, Field
 
 
+class HermesEndpoint(BaseModel):
+    """一个 Hermes 接入点。"""
+
+    url: str
+    """接入点 base URL。两种部署形态用同一个字段:
+      - 多路复用(gateway.multiplex_profiles):http://host:8642/p/<profile>
+      - 独立进程:                              http://host:8643
+    """
+
+    key: str = ""
+    """该接入点的 API key。空 = 用全局 hermes_api_key,但那只对"与默认接入点同一把 key"
+    的部署成立。
+
+    指向命名 profile 时这里必填,原因有三条,任一条都足以让留空成为错误配置:
+      - 上游校验的是该 profile 自己的 API_SERVER_KEY(且 >=16 字符),全局 key 必然 401
+      - 它是"忘开 gateway.multiplex_profiles"唯一的探测器(否则前缀被静默忽略、
+        请求落到默认 profile,零隔离却一切正常)
+      - 它同时是反向通道认身份的依据;留空 = 该群没有独立的反向权限(落回补集)
+    """
+
+    timeout: int = 0
+    """该接入点的请求超时(秒)。0 = 用全局 hermes_api_timeout。"""
+
+
 class Config(BaseModel):
     # --- Hermes API Server ---
     hermes_api_url: str = "http://127.0.0.1:8642"
@@ -18,6 +42,23 @@ class Config(BaseModel):
 
     hermes_api_timeout: int = 300
     """API 请求超时时间(秒),Agent 执行可能较慢"""
+
+    hermes_group_endpoints: dict[str, HermesEndpoint] = {}
+    """按群路由的接入点表。键为 `{adapter}:{group_id}`(与 hermes_admin_users 同构)。
+
+    未列出的群与全部私聊走默认接入点(hermes_api_url)。用途是让特定群拥有
+    独占的工具集 / 模型 / 文件工作区 —— 这些在 Hermes 侧是按 profile 分的。
+
+    这张表也是反向通道 scope 的唯一来源:MCP 调用方呈上哪个接入点的 key,
+    就只能操作该接入点名下的群;呈上全局 key 则只能操作补集(不在表内、
+    或条目没有自己 key 的那些群)。没有第二张 token 表。
+
+    .env 里写 JSON:
+        HERMES_GROUP_ENDPOINTS='{"onebotv11:12345": {"url": "http://127.0.0.1:8642/p/teamA", "key": "sk-a"}}'
+
+    每多一个接入点,Hermes 侧就要多维护一份 profile(含独立的 API_SERVER_KEY 与
+    skill 安装),所以这张表是给"少数需要特殊待遇的群"手工指定的,不适合按群自动扩。
+    """
 
     # --- 触发模式 ---
     hermes_group_trigger: str = "at"
