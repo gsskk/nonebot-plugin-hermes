@@ -321,3 +321,71 @@ async def test_health_check_probes_the_given_target(monkeypatch):
     assert ok is True
     assert seen["url"] == "http://127.0.0.1:8643/v1/models"
     assert seen["headers"]["Authorization"] == "Bearer sk-b"
+
+
+def test_ping_message_shapes():
+    from nonebot_plugin_hermes.handlers.commands import build_ping_message
+
+    assert "pong" in build_ping_message(True)
+    assert "pong" not in build_ping_message(False)
+
+
+def test_ping_message_never_leaks_endpoint_info():
+    """/ping 任何被允许的用户都能打,回复里不能出现接入点标签或数量。"""
+    from nonebot_plugin_hermes.handlers.commands import build_ping_message
+
+    for msg in (build_ping_message(True), build_ping_message(False)):
+        assert "接入点" not in msg
+        assert ":" not in msg.replace("：", "")
+
+
+@pytest.mark.asyncio
+async def test_ping_probes_the_current_group_endpoint(monkeypatch):
+    """群 g1 打 /ping 探的是 g1 自己的接入点,不是默认接入点。"""
+    from nonebot_plugin_hermes.core.routing import resolve_target
+    from nonebot_plugin_hermes.handlers import commands as cmd_mod
+
+    _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8643", "key": "sk-a-at-least-16-ch"}})
+
+    seen: list = []
+
+    async def fake_health(target=None):
+        seen.append(target)
+        return True
+
+    monkeypatch.setattr(cmd_mod.hermes_client, "health_check", fake_health)
+    assert await cmd_mod.probe_current_endpoint("ob11", False, "g1") is True
+
+    assert seen[0].label == "ob11:g1"
+    assert seen[0] == resolve_target("ob11", False, "g1")
+
+
+def test_endpoint_health_lines_lists_every_target():
+    from nonebot_plugin_hermes.handlers.commands import build_endpoint_health_lines
+
+    body = "\n".join(build_endpoint_health_lines([("default", True), ("ob11:g1", False)]))
+    assert "default" in body
+    assert "ob11:g1" in body
+    assert "❌" in body
+
+
+def test_endpoint_health_lines_empty_for_no_results():
+    from nonebot_plugin_hermes.handlers.commands import build_endpoint_health_lines
+
+    assert build_endpoint_health_lines([]) == []
+
+
+def test_status_lines_annotate_endpoint_count(monkeypatch):
+    from nonebot_plugin_hermes.handlers.commands import build_status_lines
+
+    _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8643", "key": "sk-a-at-least-16-ch"}})
+    api_line = next(ln for ln in build_status_lines(0) if ln.startswith("hermes_api:"))
+    assert "1" in api_line and "接入点" in api_line
+
+
+def test_status_lines_have_no_annotation_when_table_empty(monkeypatch):
+    from nonebot_plugin_hermes.handlers.commands import build_status_lines
+
+    _set_table(monkeypatch, {})
+    api_line = next(ln for ln in build_status_lines(0) if ln.startswith("hermes_api:"))
+    assert "接入点" not in api_line
