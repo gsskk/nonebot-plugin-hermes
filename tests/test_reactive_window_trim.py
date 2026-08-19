@@ -190,3 +190,39 @@ async def test_followup_zero_config_disables_trim(monkeypatch, _runtime):
     _seed_buffer(6)
     recent = await _run_turn(monkeypatch, explicit=False)
     assert len(recent) == 6
+
+
+@pytest.mark.asyncio
+async def test_oversized_history_warning_scans_full_window_not_trimmed(monkeypatch, _runtime):
+    """oversized 检测必须扫 recent_full,而不是裁剪后的 recent —— 否则被裁掉的脏数据永远不告警。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_followup_window", 3)
+    monkeypatch.setattr(handler_mod, "logger", MagicMock())
+
+    # 最老的一条(会被 window=3 裁掉)超长;其余正常长度。
+    for i in range(6):
+        content = "x" * 2001 if i == 0 else f"s{i}"
+        _mcp.message_buffer.append(_msg(ts=2000 + i, content=content))
+
+    await _run_turn(monkeypatch, explicit=False)
+
+    warning_texts = [str(call.args[0]) for call in handler_mod.logger.warning.call_args_list]
+    assert any("超长历史行" in text for text in warning_texts), warning_texts
+
+
+@pytest.mark.asyncio
+async def test_debug_log_reports_window_over_full_size(monkeypatch, _runtime):
+    """window= 调试日志格式钉住:len(recent)/len(recent_full)。"""
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_followup_window", 3)
+    monkeypatch.setattr(handler_mod, "logger", MagicMock())
+
+    _seed_buffer(6)  # 无 bot 行
+    await _run_turn(monkeypatch, explicit=False)
+
+    debug_texts = [str(call.args[0]) for call in handler_mod.logger.debug.call_args_list]
+    assert any("window=3/6" in text for text in debug_texts), debug_texts

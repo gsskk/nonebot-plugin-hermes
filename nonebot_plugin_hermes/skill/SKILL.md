@@ -53,8 +53,11 @@ welcome.
 ### `get_recent_messages(adapter, group_id, limit?, before_ts?)`
 
 Pull the latest `limit` messages from a group buffer (capped at 50). Prefer the
-`<recent_messages>` block already inlined in your reactive prompt — this tool is expensive
-(burns context) and should only be used when you need to look further back than ~20 messages.
+`<recent_messages>` block already inlined in your reactive prompt, but note that on
+follow-up turns that block may be a short trimmed window (newest few lines plus your own
+last line), not the full buffer — if the message you're looking for isn't in it, page back
+with this tool before concluding it doesn't exist. It's still context-expensive, so use it
+deliberately, not by default.
 
 Each returned message carries:
 - `id` — DB primary key, stable across turns; pair with `get_message_images` to fetch images
@@ -158,6 +161,11 @@ To see the image, follow this two-step protocol:
    - "他刚发的" → most recent image-bearing message from the user named in context
 2. **Fetch the bytes.** Call `get_message_images(message_ids=[<id>])`. The returned
    ImageContent blocks become real visual input on your next LLM turn.
+
+On follow-up turns the inlined window is trimmed, so the image-bearing line the user means
+may not appear in `<recent_messages>` at all. In that case, call `get_recent_messages` first
+to locate the `[m:<id>]`, then `get_message_images`. Don't conclude "no image found" from a
+trimmed window alone.
 
 The `[m:<id>]` id is **stable** across turns — the same image always has the same label,
 unlike positional schemes (#1, #2, …) which shift when new messages arrive. Use it to

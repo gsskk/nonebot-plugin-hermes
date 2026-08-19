@@ -152,7 +152,12 @@ class Config(BaseModel):
     """reactive 续发轮 <recent_messages> 尾部保留条数(另加 bot 自己最近一条)。
 
     explicit 触发轮不受影响,始终全量。设 0(或 ≥ hermes_perception_buffer)
-    关闭裁剪,行为与旧版一致 —— 这就是回退开关。"""
+    关闭裁剪,行为与旧版一致 —— 这就是回退开关。
+
+    尾部条数包含当前消息自身(perception 先于主 handler 入库,`get_recent` 会取到它)。
+    裁剪的前提是「被裁掉的行已经出现在会话记录里」——per-user session
+    (`HERMES_SESSION_SHARE_GROUP=false`)与在途合并重发的消息不完全满足该前提,
+    介意时调大窗口或设 0。"""
 
     hermes_perception_image_mode: str = "placeholder"
     """历史记录中的图片处理模式:
