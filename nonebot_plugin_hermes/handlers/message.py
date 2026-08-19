@@ -34,6 +34,7 @@ from ..core.prompt_builder import (
     build_passive_user_content,
     build_reactive_system_prompt,
     build_reactive_user_content,
+    select_followup_window,
 )
 from ..core.routing import resolve_target
 from ..core.session import session_manager
@@ -1196,10 +1197,17 @@ async def _run_reactive_turn(
     # should_reply=True 也必须抑制本路 send, 否则同 turn 内双答。
     last_bot_reply_at_at_entry = session.last_bot_reply_at
 
-    recent = _mcp.message_buffer.get_recent(
+    recent_full = _mcp.message_buffer.get_recent(
         adapter=adapter_name,
         group_id=group_id,
         limit=plugin_config.hermes_perception_buffer,
+    )
+    # 续发轮裁剪:归属判定主要依赖窗口尾部与 bot 自己的上一条发言,
+    # 全量窗口只在 explicit 触发轮保留(裁剪函数内含回退开关语义)。
+    recent = (
+        recent_full
+        if is_explicit_trigger
+        else select_followup_window(recent_full, plugin_config.hermes_reactive_followup_window)
     )
 
     system_prompt = build_reactive_system_prompt()
@@ -1221,10 +1229,10 @@ async def _run_reactive_turn(
     # oversized_history 记的是 sanitize **之前** 的原始长度 —— 渲染端已经会截断,
     # 但一条超长旧行说明 DB 里躺着脏数据,值得单独告警。
     prompt_chars = len(user_content) if isinstance(user_content, str) else sum(len(str(p)) for p in user_content)
-    oversized = [(m.id, len(m.content)) for m in recent if len(m.content) > 2000]
+    oversized = [(m.id, len(m.content)) for m in recent_full if len(m.content) > 2000]
     logger.debug(
         f"[HERMES reactive] prompt built group={group_id} user_content_chars={prompt_chars} "
-        f"recent={len(recent)} explicit={is_explicit_trigger} "
+        f"window={len(recent)}/{len(recent_full)} explicit={is_explicit_trigger} "
         f"imgs={len(image_urls)}"
     )
     if oversized:

@@ -2,8 +2,21 @@
 
 from __future__ import annotations
 
-from nonebot_plugin_hermes.core.message_buffer import BufferedMessage
+from dataclasses import dataclass
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from nonebot_plugin_hermes import mcp as _mcp
+from nonebot_plugin_hermes.core.active_session import ActiveSessionManager
+from nonebot_plugin_hermes.core.bot_registry import BotRegistry
+from nonebot_plugin_hermes.core.hermes_client import ChatResult
+from nonebot_plugin_hermes.core.inflight import InflightRegistry
+from nonebot_plugin_hermes.core.message_buffer import BufferedMessage, MessageBuffer
 from nonebot_plugin_hermes.core.prompt_builder import select_followup_window
+from nonebot_plugin_hermes.core.storage.image_cache import ImageCache
+from nonebot_plugin_hermes.core.storage.image_fetcher import ImageFetcher
+from nonebot_plugin_hermes.core.storage.message_store import MessageStore
 
 
 def _msg(ts: int, content: str, *, is_bot: bool = False, msg_id: int | None = None) -> BufferedMessage:
@@ -67,3 +80,113 @@ def test_multiple_bot_lines_pins_only_newest():
 
 def test_empty_input():
     assert select_followup_window([], 3) == []
+
+
+@dataclass
+class _FakeTarget:
+    id: str
+    private: bool = False
+    adapter: str = "ob11"
+
+
+@pytest.fixture
+def _runtime(tmp_path):
+    store = MessageStore(db_path=tmp_path / "messages.db")
+    cache = ImageCache(cache_dir=tmp_path / "imgs", quota_bytes=1024 * 1024)
+    fetcher = ImageFetcher(store=store, cache=cache)
+    _mcp.message_buffer = MessageBuffer(store=store, fetcher=fetcher)
+    _mcp.active_sessions = ActiveSessionManager(default_ttl_sec=300)
+    _mcp.bot_registry = BotRegistry()
+    _mcp.inflight = InflightRegistry()
+    yield
+    _mcp.message_buffer = None
+    _mcp.active_sessions = None
+    _mcp.bot_registry = None
+    _mcp.inflight = None
+    store.close()
+
+
+def _fake_bot():
+    bot = MagicMock()
+    bot.self_id = "999"
+    return bot
+
+
+def _seed_buffer(n: int, bot_at: int | None = None) -> None:
+    """写 n 条消息进 buffer,ts 递增(i=0 最旧)。bot_at 按写入序号指定 bot 行。"""
+    for i in range(n):
+        _mcp.message_buffer.append(_msg(ts=2000 + i, content=f"s{i}", is_bot=(i == bot_at)))
+
+
+async def _run_turn(monkeypatch, *, explicit: bool) -> list[BufferedMessage]:
+    """跑一发 reactive turn,返回传给 build_reactive_user_content 的 recent_messages。"""
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    captured: dict = {}
+
+    def capture_build(**kwargs):
+        captured["recent"] = list(kwargs["recent_messages"])
+        return "stub-user-content"
+
+    async def fake_chat(**kwargs):
+        return ChatResult(raw_text="ok", structured={"should_reply": False})
+
+    monkeypatch.setattr(handler_mod, "build_reactive_user_content", capture_build)
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", fake_chat)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    now = 9_000_000
+    _mcp.active_sessions.trigger("ob11", "g1", "u1", now_ms=now)
+    await handler_mod._run_reactive_turn(
+        bot=_fake_bot(),
+        target=_FakeTarget(id="g1"),
+        adapter_name="ob11",
+        user_id="u1",
+        group_id="g1",
+        text="继续聊",
+        image_urls=[],
+        is_explicit_trigger=explicit,
+        now_ms=now,
+    )
+    return captured["recent"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_turn_gets_full_window(monkeypatch, _runtime):
+    from nonebot_plugin_hermes.config import plugin_config
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_followup_window", 3)
+    _seed_buffer(6)
+    recent = await _run_turn(monkeypatch, explicit=True)
+    assert len(recent) == 6
+
+
+@pytest.mark.asyncio
+async def test_followup_turn_gets_trimmed_window(monkeypatch, _runtime):
+    from nonebot_plugin_hermes.config import plugin_config
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_followup_window", 3)
+    _seed_buffer(6)  # 无 bot 行
+    recent = await _run_turn(monkeypatch, explicit=False)
+    assert [m.content for m in recent] == ["s5", "s4", "s3"]
+
+
+@pytest.mark.asyncio
+async def test_followup_turn_pins_bot_line(monkeypatch, _runtime):
+    from nonebot_plugin_hermes.config import plugin_config
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_followup_window", 3)
+    _seed_buffer(6, bot_at=1)  # bot 行是第 2 老的,必在尾部 3 条之外
+    recent = await _run_turn(monkeypatch, explicit=False)
+    assert [m.content for m in recent] == ["s5", "s4", "s3", "s1"]
+    assert recent[-1].is_bot
+
+
+@pytest.mark.asyncio
+async def test_followup_zero_config_disables_trim(monkeypatch, _runtime):
+    from nonebot_plugin_hermes.config import plugin_config
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_followup_window", 0)
+    _seed_buffer(6)
+    recent = await _run_turn(monkeypatch, explicit=False)
+    assert len(recent) == 6
