@@ -125,7 +125,8 @@ profile(profile 目录就是独立的 `HERMES_HOME`,`honcho.json` 按 profile �
 
 ## 建议的 `~/.hermes/honcho.json`
 
-向导跑完后的最终形态。注意**没有 `peerName` 这一行**:
+向导跑完后的最终形态。两处与向导输出不同,都是漏了就出问题的:**没有 `peerName` 这一行**
+(有它则画像跨群共享),**有 `reasoningLevelCap` 这一行**(没它则 reasoning level 被架空):
 
 ```json
 {
@@ -163,7 +164,7 @@ profile(profile 目录就是独立的 `HERMES_HOME`,`honcho.json` 按 profile �
 | `recallMode` | `hybrid` | `context` | tools 模式下模型每调一次 `honcho_*` 就是一次完整的 agent round-trip(又一次 chat completion)。群聊里模型爱试探,开销不可控;context 一次注入拿完 |
 | `contextTokens` | uncapped | `1200` | 不封顶意味着 system prompt 随记忆增长而变长,既吃输入额度,又因为每轮内容都变而**破坏 prompt cache** |
 | `dialecticCadence` | `2` | `5` | 每次 dialectic 是 Honcho 后端的一次 LLM 调用。每两轮一次,在活跃群里是持续的后台开销 |
-| `reasoningLevelCap` | `high` | `low` | `reasoningHeuristic` 默认开着,会按需自动升档,cap 决定它最高能升到哪。群聊记忆用不着审计级分析 |
+| `reasoningLevelCap` | `high` | `low` | **漏配是静默的,后果最大** —— 它不填就是 `high`,`dialecticReasoningLevel` 会被自动升档架空。见下方「cap 是承重的」 |
 | `writeFrequency` | `async` | 保持 | 后台线程写入,不占用回复路径 |
 | `sessionStrategy` | `per-session` | 保持 | 只影响 CLI。bot 走 `X-Hermes-Session-Key`,它在 Honcho 的 session 名解析里优先级最高,策略管不到 |
 | `pinUserPeer` / `userPeerAliases` / `runtimePeerPrefix` | 按向导选择 | 保持 | 只影响原生 gateway 平台,对本插件无效 |
@@ -177,6 +178,44 @@ hermes honcho tokens --context 1200 --dialectic 600
 
 `dialecticCadence` 和 `reasoningLevelCap` 没有对应子命令,要么手改 JSON,要么重跑向导时在
 对应提问处填。
+
+### cap 是承重的:漏配等于没配 reasoning level
+
+`reasoningLevelCap` 不填不会报错,而是**静默落到 `high`**
+(`plugins/memory/honcho/__init__.py` 的 `_reasoning_level_cap` 默认值)。在别的场景这只是
+"允许升到高档",在本插件场景它等于**把你设的 reasoning level 整个作废**。
+
+原因在 `_apply_reasoning_heuristic`:
+
+```python
+# Char-count heuristic: +1 at >=120 chars, +2 at >=400.
+return self._LEVEL_ORDER[min(base_idx + bump, cap_idx)]
+# _LEVEL_ORDER = ("minimal", "low", "medium", "high", "max")
+```
+
+它按 **query 长度**升档,而 query 就是插件发过去的整条 user message —— reactive 模式下那里面
+裹着 `<recent_messages>`,轻松两三千字符,**恒定越过 400 的门槛,恒定 `bump=2`**。于是:
+
+> 实际档位 = `min(base + 2, cap)`。只要 cap 比 base 高出 2 档以上,**base 填什么都没用,
+> 你跑的永远是 cap**。
+
+`dialecticReasoningLevel: minimal` + 没有 cap = 每轮实际跑 `medium`。差别不小:`minimal` 是
+`MAX_TOOL_ITERATIONS=1`、单次输入三千余 token;升档后是五六次工具迭代、单次输入两万上下,
+耗时逼近甚至越过 Hermes 那侧 30 秒的超时线 —— 越过就是白烧,没人接收结果。
+
+所以 **cap 才是你要认真填的那个键**,base 只在两者相差不足 2 档时才参与决定。
+
+改完用 `hermes honcho status` 确认生效值,别只看文件:
+
+```
+  Dialectic cad:  every 5 turns
+  Reasoning:      base=minimal, cap=minimal, heuristic=on
+```
+
+`heuristic=on` 不必关 —— 它照样算出 `bump=2`,但 `min()` 会被 cap 夹住,升不上去等于没升。
+
+顺带一提,`honcho.json` 出现**重复键**时(重跑向导容易叠出来)按 last-wins 解析,不报错。
+看到同一个键出现两次,以最后一次为准,并且该清掉。
 
 ## 验证链路通了
 
@@ -200,7 +239,11 @@ Honcho 不是装上就完事的组件,它持续烧 LLM 额度:
 - **dialectic**:按轮次触发,一轮可能多发几次
 - **summary**:会话推进到一定长度跑一次
 - **embedding**:每条 observation 写入前一次,检索时每个 query 一次。`EMBED_MESSAGES`
-  只管聊天消息那一路,关掉也免不了这些——**embedding 是硬依赖**
+  只管聊天消息那一路,关掉也免不了这些——**embedding 是硬依赖**。
+  注意检索那一路才是大头:`session.py` 把**整条 user message** 当 `search_query` 传给
+  `peer.context()`,而 reactive 模式的 user message 裹着 `<recent_messages>`,单条两三千字符。
+  实测一次(`EMBED_MESSAGES=false`、580 条 observation 均 105 字符):写入侧只占 7%,
+  **其余九成都是检索 query**
 
 ⚠️ chat 类模块共用全局 `LLM_OPENAI_BASE_URL`,但 **embedding 不吃这个值**,只认自己的
 `EMBEDDING_MODEL_CONFIG__OVERRIDES__*`。只提供 chat-completions 的网关(如 opencode)
@@ -210,9 +253,18 @@ Honcho 不是装上就完事的组件,它持续烧 LLM 额度:
 是按额度封顶的订阅制,强烈建议给 Honcho 单配一把便宜的 key,把后台提炼和主对话分开——
 否则后台把额度啃完时,表现是 bot 该说话时说不了,排查起来会绕远路。
 
-省钱的旋钮:flash 档模型、`DERIVER_WORKERS=1`、`DREAM_ENABLED=false`、把
-`dialecticCadence` 调稀。`EMBED_MESSAGES=false` 只省聊天消息那一路的向量,
-省不掉 observation 的。
+省钱的旋钮,按性价比排:
+
+1. **`reasoningLevelCap` 压到 `minimal` 或 `low`** —— 单次 dialectic 的输入和它带出的
+   embedding query 数都是数倍差距,而且是一个 JSON 键、随时可回退。见上方「cap 是承重的」
+2. **`dialecticCadence` 调稀**(`2` → `5`)—— 直接按比例减少 dialectic 次数
+3. flash 档模型、`DERIVER_WORKERS=1`、`DREAM_ENABLED=false`
+
+`EMBED_MESSAGES=false` 只省聊天消息那一路的向量,省不掉 observation 的。
+
+如果 embedding provider 对单批条数有上限(阿里云百炼 text-embedding-v4 是 10),要显式设
+`EMBEDDING_MODEL_CONFIG__MAX_BATCH_SIZE`,否则 deriver 按自己的默认批量发,服务端 400
+拒绝、客户端重试三轮,纯浪费。
 
 ## 冷启动期的 dialectic 风暴
 
@@ -238,8 +290,12 @@ prompt cache 也只能命中一半,未缓存的部分正是每次都不同的历
 
 ```json
 "dialecticReasoningLevel": "minimal",
+"reasoningLevelCap": "minimal",
 "dialecticDepth": 1
 ```
+
+**`reasoningLevelCap` 这行不能省。** 只设 `dialecticReasoningLevel` 而不夹 cap,heuristic 会
+把它原样升回去,这段压制根本不生效 —— 见上方「cap 是承重的」。
 
 `minimal` 档 `MAX_TOOL_ITERATIONS=1`,一次工具调用就收工,这串风暴直接消失。反正空库也没什么
 可召回的。Honcho 侧 `.env` 顺手给那些 dump 封顶:
