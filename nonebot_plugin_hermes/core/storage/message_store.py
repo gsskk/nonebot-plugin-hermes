@@ -187,6 +187,21 @@ class MessageStore:
             )
         return dict(out)
 
+    def get_message_owners(self, message_ids: list[int]) -> dict[int, tuple[str, str | None]]:
+        """message_id → (adapter, group_id)。未找到的 id 不出现在返回里。
+
+        反向通道的范围判定要它:按 id 取内容的工具(get_message_images)拿到的是自增
+        小整数,不解析归属就等于把全库暴露给任何一把 token。
+        """
+        if not message_ids:
+            return {}
+        placeholders = ",".join("?" for _ in message_ids)
+        rows = self._conn.execute(
+            f"SELECT id, adapter, group_id FROM messages WHERE id IN ({placeholders})",
+            message_ids,
+        ).fetchall()
+        return {r["id"]: (r["adapter"], r["group_id"]) for r in rows}
+
     def update_image_sha(self, message_id: int, idx: int, sha256: str, mime_type: str) -> None:
         try:
             self._conn.execute(

@@ -16,7 +16,7 @@ import httpx
 import json5  # type: ignore[import-untyped]
 from nonebot import logger
 
-from ..config import plugin_config
+from .routing import HermesTarget, default_target
 
 # user_content_override 期望形态:纯文本 或 OpenAI 多模态 parts 列表
 UserContent = str | list[dict[str, Any]]
@@ -519,40 +519,43 @@ def missing_memory_capabilities(caps: dict[str, Any]) -> list[str]:
 
 class HermesClient:
     def __init__(self) -> None:
-        self._api_url_cache: str | None = None
-        self._api_key_cache: str | None = None
-        self._timeout_cache: int | None = None
+        # 无实例状态:接入点按群解析,缓存会让路由与配置漂移。
+        pass
 
     @property
     def api_url(self) -> str:
-        if self._api_url_cache is None:
-            self._api_url_cache = plugin_config.hermes_api_url.rstrip("/")
-        return self._api_url_cache
+        """默认接入点的 base URL(日志、启动期能力探测用)。"""
+        return default_target().base_url
 
     @property
     def api_key(self) -> str:
-        if self._api_key_cache is None:
-            self._api_key_cache = plugin_config.hermes_api_key
-        return self._api_key_cache
+        return default_target().api_key
 
     @property
     def timeout(self) -> int:
-        if self._timeout_cache is None:
-            self._timeout_cache = plugin_config.hermes_api_timeout
-        return self._timeout_cache
+        return default_target().timeout
 
-    def get_headers(self, session_key: str = "", memory_key: str | None = None) -> dict[str, str]:
+    def get_headers(
+        self,
+        session_key: str = "",
+        memory_key: str | None = None,
+        *,
+        api_key: str | None = None,
+    ) -> dict[str, str]:
         """拼装出向 header。
 
         X-Hermes-Session-Id  = 短期 transcript 作用域(每轮必发)
-        X-Hermes-Session-Key = 长期记忆作用域(仅在调用方给了值且本地配了 api_key 时发)
+        X-Hermes-Session-Key = 长期记忆作用域(仅在调用方给了值且本轮有 api_key 时发)
 
         没有 api_key 却发记忆头会被上游 403 整轮打回,所以这里与 Authorization
         绑在同一个条件上。
+
+        api_key=None 表示用默认接入点的 key;按群路由时由调用方传入该群接入点的 key。
         """
+        key = self.api_key if api_key is None else api_key
         h = {"Content-Type": "application/json", "X-Hermes-Session-Id": session_key}
-        if self.api_key:
-            h["Authorization"] = f"Bearer {self.api_key}"
+        if key:
+            h["Authorization"] = f"Bearer {key}"
             if memory_key:
                 h["X-Hermes-Session-Key"] = memory_key
         return h
@@ -573,6 +576,7 @@ class HermesClient:
         structured_tool_name: str | None = None,
         system_prompt: str | None = None,
         user_content_override: UserContent | None = None,
+        target: HermesTarget | None = None,
     ) -> ChatResult:
         """调用 Hermes,返回 ChatResult。
 
@@ -587,10 +591,13 @@ class HermesClient:
           /clear 与上游压缩轮换,前者不会。
         - user_content_override: 由 prompt_builder 直接给出 user message 的 content
           (str 或 OpenAI 多模态 parts 列表;text + image_urls 参数将被忽略)
+        - target: 本轮发往的接入点(url + key + timeout)。None = 默认接入点。
+          按群路由时由 handler 经 routing.resolve_target() 解析后传入。
         - mode 字段当前为路由元数据,chat() 内部不分支判断;Task 15 handler 据此决定
           如何呈现结果(reactive 走 structured 流,passive 走 raw_text)。
         """
-        url = f"{self.api_url}/v1/chat/completions"
+        tgt = target or default_target()
+        url = f"{tgt.base_url}/v1/chat/completions"
 
         if user_content_override is not None:
             content: Any = user_content_override
@@ -628,9 +635,9 @@ class HermesClient:
         }
         # 路径 B:不发 tools / tool_choice(Hermes 透传不可靠,P0-spike 已验)
 
-        headers = self.get_headers(session_key, memory_key)
+        headers = self.get_headers(session_key, memory_key, api_key=tgt.api_key)
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=tgt.timeout) as client:
                 resp = await client.post(url, json=payload, headers=headers)
                 if resp.status_code != 200:
                     reason, inner_status = _summarize_error_body(resp.text)
@@ -644,14 +651,14 @@ class HermesClient:
                 data = resp.json()
                 rotated = rotated_session_key(resp.headers.get("X-Hermes-Session-Id"), session_key)
         except httpx.TimeoutException:
-            logger.error(f"[HERMES] API 请求超时 ({self.timeout}s)")
+            logger.error(f"[HERMES] API 请求超时 ({tgt.timeout}s, target={tgt.label})")
             return ChatResult(
                 raw_text="⚠️ AI 服务响应超时,请稍后重试",
                 parse_failed=True,
                 is_transport_error=True,
             )
         except httpx.ConnectError:
-            logger.error(f"[HERMES] 无法连接到 {self.api_url}")
+            logger.error(f"[HERMES] 无法连接到 {tgt.base_url} (target={tgt.label})")
             return ChatResult(
                 raw_text="⚠️ 无法连接到 AI 服务",
                 parse_failed=True,
@@ -723,11 +730,17 @@ class HermesClient:
         except Exception:
             return {}
 
-    async def health_check(self) -> bool:
+    async def health_check(self, target: HermesTarget | None = None) -> bool:
+        """探活一个接入点。target=None 探默认接入点。
+
+        探 /v1/models 而不是 /health:前者要鉴权,所以 key 配错会如实报 401 ——
+        这正是"命名 profile 的 key 填错 / 忘开 multiplex"能被看见的原因。
+        """
+        tgt = target or default_target()
         try:
-            headers = self.get_headers()
+            headers = self.get_headers(api_key=tgt.api_key)
             async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(f"{self.api_url}/v1/models", headers=headers)
+                resp = await client.get(f"{tgt.base_url}/v1/models", headers=headers)
                 return resp.status_code == 200
         except Exception:
             return False

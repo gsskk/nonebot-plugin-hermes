@@ -29,6 +29,10 @@ class ActiveSession:
     「文本已答但图还没出去」:push_message 拿主机本地路径当图时只发出文本,
     此时若把带图的 submit_decision 整条抑制,那张图就彻底丢了。"""
 
+    last_bot_reply_text: str = ""
+    """上一次回复(含 MCP push)的文本原文。同 turn 去重据此判断 submit_decision 是不是
+    在**复述**刚发出去的话 —— 只有近乎逐字相同才抑制。空串 = 不知道原文,一律放行。"""
+
 
 class ActiveSessionManager:
     """滑动 TTL 状态机,跟踪哪些 (adapter, group_id) 处于 reactive 监听窗口。
@@ -91,17 +95,27 @@ class ActiveSessionManager:
         s = self._sessions.get((adapter, group_id))
         return s is not None and s.expires_at > now_ms
 
-    def mark_bot_replied(self, adapter: str, group_id: str, now_ms: int, media_count: int = 0) -> None:
-        """记录 bot 在本群刚发出回复的时间戳与实际投出的媒体数;session 缺失则 no-op。
+    def mark_bot_replied(
+        self,
+        adapter: str,
+        group_id: str,
+        now_ms: int,
+        media_count: int = 0,
+        text: str = "",
+    ) -> None:
+        """记录 bot 在本群刚发出回复的时间戳、实际投出的媒体数与文本原文;session 缺失则 no-op。
 
-        只写 last_bot_reply_at / last_bot_reply_media,不滑动 expires_at
-        (滑动续期由 touch 负责)。handlers 在 reactive 模式 send 成功后调用,
-        供 post-reply cooldown 与同 turn 去重闸门判定。
+        不滑动 expires_at(滑动续期由 touch 负责)。handlers 在 reactive 模式 send 成功后
+        调用,push_message 也调,供 post-reply cooldown 与同 turn 去重判定。
+
+        text 用于判断后续 submit_decision 是否在复述刚发出去的话;不传(空串)时同 turn
+        去重会放行,宁可多发一条也不吞掉答案。
         """
         s = self._sessions.get((adapter, group_id))
         if s is not None:
             s.last_bot_reply_at = now_ms
             s.last_bot_reply_media = media_count
+            s.last_bot_reply_text = text
 
     def update_topic(self, adapter: str, group_id: str, topic_hint: str | None) -> None:
         """更新或清空 topic_hint。

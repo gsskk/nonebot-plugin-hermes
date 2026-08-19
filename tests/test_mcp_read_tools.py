@@ -10,6 +10,7 @@ import pytest
 
 from nonebot_plugin_hermes.core.active_session import ActiveSessionManager
 from nonebot_plugin_hermes.core.message_buffer import BufferedMessage, MessageBuffer
+from nonebot_plugin_hermes.core.routing import CallerScope
 from nonebot_plugin_hermes.core.storage.image_cache import ImageCache
 from nonebot_plugin_hermes.core.storage.image_fetcher import ImageFetcher
 from nonebot_plugin_hermes.core.storage.message_store import MessageStore
@@ -25,6 +26,10 @@ from nonebot_plugin_hermes.mcp.tools.list_active_sessions import (
     ListActiveSessionsResult,
     list_active_sessions_impl,
 )
+
+# 这些用例测的是工具自身的行为,不是反向通道的范围收敛(那在 test_mcp_scope.py),
+# 所以统一给开发模式 scope。scope 是必填参数:漏传是 TypeError 而不是静默放行。
+_ANY_SCOPE = CallerScope.dev()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -101,7 +106,7 @@ async def test_list_active_sessions_empty():
     """Returns empty list when no sessions exist."""
     mgr = ActiveSessionManager(default_ttl_sec=300)
     inp = ListActiveSessionsInput(adapter=None)
-    result = await list_active_sessions_impl(inp, active_sessions=mgr)
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, scope=_ANY_SCOPE)
     assert isinstance(result, ListActiveSessionsResult)
     assert result.sessions == []
 
@@ -111,7 +116,7 @@ async def test_list_active_sessions_no_filter_returns_all():
     """With adapter=None, returns all sessions regardless of adapter."""
     mgr = _make_session_mgr(("ob11", "g1", "u1"), ("kook", "g2", "u2"), ("ob11", "g3", "u3"))
     inp = ListActiveSessionsInput(adapter=None)
-    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=_NOW_MS)
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=_NOW_MS, scope=_ANY_SCOPE)
     assert isinstance(result, ListActiveSessionsResult)
     assert len(result.sessions) == 3
     group_ids = {v.group_id for v in result.sessions}
@@ -123,7 +128,7 @@ async def test_list_active_sessions_with_adapter_filter():
     """With adapter='ob11', returns only ob11 sessions."""
     mgr = _make_session_mgr(("ob11", "g1", "u1"), ("kook", "g2", "u2"), ("ob11", "g3", "u3"))
     inp = ListActiveSessionsInput(adapter="ob11")
-    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=_NOW_MS)
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=_NOW_MS, scope=_ANY_SCOPE)
     assert len(result.sessions) == 2
     for v in result.sessions:
         assert v.adapter == "ob11"
@@ -135,7 +140,7 @@ async def test_list_active_sessions_view_fields_match_session():
     mgr = ActiveSessionManager(default_ttl_sec=300)
     session = mgr.trigger("ob11", "g1", "u42", now_ms=5_000, topic_hint="rust async")
     inp = ListActiveSessionsInput(adapter=None)
-    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=10_000)
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=10_000, scope=_ANY_SCOPE)
     assert len(result.sessions) == 1
     v = result.sessions[0]
     assert isinstance(v, ActiveSessionView)
@@ -154,7 +159,7 @@ async def test_list_active_sessions_topic_hint_none_allowed():
     mgr = ActiveSessionManager(default_ttl_sec=300)
     mgr.trigger("ob11", "g1", "u1", now_ms=0, topic_hint=None)
     inp = ListActiveSessionsInput(adapter=None)
-    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=_NOW_MS)
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=_NOW_MS, scope=_ANY_SCOPE)
     assert result.sessions[0].topic_hint is None
 
 
@@ -172,11 +177,11 @@ async def test_list_active_sessions_filters_expired():
     inp = ListActiveSessionsInput(adapter=None)
 
     # 推 now_ms 到 400_000(>300_000):两个 session 都应被过滤
-    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=400_000)
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=400_000, scope=_ANY_SCOPE)
     assert result.sessions == []
 
     # 推到 200_000(<300_000):两个都活
-    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=200_000)
+    result = await list_active_sessions_impl(inp, active_sessions=mgr, now_ms=200_000, scope=_ANY_SCOPE)
     assert len(result.sessions) == 2
 
 
@@ -190,7 +195,7 @@ async def test_get_recent_messages_empty_bucket(buffer_factory):
     """Returns empty list for unknown (adapter, group_id)."""
     buf = buffer_factory()
     inp = GetRecentMessagesInput(adapter="ob11", group_id="g_unknown")
-    result = await get_recent_messages_impl(inp, message_buffer=buf)
+    result = await get_recent_messages_impl(inp, message_buffer=buf, scope=_ANY_SCOPE)
     assert isinstance(result, GetRecentMessagesResult)
     assert result.messages == []
 
@@ -200,7 +205,7 @@ async def test_get_recent_messages_returns_newest_first(buffer_factory):
     """Messages are returned newest-first (matching MessageBuffer.get_recent ordering)."""
     buf = buffer_factory(_msg(100), _msg(200), _msg(300))
     inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=10)
-    result = await get_recent_messages_impl(inp, message_buffer=buf)
+    result = await get_recent_messages_impl(inp, message_buffer=buf, scope=_ANY_SCOPE)
     assert [v.ts for v in result.messages] == [300, 200, 100]
 
 
@@ -216,7 +221,7 @@ async def test_get_recent_messages_limit_clamped_to_config_cap(monkeypatch, buff
     buf = buffer_factory(*[_msg(ts) for ts in range(1, 11)])  # 10 messages
     monkeypatch.setattr(mod.plugin_config, "hermes_mcp_recent_limit_max", 3)
     inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=100)
-    result = await get_recent_messages_impl(inp, message_buffer=buf)
+    result = await get_recent_messages_impl(inp, message_buffer=buf, scope=_ANY_SCOPE)
     assert len(result.messages) == 3
 
 
@@ -225,7 +230,7 @@ async def test_get_recent_messages_before_ts_filter(buffer_factory):
     """before_ts is passed through to MessageBuffer.get_recent (exclusive upper bound)."""
     buf = buffer_factory(_msg(100), _msg(200), _msg(300), _msg(400))
     inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=10, before_ts=300)
-    result = await get_recent_messages_impl(inp, message_buffer=buf)
+    result = await get_recent_messages_impl(inp, message_buffer=buf, scope=_ANY_SCOPE)
     # Should only include ts < 300: ts=200, ts=100
     assert [v.ts for v in result.messages] == [200, 100]
 
@@ -245,7 +250,7 @@ async def test_get_recent_messages_view_fields_mapped_correctly(buffer_factory):
         )
     )
     inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=1)
-    result = await get_recent_messages_impl(inp, message_buffer=buf)
+    result = await get_recent_messages_impl(inp, message_buffer=buf, scope=_ANY_SCOPE)
     assert len(result.messages) == 1
     v = result.messages[0]
     assert isinstance(v, RecentMessageView)
@@ -264,7 +269,7 @@ async def test_get_recent_messages_id_field_populated(buffer_factory):
     """id 字段必填(来自 MessageStore.append 回填的 autoincrement)。"""
     buf = buffer_factory(_msg(100), _msg(200))
     inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=10)
-    result = await get_recent_messages_impl(inp, message_buffer=buf)
+    result = await get_recent_messages_impl(inp, message_buffer=buf, scope=_ANY_SCOPE)
     assert all(v.id > 0 for v in result.messages)
     # 两条消息 id 互不相同
     assert result.messages[0].id != result.messages[1].id
@@ -278,7 +283,7 @@ async def test_get_recent_messages_image_count_is_length(buffer_factory):
         _msg(ts=200, image_urls=[]),
     )
     inp = GetRecentMessagesInput(adapter="ob11", group_id="g1", limit=10)
-    result = await get_recent_messages_impl(inp, message_buffer=buf)
+    result = await get_recent_messages_impl(inp, message_buffer=buf, scope=_ANY_SCOPE)
     by_ts = {v.ts: v for v in result.messages}
     assert by_ts[100].image_count == 3
     assert by_ts[200].image_count == 0

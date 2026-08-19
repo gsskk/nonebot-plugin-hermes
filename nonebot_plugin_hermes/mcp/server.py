@@ -12,13 +12,13 @@ import mcp.types as mcp_types
 from fastmcp import FastMCP
 from starlette.responses import JSONResponse
 
-from ..config import plugin_config
 from ..core.active_session import ActiveSessionManager
 from ..core.bot_registry import BotRegistry
 from ..core.message_buffer import MessageBuffer
+from ..core.routing import resolve_caller_scope
 from ..core.storage.image_cache import ImageCache
 from ..core.storage.message_store import MessageStore
-from .auth import AuthError, check_bearer
+from .auth import caller_scope_from_request
 from .tools.get_message_images import (
     GetMessageImagesInput,
     get_message_images_impl,
@@ -105,6 +105,7 @@ def build_mcp_app(
             active_sessions=active_sessions,
             bot_registry=bot_registry,
             message_buffer=message_buffer,
+            scope=caller_scope_from_request(),
         )
 
     @mcp.tool()
@@ -113,7 +114,7 @@ def build_mcp_app(
     ) -> ListActiveSessionsResult:
         """List active reactive sessions."""
         inp = ListActiveSessionsInput(adapter=adapter)
-        return await list_active_sessions_impl(inp, active_sessions=active_sessions)
+        return await list_active_sessions_impl(inp, active_sessions=active_sessions, scope=caller_scope_from_request())
 
     @mcp.tool()
     async def get_recent_messages(
@@ -129,7 +130,7 @@ def build_mcp_app(
             limit=limit,
             before_ts=before_ts,
         )
-        return await get_recent_messages_impl(inp, message_buffer=message_buffer)
+        return await get_recent_messages_impl(inp, message_buffer=message_buffer, scope=caller_scope_from_request())
 
     @mcp.tool()
     async def get_message_images(
@@ -149,21 +150,24 @@ def build_mcp_app(
             adapter=adapter,
             group_id=group_id,
         )
-        return await get_message_images_impl(inp, store=message_store, cache=image_cache)
+        return await get_message_images_impl(
+            inp, store=message_store, cache=image_cache, scope=caller_scope_from_request()
+        )
 
     http_app = mcp.http_app()
 
-    # Bearer 中间件 — 在 ASGI 层裹一层
-    expected_token = plugin_config.hermes_api_key
-
+    # Bearer 中间件 — 在 ASGI 层裹一层。
+    #
+    # 这里**只做鉴权**(认不出 → 401),不做授权:调用方能操作哪些群由每个工具用
+    # caller_scope_from_request() 逐请求解析。不要改成在这里把 scope 塞进 ContextVar ——
+    # stateful streamable HTTP 的工具体跑在 session 创建时 spawn 的 server task 里,
+    # ContextVar 会被钉死在建 session 那一次请求上(实测),后续换 token 的调用读到旧值。
     async def bearer_middleware(scope, receive, send):
         if scope["type"] != "http":
             return await http_app(scope, receive, send)
         headers = {k.decode(): v.decode() for k, v in scope.get("headers", [])}
-        try:
-            check_bearer(headers.get("authorization"), expected_token)
-        except AuthError as exc:
-            response = JSONResponse({"error": str(exc)}, status_code=401)
+        if resolve_caller_scope(headers.get("authorization")) is None:
+            response = JSONResponse({"error": "token mismatch"}, status_code=401)
             return await response(scope, receive, send)
         return await http_app(scope, receive, send)
 

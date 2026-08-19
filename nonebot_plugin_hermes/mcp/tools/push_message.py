@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from ...core.message_buffer import BufferedMessage
 from ...core.outbound import send_text_with_media
+from ...core.routing import CallerScope
 from ..auth import PushContextError, validate_push_context
 
 if TYPE_CHECKING:
@@ -48,6 +49,19 @@ class PushMessageResult(BaseModel):
     skipped_images: list[str] = Field(default_factory=list)
     """被跳过的图片引用。bot 侧只能投递 http(s) 与 data: URL;主机本地路径取不到字节。"""
 
+    note: str | None = None
+    """行为提示(非错误)。告知调用方"这一轮你已经在群里说过话了",让它在写
+    submit_decision 之前就知道再回一条会是第二条消息 —— 这是唯一能在决策**之前**
+    把这件事告诉 agent 的时机。"""
+
+
+# push 成功后回给调用方的行为提示。写在返回值里而不是只写进 SKILL.md:agent 是在拿到
+# 这个结果之后才写 submit_decision 的,这里是唯一能在它决策**之前**提醒到它的地方。
+_SPOKEN_NOTE = (
+    "You have now spoken in this group for this turn. If your submit_decision also carries "
+    "reply_text, it will ALSO be sent as a second message. Restating what you just pushed is "
+    "dropped as a duplicate — set should_reply=false unless you have something new to add."
+)
 
 # bot 侧能真正投递的 scheme。本地路径不在其中:MCP 调用方(Hermes)与 bot 可能不同机,
 # 即使同机,按调用方给的任意路径去读文件也是一条不该开的洞。
@@ -68,8 +82,11 @@ async def push_message_impl(
     *,
     active_sessions,
     bot_registry,
+    scope: CallerScope | None,
     message_buffer: MessageBuffer | None = None,
 ) -> PushMessageResult:
+    """scope 是调用方的可操作范围,**没有默认值**:漏传会是 TypeError 而不是静默放行。
+    None = 认不出调用方,一律拒(见 auth.assert_scope_allows)。"""
     if not inp.text and not inp.image_urls:
         return PushMessageResult(ok=False, error="text and image_urls both empty")
 
@@ -81,6 +98,7 @@ async def push_message_impl(
             active_sessions=active_sessions,
             bot_registry=bot_registry,
             now_ms=now_ms,
+            scope=scope,
         )
     except PushContextError as exc:
         logger.warning(f"[MCP push_message] context invalid: {exc}")
@@ -148,7 +166,10 @@ async def push_message_impl(
     # 把 push 的内容注入 buffer(供后续 turn 的 <recent_messages> 看见 bot 已答)
     # media_count 记**实际投出去的**张数(不含 skipped):同 turn 去重闸门据此判断
     # 「文本已答但图还没出去」,把 submit_decision 里能投的图补发出去。
-    active_sessions.mark_bot_replied(inp.adapter, inp.group_id, now_ms=now_ms, media_count=len(deliverable))
+    # 带上原文:同 turn 去重据此判断 submit_decision 是不是在复述这一条。
+    active_sessions.mark_bot_replied(
+        inp.adapter, inp.group_id, now_ms=now_ms, media_count=len(deliverable), text=inp.text
+    )
     if message_buffer is not None:
         message_buffer.append(
             BufferedMessage(
@@ -162,4 +183,4 @@ async def push_message_impl(
                 is_bot=True,
             )
         )
-    return PushMessageResult(ok=True, warning=warning, skipped_images=skipped)
+    return PushMessageResult(ok=True, warning=warning, skipped_images=skipped, note=_SPOKEN_NOTE)

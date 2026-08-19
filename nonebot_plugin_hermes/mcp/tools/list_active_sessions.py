@@ -6,6 +6,8 @@ import time
 
 from pydantic import BaseModel, Field
 
+from ...core.routing import CallerScope
+
 
 class ListActiveSessionsInput(BaseModel):
     adapter: str | None = Field(default=None, description="筛选适配器,None 返回所有")
@@ -29,6 +31,7 @@ async def list_active_sessions_impl(
     inp: ListActiveSessionsInput,
     *,
     active_sessions,
+    scope: CallerScope | None,
     now_ms: int | None = None,
 ) -> ListActiveSessionsResult:
     """列出未过期的活跃 session。
@@ -55,6 +58,9 @@ async def list_active_sessions_impl(
             topic_hint=r.topic_hint,
         )
         for r in rows
-        if r.expires_at > now_ms
+        # 这是发现工具,越权目标**过滤**掉而不是报错:调用方只该看见自己名下的群,
+        # 别群的 triggered_by / topic_hint 本身就是不该外流的信息。
+        # scope=None(认不出调用方)过滤掉一切。
+        if r.expires_at > now_ms and scope is not None and scope.allows(r.adapter, r.group_id)
     ]
     return ListActiveSessionsResult(sessions=views)

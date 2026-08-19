@@ -10,6 +10,8 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from ...config import plugin_config
+from ...core.routing import CallerScope
+from ..auth import scope_refusal
 
 
 class GetRecentMessagesInput(BaseModel):
@@ -34,13 +36,25 @@ class RecentMessageView(BaseModel):
 
 class GetRecentMessagesResult(BaseModel):
     messages: list[RecentMessageView]
+    error: str | None = None
+    """非 None 表示这次调用被拒(目前只有越权一种),messages 为空。
+
+    走返回值而不是抛异常:FastMCP 对工具体里的任何异常都 logger.exception,越权是预期内的
+    判定结果,不该在 bot 日志里刷 traceback。与 push_message 的 ok/error 形状一致。
+    """
 
 
 async def get_recent_messages_impl(
     inp: GetRecentMessagesInput,
     *,
     message_buffer,
+    scope: CallerScope | None,
 ) -> GetRecentMessagesResult:
+    # 读也要收敛:能读别的群的历史,隔离同样是破的。判定在取数之前。
+    refusal = scope_refusal(inp.adapter, inp.group_id, scope)
+    if refusal is not None:
+        return GetRecentMessagesResult(messages=[], error=refusal)
+
     cap = plugin_config.hermes_mcp_recent_limit_max
     effective_limit = min(inp.limit, cap)
     rows = message_buffer.get_recent(

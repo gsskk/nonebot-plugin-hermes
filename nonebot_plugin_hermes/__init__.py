@@ -14,7 +14,7 @@ require("nonebot_plugin_localstore")
 
 from .config import Config, plugin_config
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __plugin_meta__ = PluginMetadata(
     name="Hermes Agent",
@@ -98,6 +98,13 @@ async def _hermes_m1_startup():
                 )
             else:
                 logger.info("[HERMES] 长期记忆作用域已启用(X-Hermes-Session-Key)")
+
+    if plugin_config.hermes_group_endpoints:
+        from .core.routing import validate_endpoints
+
+        for problem in validate_endpoints():
+            logger.warning(f"[HERMES] 接入点路由表配置问题:{problem}")
+        logger.info(f"[HERMES] 按群路由已启用,{len(plugin_config.hermes_group_endpoints)} 个接入点")
 
     logger.info(
         f"Hermes Plugin loaded — API: {plugin_config.hermes_api_url} | "

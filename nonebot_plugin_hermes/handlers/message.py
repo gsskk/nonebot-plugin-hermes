@@ -35,6 +35,7 @@ from ..core.prompt_builder import (
     build_reactive_system_prompt,
     build_reactive_user_content,
 )
+from ..core.routing import resolve_target
 from ..core.session import session_manager
 from ..utils import check_isolation, get_adapter_name
 
@@ -959,6 +960,37 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
 _PERSISTENCE_RETRY_DELAY_S = 1.0
 
 
+# 同 turn 去重的判据。刻意很窄:只认「近乎逐字复述」。
+#
+# 早期规则是"本 turn 内 push 过就把 submit_decision 整条抑制",它把最自然的用法
+# ——push 一句「在查」、decision 给真答案——也一起打死了:答案被静默吞掉,而 agent
+# 以为自己发出去了,还会向用户汇报已发送。包含关系不能当判据,「引用刚说的话 + 补上
+# 新内容」同样是包含。所以失败方向明确选:宁可群里多一条啰嗦的,不可吞掉答案。
+_RESTATEMENT_NOISE = str.maketrans(
+    "",
+    "",
+    " \t\r\n，。！？、；：~～…!?,.;:「」『』\"'“”‘’()()【】[]",
+)
+
+
+def _is_restatement(pushed: str, reply: str) -> bool:
+    """reply 是否只是把刚发出去的 pushed 又说了一遍。
+
+    归一化(去空白/标点/大小写)后完全相同,或一方包含另一方且多出来的部分几乎为零,
+    才算复述。pushed 为空(不知道原文)一律返回 False。
+    """
+    a = pushed.translate(_RESTATEMENT_NOISE).casefold()
+    b = reply.translate(_RESTATEMENT_NOISE).casefold()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    longer, shorter = (b, a) if len(b) >= len(a) else (a, b)
+    if shorter not in longer:
+        return False
+    return len(longer) - len(shorter) <= max(4, len(longer) // 10)
+
+
 async def _chat_and_adopt_rotation(**chat_kwargs) -> ChatResult:
     """调 chat();上游本轮换过 session(自动压缩触发)就立刻采纳新 id。
 
@@ -1037,6 +1069,7 @@ async def _run_passive_turn(
         user_id=user_id,
         group_id=group_id,
     )
+    hermes_target = resolve_target(adapter_name, is_private, group_id)
 
     # 群聊 + 默认配置(active_session=false)+ perception_enabled:补回 0.1.6
     # 「@bot 时让 LLM 看到群里旁观历史」。before_ts=now_ms 排除 perception 在
@@ -1080,6 +1113,7 @@ async def _run_passive_turn(
         expect_structured=False,
         system_prompt=system_prompt,
         user_content_override=user_content,
+        target=hermes_target,
     )
 
     # 上游 transport_error 同款保护(见 _run_reactive_turn 同名分支注释)。
@@ -1211,6 +1245,7 @@ async def _run_reactive_turn(
         user_id=user_id,
         group_id=group_id,
     )
+    hermes_target = resolve_target(adapter_name, False, group_id)
     # 注:user_content_override 已携带 user message 的全部内容(text + 多模态);
     # text/image_urls 在 chat() 中会被忽略(见 hermes_client.chat 文档),此处显式传 ""
     # /[] 让契约清晰,避免被读者误以为 image_urls 也参与了构造。
@@ -1229,6 +1264,7 @@ async def _run_reactive_turn(
         structured_tool_name="submit_decision",
         system_prompt=system_prompt,
         user_content_override=user_content,
+        target=hermes_target,
     )
 
     if result.parse_failed or result.structured is None:
@@ -1323,11 +1359,20 @@ async def _run_reactive_turn(
     # 注: 直接读 `session.last_bot_reply_at` 而非重新查 active_sessions ──
     # mark_bot_replied 是对同一 dataclass 实例原地写, session 变量持有的就是那个实例。
     # 不查 active_sessions 也回避了 TTL 边界判定与 ended-and-retriggered 罕见竞态。
-    if session.last_bot_reply_at > last_bot_reply_at_at_entry:
-        # 中途那发**没投出任何媒体**、而本发带着能投的图 → 不是重复,是「文本已答、图还没出去」。
-        # 典型来路:agent 用 push_message 发文本,图给的是 Hermes 主机本地路径(投不出去),
-        # 随后 submit_decision 里带着网关内联好的 data URL。整条抑制会把那张图彻底丢掉,
-        # 所以只补媒体、不重复文本(文本已经在群里了)。
+    mid_turn_push = session.last_bot_reply_at > last_bot_reply_at_at_entry
+    if mid_turn_push and not _is_restatement(session.last_bot_reply_text, cleaned_reply_text):
+        # 中途 push 过,但这条带的是新内容(典型:push 一句「在查」、decision 给真答案)。
+        # 两条都发 —— 抑制它等于把答案吞掉,而 agent 会以为已经发出去了。
+        logger.info(
+            f"[HERMES reactive] mid-turn push detected but submit_decision adds new content; "
+            f"sending both (group={group_id} push_len={len(session.last_bot_reply_text)} "
+            f"reply_text_len={len(cleaned_reply_text)})"
+        )
+    elif mid_turn_push:
+        # 复述。中途那发**没投出任何媒体**、而本发带着能投的图 → 不是纯重复,是
+        # 「文本已答、图还没出去」。典型来路:agent 用 push_message 发文本,图给的是
+        # Hermes 主机本地路径(投不出去),随后 submit_decision 里带着网关内联好的
+        # data URL。整条抑制会把那张图彻底丢掉,所以只补媒体、不重复文本。
         if media_urls and session.last_bot_reply_media == 0:
             media_sent = await send_text_with_media(
                 bot=bot,
@@ -1343,11 +1388,11 @@ async def _run_reactive_turn(
             )
             if media_sent:
                 _mcp.active_sessions.mark_bot_replied(
-                    adapter_name, group_id, now_ms=_now_ms(), media_count=len(media_urls)
+                    adapter_name, group_id, now_ms=_now_ms(), media_count=len(media_urls), text=""
                 )
             return result
         logger.info(
-            f"[HERMES reactive] suppress submit_decision reply: push_message fired mid-turn "
+            f"[HERMES reactive] suppress submit_decision reply: it restates the mid-turn push "
             f"(group={group_id} user={user_id} explicit={is_explicit_trigger} "
             f"reply_text_len={len(reply_text)} mid_turn_media={session.last_bot_reply_media})"
         )
@@ -1401,7 +1446,13 @@ async def _run_reactive_turn(
         _mcp.active_sessions.touch(adapter_name, group_id, now_ms=reply_now_ms)
         # B.2: 记下「bot 刚回过」时间戳,供 _handle_reactive_path 入口 + _refire 入口的
         # cooldown 闸门判定。
-        _mcp.active_sessions.mark_bot_replied(adapter_name, group_id, now_ms=reply_now_ms, media_count=len(media_urls))
+        _mcp.active_sessions.mark_bot_replied(
+            adapter_name,
+            group_id,
+            now_ms=reply_now_ms,
+            media_count=len(media_urls),
+            text=cleaned_reply_text,
+        )
 
     return result
 

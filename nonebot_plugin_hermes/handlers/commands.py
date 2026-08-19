@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import nonebot_plugin_alconna as alconna
@@ -16,6 +17,7 @@ from nonebot.matcher import Matcher
 from .. import mcp as _mcp
 from ..config import plugin_config
 from ..core.hermes_client import hermes_client
+from ..core.routing import all_targets, resolve_target
 from ..core.session import session_manager
 from ..utils import check_isolation, get_adapter_name
 
@@ -52,20 +54,42 @@ async def handle_clear(bot: Bot, event: Event, matcher: Matcher):
 ping_command = on_command("ping", force_whitespace=True, priority=88, block=True)
 
 
+def build_ping_message(ok: bool) -> str:
+    """/ping 的回复。
+
+    这条命令只过 check_isolation,任何被允许的用户都能打,所以它不能带接入点标签
+    或数量 —— 那等于把别的群的路由配置广播给所有人。逐接入点体检在
+    build_endpoint_health_lines,只出现在管理员命令里。
+    """
+    if ok:
+        return "🏓 pong! Hermes Agent 连接正常。"
+    return "⚠️ 无法连接到 Hermes Agent，请检查 Gateway 是否正在运行。"
+
+
+async def probe_current_endpoint(adapter_name: str, is_private: bool, group_id: str | None) -> bool:
+    """只探当前会话自己的接入点 —— 用户问的是"我这儿能不能用"。"""
+    return await hermes_client.health_check(resolve_target(adapter_name, is_private, group_id))
+
+
+def build_endpoint_health_lines(results: list[tuple[str, bool]]) -> list[str]:
+    """逐接入点体检结果。仅供 admin-only 的 /hermes-status 使用(含路由键)。"""
+    if not results:
+        return []
+    return ["", "🌐 接入点体检:"] + [f"  {'✅' if ok else '❌'} {label}" for label, ok in results]
+
+
 @ping_command.handle()
 async def handle_ping(bot: Bot, event: Event, matcher: Matcher):
-    """检查 Hermes 连接状态"""
+    """检查 Hermes 连接状态(当前会话自己的接入点)"""
     target = alconna.get_target()
     if not check_isolation(event, target):
         matcher.skip()
 
-    healthy = await hermes_client.health_check()
-    if healthy:
-        msg = "🏓 pong! Hermes Agent 连接正常。"
-    else:
-        msg = "⚠️ 无法连接到 Hermes Agent，请检查 Gateway 是否正在运行。"
+    adapter_name = get_adapter_name(target)
+    group_id = None if target.private else target.id
+    ok = await probe_current_endpoint(adapter_name, target.private, group_id)
 
-    await alconna.UniMessage(msg).send(target=target, bot=bot)
+    await alconna.UniMessage(build_ping_message(ok)).send(target=target, bot=bot)
 
 
 # --- /help ---
@@ -123,7 +147,15 @@ async def handle_status(bot: Bot, event: Event, matcher: Matcher):
         logger.debug(f"[HERMES] /hermes-status silent skip for {admin_key}")
         return  # block=True 已阻断后续 matcher,直接 return 即静默
 
-    await alconna.UniMessage("\n".join(build_status_lines(int(time.time() * 1000)))).send(target=target, bot=bot)
+    lines = build_status_lines(int(time.time() * 1000))
+    if plugin_config.hermes_group_endpoints:
+        # 逐接入点体检只在这条管理员命令里做:它会列出路由键。并发探活,
+        # 否则 N 个接入点最坏要串行等 N×5s。
+        targets = all_targets()
+        oks = await asyncio.gather(*(hermes_client.health_check(t) for t in targets))
+        lines.extend(build_endpoint_health_lines([(t.label, ok) for t, ok in zip(targets, oks)]))
+
+    await alconna.UniMessage("\n".join(lines)).send(target=target, bot=bot)
 
 
 def build_status_lines(now_ms: int) -> list[str]:
@@ -172,7 +204,12 @@ def build_status_lines(now_ms: int) -> list[str]:
         "🔍 Hermes Plugin M1-mem 状态",
         f"MCP: {mcp_line}",
         f"active_session: {active_line}",
-        f"hermes_api: {plugin_config.hermes_api_url}",
+        f"hermes_api: {plugin_config.hermes_api_url}"
+        + (
+            f" (+{len(plugin_config.hermes_group_endpoints)} 个按群接入点)"
+            if plugin_config.hermes_group_endpoints
+            else ""
+        ),
         "",
         f"📊 ActiveSessions: {active_count} 个活跃",
     ]
