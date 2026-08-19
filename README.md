@@ -215,7 +215,12 @@ Hermes 容忍往已关闭会话追加,所以这个问题长期无声;上游 2026
 `fix(compression): recover rotated session lineage` 之后变成硬失败,日志会刷
 `Session '…' is closed by compression`。存量损坏用 `hermes-repair-sessions` 修。
 
-### 🧠 长期记忆作用域（0.5.0+，默认关）
+### 🧠 长期记忆作用域（0.5.0+，默认关，暂不推荐）
+
+> **⚠️ 暂不推荐开启。** 当前 api_server 路径不向记忆层传递 user 标识,群成员在记忆侧会
+> 折叠成同一个 peer,画像是全群的混合,能带来的收益有限;而 Honcho 的后台提炼、检索与
+> embedding 会持续附带额外的 token 成本。建议等上游支持入站 user 标识、且记忆原料清洗
+> 落地后再开——重开判据见 [`honcho/`](honcho/) 的「停用与重开」一节。
 
 Hermes 侧的长期记忆(memory provider,目前是 Honcho)默认**不按群区分**。插件不告诉它
 "这段对话属于谁"时,它按自己的兜底策略给记忆命名,两种兜底都有问题:
@@ -663,7 +668,7 @@ systemctl start hermes-gateway
 | `HERMES_ALLOW_GROUPS` | `[]` | 允许响应的群组 ID 列表（空为全部允许） |
 | `HERMES_ADMIN_USERS` | `[]` | 管理员白名单,格式 `["telegram:<user_id>", "onebotv11:<user_id>"]`。**默认空集 = deny by default**;`/hermes-status` 等敏感命令必须命中此列表才执行 |
 | `HERMES_SESSION_SHARE_GROUP` | `false` | 群内是否共享同一个 session |
-| `HERMES_HONCHO_ENABLED` | `false` | 发送 `X-Hermes-Session-Key`,按群/私聊隔离 Hermes 侧长期记忆并让记忆不随压缩轮换重置。需要上游配了 memory provider + 本插件配了 `HERMES_API_KEY`,详见上文「长期记忆作用域」 |
+| `HERMES_HONCHO_ENABLED` | `false` | **暂不推荐开启**(收益有限且附带额外 token 成本,见上文「长期记忆作用域」)。发送 `X-Hermes-Session-Key`,按群/私聊隔离 Hermes 侧长期记忆并让记忆不随压缩轮换重置。需要上游配了 memory provider + 本插件配了 `HERMES_API_KEY` |
 | `HERMES_GROUP_SESSIONS_PER_USER` | `false` | 群记忆按群还是按人。`false` = 一个群一份(成员共享);`true` = 群内每人一份 |
 | `HERMES_GROUP_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:group:{group_id}` | 群共享记忆 key 模板 |
 | `HERMES_GROUP_PER_USER_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:group:{group_id}:{user_id}` | 群按人记忆 key 模板 |

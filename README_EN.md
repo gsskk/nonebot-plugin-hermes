@@ -219,7 +219,13 @@ session, so this stayed silent for a long time; after the upstream 2026-07-23
 `fix(compression): recover rotated session lineage` it became a hard failure and the logs fill with
 `Session '…' is closed by compression`. Use `hermes-repair-sessions` to fix existing damage.
 
-### 🧠 Long-term Memory Scope (0.5.0+, off by default)
+### 🧠 Long-term Memory Scope (0.5.0+, off by default, not recommended yet)
+
+> **⚠️ Not recommended for now.** The api_server path does not pass user identity through to the
+> memory layer, so all group members collapse into a single memory peer — the benefit today is
+> limited, while Honcho's background derivation, retrieval and embeddings add ongoing extra token
+> cost. Enable it once upstream supports inbound user identity and the ingest cleanup lands — see
+> the disable/re-enable section in [`honcho/`](honcho/).
 
 Hermes' long-term memory provider (currently Honcho) does **not** separate groups on its own. When
 the plugin doesn't tell it which conversation a turn belongs to, it names the memory scope with its
@@ -708,7 +714,7 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_ALLOW_GROUPS` | `[]` | Allowed group IDs (empty for all) |
 | `HERMES_ADMIN_USERS` | `[]` | Admin allowlist as `["telegram:<user_id>", "onebotv11:<user_id>"]`. **Empty = deny by default**; sensitive commands like `/hermes-status` only run if the caller's `adapter:user_id` is in this list |
 | `HERMES_SESSION_SHARE_GROUP` | `false` | Share session within group |
-| `HERMES_HONCHO_ENABLED` | `false` | Send `X-Hermes-Session-Key` so long-term memory is scoped per group/DM and survives compression rotation. Requires a memory provider upstream and `HERMES_API_KEY` here — see "Long-term Memory Scope" above |
+| `HERMES_HONCHO_ENABLED` | `false` | **Not recommended yet** (limited benefit today, adds extra token cost — see "Long-term Memory Scope" above). Send `X-Hermes-Session-Key` so long-term memory is scoped per group/DM and survives compression rotation. Requires a memory provider upstream and `HERMES_API_KEY` here |
 | `HERMES_GROUP_SESSIONS_PER_USER` | `false` | Group memory granularity. `false` = one memory per group (shared by members); `true` = one per member |
 | `HERMES_GROUP_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:group:{group_id}` | Template for group-shared memory keys |
 | `HERMES_GROUP_PER_USER_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:group:{group_id}:{user_id}` | Template for per-member group memory keys |

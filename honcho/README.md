@@ -326,6 +326,54 @@ observation 库**完全为空**"(`_handle_search_memory`)。所以它是全有�
   而群聊记忆要的是"这个群聊过什么",`minimal` 往往够用。等真觉得 bot 记性差了再提;提完
   `total_duration` 若又逼近 30 秒,退回 `minimal`。
 
+## 停用与重开
+
+停用要动两侧,只关插件侧开关是不够的:
+
+**Hermes 端(这才是真正的开关)**:`~/.hermes/config.yaml` 里把 `memory.provider` 置空
+(或删掉该行),重启 gateway:
+
+```yaml
+memory:
+  provider: ""        # 原来是 honcho;为空即「只用内建记忆」,外挂 provider 整块跳过
+```
+
+provider 为空时 memory provider 根本不加载,deriver / dialectic / summary / embedding
+整条链路都不再触发。`memory:` 块的其余键(`memory_enabled` / `user_profile_enabled` /
+`nudge_interval` / `flush_min_turns` 等)属于**内建文件记忆**(MEMORY.md / USER.md),
+与 Honcho 无关,不用动——留着它给 bot 保底连续性(注意它按 profile 一份、跨群共享)。
+
+想清理得更彻底,可以再从 `plugins.enabled` 里移除 `honcho`——`hermes honcho` 子命令随之
+消失(报 `invalid choice`),这正是插件未加载的证据,不是坏了。多 profile 部署注意
+逐 profile 检查各自的 `config.yaml`。
+
+**插件侧**:bot 的 `.env` 里 `HERMES_HONCHO_ENABLED=false`(或删掉该行)。技术上这个头
+发给没有 provider 的 Hermes 是 no-op,但留着会让配置撒谎,排查时误导人。
+
+**Honcho 服务侧(可选)**:`docker compose stop`。没有调用方时留着只是闲置进程;
+数据在 pgdata(`HONCHO_DATA`)里,`stop`/`start` 不影响。
+
+验证停干净:Hermes debug 日志里不再出现 `Honcho session key resolved`,Honcho api 容器
+日志不再新增 `PERFORMANCE dialectic_chat` 与 deriver 行。
+
+**停用不删数据。** 重开就是反向操作:`plugins.enabled` 加回 `honcho`、重启 gateway、
+插件侧开关打开,记忆从上次停下的地方续上。想连数据一起清才需要 `docker compose down`
+加删除 pgdata(不可逆,先备份)。
+
+### 什么时候值得重开
+
+本插件走 api_server 路径,而这条路径不把 user_id 传给 memory provider(见「关键一步」
+一节)——所有群成员在 Honcho 里折叠成同一个 peer,画像是全群的搅拌物,per-user 记忆
+无从谈起。在这个前提改变之前,Honcho 对群聊场景的产出注定有限,停用没有功能损失。
+重开的两个前置条件:
+
+1. **身份**:Hermes 端能拿到 per-user 标识(上游支持入站 user 标识头,或本地补丁),
+   群成员各自成 peer;
+2. **原料**:进入 Honcho 的文本先剥掉 prompt 脚手架(XML 标签、结构化决策 JSON),
+   否则 observation 从噪音里提炼,画像质量上不来。
+
+两者都满足再开,才是 Honcho 该有的样子;只满足其一,大概率还是「感觉不到它存在」。
+
 ## 预期
 
 记忆需要累积,头一两周体感不明显——这是正常的,不要在第三天下结论。
