@@ -384,9 +384,47 @@ hermes config set gateway.multiplex_profiles true
 hermes gateway restart
 ```
 
-多路复用打开后,**不要**再为次级 profile 单独 `hermes gateway start`,也不要在次级 profile 的
-config.yaml 里启用 `api_server` —— 端口绑定类平台留在默认 profile,次级 profile 靠 `/p/<profile>/`
-前缀被访问。反过来,如果你选的是"独立进程"形态,那就**别开**多路复用。
+多路复用打开后,**不要**再为次级 profile 单独 `hermes gateway start`。次级 profile 自己的
+config.yaml 要这样写:
+
+```yaml
+# ~/.hermes/profiles/team-a/config.yaml —— 次级 profile 的,不是默认 profile 的
+platforms:
+  api_server:
+    enabled: false                     # 端口绑定类平台只能留在默认 profile
+
+mcp_servers:
+  nonebot-team-a:                      # 声明名字即开启;url/headers 在这里不生效
+    url: http://<bot>:8643/mcp
+
+platform_toolsets:
+  api_server: [<该 profile 原有的工具集>, nonebot-team-a]   # 不列出来它就拿不到反向通道
+```
+
+对应的默认 profile —— 所有 MCP 连接和 token 都由它建立:
+
+```yaml
+# ~/.hermes/config.yaml —— 默认 profile
+mcp_servers:
+  nonebot-default:                     # 补集:不在路由表里的群
+    url: http://<bot>:8643/mcp
+    headers: { Authorization: "Bearer <全局 HERMES_API_KEY>" }
+  nonebot-team-a:                      # team-a 名下的群
+    url: http://<bot>:8643/mcp
+    headers: { Authorization: "Bearer <team-a 的 API_SERVER_KEY>" }
+
+platform_toolsets:
+  api_server: [<原有工具集>, nonebot-default]              # 默认 profile 只列自己那个名字
+```
+
+`api_server` 之外,`webhook`、`msgraph_webhook`、`wecom_callback`、`bluebubbles`、`sms`、
+`whatsapp_cloud`、`line`,以及 `connection_mode: webhook` 的 `feishu` 同样要关。`hermes profile
+create --clone` 会把默认 profile 的 config.yaml 整份复制过去,一定要查这一项。没关的话 gateway
+启动日志会刷 `Skipping secondary profile '<name>' due to port-binding config error`,该 profile 的
+**全部** adapter 都不启动 —— 但 `/p/<name>/` 仍然可用,所以这条告警很容易被当噪音放着。
+
+`mcp_servers` / `platform_toolsets` 那两段只在用反向通道时才需要,取舍见下方
+「反向通道自动跟着收敛」。反过来,如果你选的是"独立进程"形态,那就**别开**多路复用。
 
 `hermes profile create` 结尾打印的 `Next steps` 里那条 `<name> gateway start` 是写给默认的
 "一进程一 profile"部署的,**多路复用下别执行**(`<name> setup` 要执行,`<name> chat` 可以用来
@@ -502,6 +540,9 @@ Hermes 侧既是它的 `API_SERVER_KEY` 也是它的 MCP token。轮换一次改
 > ```yaml
 > # ~/.hermes/config.yaml(默认 profile —— 连接与 token 都由它建立)
 > mcp_servers:
+>   nonebot-default:
+>     url: http://<bot>:8643/mcp
+>     headers: { Authorization: "Bearer <全局 HERMES_API_KEY>" }
 >   nonebot-team-a:
 >     url: http://<bot>:8643/mcp
 >     headers: { Authorization: "Bearer <team-a 的 API_SERVER_KEY>" }

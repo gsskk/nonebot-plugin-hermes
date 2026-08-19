@@ -404,9 +404,49 @@ hermes config set gateway.multiplex_profiles true
 hermes gateway restart
 ```
 
-With multiplexing on, do **not** run `hermes gateway start` for a secondary profile, and do not enable
-`api_server` in a secondary profile's config.yaml — port-binding platforms stay on the default profile
-and secondary profiles are reached through their `/p/<profile>/` prefix. Conversely, if you picked the
+With multiplexing on, do **not** run `hermes gateway start` for a secondary profile. A secondary
+profile's own config.yaml should look like this:
+
+```yaml
+# ~/.hermes/profiles/team-a/config.yaml — the SECONDARY profile's, not the default's
+platforms:
+  api_server:
+    enabled: false                     # port-binding platforms stay on the default profile
+
+mcp_servers:
+  nonebot-team-a:                      # the name is what enables it; url/headers are inert here
+    url: http://<bot>:8643/mcp
+
+platform_toolsets:
+  api_server: [<this profile's existing toolsets>, nonebot-team-a]   # omit it and the profile
+                                                                     # gets no reverse channel
+```
+
+And the matching default profile — every MCP connection and token is established there:
+
+```yaml
+# ~/.hermes/config.yaml — the DEFAULT profile
+mcp_servers:
+  nonebot-default:                     # the complement: groups not in the routing table
+    url: http://<bot>:8643/mcp
+    headers: { Authorization: "Bearer <global HERMES_API_KEY>" }
+  nonebot-team-a:                      # groups owned by team-a
+    url: http://<bot>:8643/mcp
+    headers: { Authorization: "Bearer <team-a's API_SERVER_KEY>" }
+
+platform_toolsets:
+  api_server: [<your existing toolsets>, nonebot-default]   # the default profile lists only its own
+```
+
+Besides `api_server`, the same disable rule covers `webhook`, `msgraph_webhook`, `wecom_callback`,
+`bluebubbles`, `sms`, `whatsapp_cloud`, `line`, and `feishu` when `connection_mode: webhook`.
+`hermes profile create --clone` copies the default profile's config.yaml wholesale, so always check
+this entry. Leave it on and the gateway startup log repeats `Skipping secondary profile '<name>' due
+to port-binding config error` and **every** adapter of that profile stays down — while `/p/<name>/`
+keeps working, which is why the warning is easy to dismiss as noise.
+
+The `mcp_servers` / `platform_toolsets` blocks are only needed if you use the reverse channel; the
+trade-offs are under "The reverse channel narrows automatically" below. Conversely, if you picked the
 "separate processes" shape, leave multiplexing **off**.
 
 The `Next steps` block printed by `hermes profile create` ends with `<name> gateway start`, which is
@@ -536,6 +576,9 @@ complement key (the default profile).
 > ```yaml
 > # ~/.hermes/config.yaml (default profile — it owns every connection and token)
 > mcp_servers:
+>   nonebot-default:
+>     url: http://<bot>:8643/mcp
+>     headers: { Authorization: "Bearer <global HERMES_API_KEY>" }
 >   nonebot-team-a:
 >     url: http://<bot>:8643/mcp
 >     headers: { Authorization: "Bearer <team-a's API_SERVER_KEY>" }
