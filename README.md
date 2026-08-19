@@ -677,6 +677,7 @@ systemctl start hermes-gateway
 | `HERMES_ACTIVE_SESSION_ENABLED` | `false` | 启用群活跃态（M1）。`false` 时退化为 v0.1.6 等价行为 |
 | `HERMES_ACTIVE_SESSION_TTL_SEC` | `300` | 活跃窗口 TTL（秒），每次插话滑动续期 |
 | `HERMES_ACTIVE_SWEEP_INTERVAL_SEC` | `30` | 活跃态过期清扫 cron 频率（秒） |
+| `HERMES_REACTIVE_FOLLOWUP_WINDOW` | `4` | reactive 续发轮只发送 `<recent_messages>` 尾部 N 条(另加 bot 自己最近一条);explicit 触发轮始终全量。设 `0` 关闭裁剪,恢复旧版全量行为 |
 | `HERMES_POKE_TRIGGER_ENABLED` | `false` | OneBot v11:被戳一戳时触发对话（私聊 / 群都生效,等价于被 @）。其他适配器静默忽略 |
 | `HERMES_GREET_ON_JOIN` | `false` | OneBot v11:有人加入群且 `HERMES_ACTIVE_SESSION_ENABLED=true` 时,触发一次 reactive turn 让 Hermes 自决是否欢迎(`noop` 是合法返回)。active 关时不触发 |
 | `HERMES_ACK_FEEDBACK_ENABLED` | `false` | 用户消息上显示 ack 回执(B-0 实装 OneBot v11 NapCat emoji)。B-0.5 规划扩 TG/Discord 私聊 typing |

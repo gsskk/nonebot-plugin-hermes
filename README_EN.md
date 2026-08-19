@@ -722,6 +722,7 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_ACTIVE_SESSION_ENABLED` | `false` | Enable active group sessions (M1). When `false` the plugin behaves as in v0.1.6 |
 | `HERMES_ACTIVE_SESSION_TTL_SEC` | `300` | Active-window TTL in seconds; sliding renewal on each reply |
 | `HERMES_ACTIVE_SWEEP_INTERVAL_SEC` | `30` | Cron sweep interval for expired active sessions |
+| `HERMES_REACTIVE_FOLLOWUP_WINDOW` | `4` | Reactive follow-up turns send only the newest N lines of `<recent_messages>` (plus the bot's own latest line); explicit-trigger turns always get the full window. Set `0` to disable trimming |
 | `HERMES_POKE_TRIGGER_ENABLED` | `false` | OneBot v11: being poked triggers a turn (private & group, equivalent to being @-mentioned). Other adapters silently no-op |
 | `HERMES_GREET_ON_JOIN` | `false` | OneBot v11: when someone joins a group and `HERMES_ACTIVE_SESSION_ENABLED=true`, fire one reactive turn so Hermes can self-decide whether to welcome via decision_protocol (`noop` is valid). When active is off, nothing fires |
 | `HERMES_ACK_FEEDBACK_ENABLED` | `false` | Show an ack receipt on the user's message (B-0 ships OneBot v11 NapCat emoji). B-0.5 will extend to Telegram/Discord typing in private chats |
