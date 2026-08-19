@@ -148,6 +148,12 @@ class Config(BaseModel):
     hermes_perception_text_length: int = 200
     """被动感知单条历史消息最大长度(超出截断)"""
 
+    hermes_reactive_followup_window: int = 4
+    """reactive 续发轮 <recent_messages> 尾部保留条数(另加 bot 自己最近一条)。
+
+    explicit 触发轮不受影响,始终全量。设 0(或 ≥ hermes_perception_buffer)
+    关闭裁剪,行为与旧版一致 —— 这就是回退开关。"""
+
     hermes_perception_image_mode: str = "placeholder"
     """历史记录中的图片处理模式:
     - placeholder: 历史里图只用 [图片] 占位 + URL 引用,多模态 content 只发当前图 (默认)

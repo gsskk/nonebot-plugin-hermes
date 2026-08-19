@@ -234,6 +234,29 @@ def _render_recent_messages_block(recent_messages: Sequence[BufferedMessage]) ->
     return "\n".join(lines)
 
 
+def select_followup_window(
+    recent_messages: Sequence[BufferedMessage],
+    limit: int,
+) -> list[BufferedMessage]:
+    """裁剪 reactive 续发轮的窗口。输入输出均为新→旧顺序的子序列。
+
+    保留最新 limit 条,外加 [bot] 自己最近的一条(不在尾部内时追加到末尾,
+    即最旧位置)—— decision_protocol 的防连发/防重复规则要求模型看得见
+    自己的上一次发言,活跃群里它容易被新消息冲出尾部。
+
+    limit <= 0 或 >= 长度时不裁剪(配置回退开关)。引用对象无需钉住:
+    引用内容在 handlers 侧已内联进 current_message 文本。
+    """
+    msgs = list(recent_messages)
+    if limit <= 0 or limit >= len(msgs):
+        return msgs
+    keep = msgs[:limit]
+    last_bot = next((m for m in msgs if m.is_bot), None)
+    if last_bot is not None and last_bot not in keep:
+        keep.append(last_bot)
+    return keep
+
+
 def build_passive_system_prompt(
     *,
     adapter: str,
