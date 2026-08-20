@@ -167,9 +167,15 @@ async def push_message_impl(
     # media_count 记**实际投出去的**张数(不含 skipped):同 turn 去重闸门据此判断
     # 「文本已答但图还没出去」,把 submit_decision 里能投的图补发出去。
     # 带上原文:同 turn 去重据此判断 submit_decision 是不是在复述这一条。
-    active_sessions.mark_bot_replied(
+    if not active_sessions.mark_bot_replied(
         inp.adapter, inp.group_id, now_ms=now_ms, media_count=len(deliverable), text=inp.text
-    )
+    ):
+        # push 已经发出去了,但窗口在这一刻没了(某一发 turn 返回了 should_exit_active)。
+        # 后续 turn 的 cooldown 与同 turn 去重都看不到这一发,可能出现重复答复。
+        logger.warning(
+            f"[MCP push_message] mark_bot_replied landed nowhere: no active session "
+            f"for {inp.adapter}/{inp.group_id}; cooldown and same-turn dedupe lose this reply"
+        )
     if message_buffer is not None:
         message_buffer.append(
             BufferedMessage(

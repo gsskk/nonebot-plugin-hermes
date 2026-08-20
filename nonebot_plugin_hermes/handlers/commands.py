@@ -178,11 +178,15 @@ def build_status_lines(now_ms: int) -> list[str]:
     active_details: list[str] = []
     if _mcp.active_sessions is not None:
         for s in _mcp.active_sessions.list():
+            # 按 is_alive 而非 ttl_left>0:正在跑长 turn 的群带着租约,窗口虽已过 TTL
+            # 但仍在监听 —— 诊断命令把它藏起来,恰好藏掉了最需要看见的那一个。
+            if not s.is_alive(now_ms):
+                continue
+            active_count += 1
             ttl_left = max(0, (s.expires_at - now_ms) // 1000)
-            if ttl_left > 0:
-                active_count += 1
-                topic = f" topic={s.topic_hint}" if s.topic_hint else ""
-                active_details.append(f"  - {s.adapter}/{s.group_id} by {s.triggered_by} ttl={ttl_left}s{topic}")
+            topic = f" topic={s.topic_hint}" if s.topic_hint else ""
+            held = " in-flight" if s.inflight_turns else ""
+            active_details.append(f"  - {s.adapter}/{s.group_id} by {s.triggered_by} ttl={ttl_left}s{held}{topic}")
 
     # MessageBuffer:按 scope 统计消息数(数据在 SQLite 里,不是内存桶)
     buf_lines: list[str] = []

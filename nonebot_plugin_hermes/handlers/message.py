@@ -1190,7 +1190,15 @@ async def _run_reactive_turn(
     # get_if_active 与 is_active(handle_message 入口处用过)同口径。
     session = _mcp.active_sessions.get_if_active(adapter_name, group_id, now_ms)
     if session is None:
-        return None  # 防御:窗口刚刚过期 / 被外部 end()
+        # turn 生命期内的 TTL 过期已由 begin_turn/end_turn 租约挡住。剩下两条来路:
+        # 上一发 turn 返回了 should_exit_active(唯一会 end() 窗口的地方),或者窗口
+        # 恰好在「turn 结束 → refire 接力」的交接瞬间过期且被 cron sweep 扫掉。
+        # 两种都意味着有人的触发被吞了 —— 必须留痕,不能静默 return。
+        logger.warning(
+            f"[HERMES reactive] drop: no active window at turn start "
+            f"(group={group_id} user={user_id} explicit={is_explicit_trigger} now_ms={now_ms})"
+        )
+        return None
 
     # B.3: 快照本 turn 入口时的 last_bot_reply_at, 供 chat() 返回后判定 agent loop
     # 期间是否有外部(MCP push_message)推过 bot 自己的回复。 若发生, 即使 LLM 返
@@ -1454,13 +1462,22 @@ async def _run_reactive_turn(
         _mcp.active_sessions.touch(adapter_name, group_id, now_ms=reply_now_ms)
         # B.2: 记下「bot 刚回过」时间戳,供 _handle_reactive_path 入口 + _refire 入口的
         # cooldown 闸门判定。
-        _mcp.active_sessions.mark_bot_replied(
+        marked = _mcp.active_sessions.mark_bot_replied(
             adapter_name,
             group_id,
             now_ms=reply_now_ms,
             media_count=len(media_urls),
             text=cleaned_reply_text,
         )
+        if not marked and not decision.get("should_exit_active"):
+            # 排除 should_exit_active:那是本 turn 自己刚 end() 掉窗口,mark 落空是预期的。
+            # 剩下的只能是别人的 turn 在本 turn 期间 end() 掉了这个 key(跨用户场景),
+            # 本群 cooldown 闸门这一轮失去依据 —— 日志里 last_bot_reply_at 会一直是 0,
+            # 没有这条就查不出为什么。
+            logger.warning(
+                f"[HERMES reactive] mark_bot_replied landed nowhere: active window gone "
+                f"(group={group_id}); post-reply cooldown will not engage for follow-ups"
+            )
 
     return result
 
@@ -1658,6 +1675,12 @@ async def _handle_reactive_path(
         now_ms=now_ms,
     )
     if inflight_result != "entered":
+        # 入队是 coalesce 的正常语义,但必须可观测:这条分支早先对 bystander 完全静默,
+        # 一串消息集体没反应时日志里只剩 cooldown_check,查不出去向。
+        logger.debug(
+            f"[HERMES reactive] queued behind in-flight turn "
+            f"(group={group_id} user={user_id} explicit={is_explicit_trigger} result={inflight_result})"
+        )
         # pending_set + explicit:在用户的原消息上贴 busy emoji,告知 bot 在排队。
         # 之前只有 _refire 深度上限才贴 busy,首次撞 inflight 的 explicit @
         # 拿不到任何提示 —— ack 闪一下被 _ack_scope finally 撤掉就没了。
@@ -1672,6 +1695,9 @@ async def _handle_reactive_path(
     # 故障(Hermes 超时 / 5xx),pending 里的下一发(特别是 explicit @)仍要
     # refire,不能被静默吞掉。
     should_refire_pending = False
+    # 租约:本 turn 跑多久,活跃窗就至少活多久。慢 turn(生图 / 长工具链)跨过 TTL 后,
+    # 收尾的 touch / mark_bot_replied 和 pending 的 refire 全都依赖窗口还在。
+    lease = _mcp.active_sessions.begin_turn(adapter_name, group_id)
     try:
         await _run_reactive_turn(
             bot=bot,
@@ -1690,6 +1716,9 @@ async def _handle_reactive_path(
         logger.exception(f"[HERMES] reactive turn raised; dropping pending for {key}")
         raise
     finally:
+        # 先还租约(剩余窗口不足时在这里垫到下限),再决定要不要接力 —— 顺序反了
+        # 就等于让 refire 去撞一个刚死的窗口。
+        _mcp.active_sessions.end_turn(lease, now_ms=_now_ms())
         if not should_refire_pending:
             _mcp.inflight.exit(key)
         else:
@@ -1765,6 +1794,10 @@ async def _refire(
         _mcp.inflight.exit(key)
         return
 
+    lease = None
+    if mode == "reactive" and group_id is not None and _mcp.active_sessions is not None:
+        lease = _mcp.active_sessions.begin_turn(adapter_name, str(group_id))
+
     should_refire = False
     try:
         if mode == "reactive":
@@ -1794,10 +1827,19 @@ async def _refire(
                 now_ms=refire_now_ms,
             )
         should_refire = not (result is not None and result.is_transport_error)
+        if result is None and is_explicit_trigger:
+            # 排队的显式触发一路走到这里却没跑成 turn = 用户的 @ 被吞了。
+            # 具体原因由 _run_*_turn 内部那条 drop 日志给出,这条负责点出「被吞的是
+            # 一个排过队的 explicit @」,两条合起来才够定位。
+            logger.warning(
+                f"[HERMES] queued explicit trigger produced no turn (key={key} depth={depth} msg_id={original_msg_id})"
+            )
     except Exception:
         logger.exception(f"[HERMES] refire raised at depth {depth}; dropping pending for {key}")
         should_refire = False
     finally:
+        if lease is not None:
+            _mcp.active_sessions.end_turn(lease, now_ms=_now_ms())
         if not should_refire:
             _mcp.inflight.exit(key)
             # B012 豁免: try 侧异常已被上方 except 捕获记录,不存在被吞的活异常;

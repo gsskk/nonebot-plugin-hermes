@@ -721,7 +721,7 @@ systemctl start hermes-gateway
 | `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | 被动感知单条历史消息最大长度 |
 | `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | ⚠️ **0.3 起弃用**——历史图召回改走 `get_message_images` MCP 工具。本配置当前仅控制 `[图片]` 文本占位是否出现(`none`=不加占位;其他值=加占位)。`inline_labeled` 行为已被 MCP 工具流取代,设为该值与 `placeholder` 等效 |
 | `HERMES_ACTIVE_SESSION_ENABLED` | `false` | 启用群活跃态（M1）。`false` 时退化为 v0.1.6 等价行为 |
-| `HERMES_ACTIVE_SESSION_TTL_SEC` | `300` | 活跃窗口 TTL（秒），每次插话滑动续期 |
+| `HERMES_ACTIVE_SESSION_TTL_SEC` | `300` | 活跃窗口 TTL（秒），每次插话滑动续期。一发 chat 跑得比 TTL 长时窗口不会中途过期（租约），turn 结束后按剩余量补到 10s 下限——让排队消息跑完接力，不额外续满窗 |
 | `HERMES_ACTIVE_SWEEP_INTERVAL_SEC` | `30` | 活跃态过期清扫 cron 频率（秒） |
 | `HERMES_REACTIVE_FOLLOWUP_WINDOW` | `4` | reactive 续发轮只发送 `<recent_messages>` 尾部 N 条(另加 bot 自己最近一条);explicit 触发轮始终全量。设 `0` 关闭裁剪,恢复旧版全量行为 |
 | `HERMES_POKE_TRIGGER_ENABLED` | `false` | OneBot v11:被戳一戳时触发对话（私聊 / 群都生效,等价于被 @）。其他适配器静默忽略 |

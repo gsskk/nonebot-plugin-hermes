@@ -769,7 +769,7 @@ All configuration options are set via the `.env` file, see detailed comments in 
 | `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | Max text length per historical message |
 | `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | ⚠️ **Deprecated since 0.3** — historical image recall moved to the `get_message_images` MCP tool. This knob now only controls whether a `[图片]` placeholder appears in history text (`none` = no placeholder; anything else = add placeholder). `inline_labeled` is superseded; setting it is equivalent to `placeholder` |
 | `HERMES_ACTIVE_SESSION_ENABLED` | `false` | Enable active group sessions (M1). When `false` the plugin behaves as in v0.1.6 |
-| `HERMES_ACTIVE_SESSION_TTL_SEC` | `300` | Active-window TTL in seconds; sliding renewal on each reply |
+| `HERMES_ACTIVE_SESSION_TTL_SEC` | `300` | Active-window TTL in seconds; sliding renewal on each reply. A chat turn that outruns the TTL does not let the window expire mid-turn (lease); at turn end the remaining window is topped up to a 10s floor — enough for queued messages to run, not a fresh full TTL |
 | `HERMES_ACTIVE_SWEEP_INTERVAL_SEC` | `30` | Cron sweep interval for expired active sessions |
 | `HERMES_REACTIVE_FOLLOWUP_WINDOW` | `4` | Reactive follow-up turns send only the newest N lines of `<recent_messages>` (plus the bot's own latest line); explicit-trigger turns always get the full window. Set `0` to disable trimming |
 | `HERMES_POKE_TRIGGER_ENABLED` | `false` | OneBot v11: being poked triggers a turn (private & group, equivalent to being @-mentioned). Other adapters silently no-op |
