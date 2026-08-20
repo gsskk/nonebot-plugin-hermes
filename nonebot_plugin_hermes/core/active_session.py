@@ -195,7 +195,22 @@ class ActiveSessionManager:
             s.topic_hint = topic_hint
 
     def end(self, adapter: str, group_id: str) -> None:
+        """按 key 无条件收窗。turn 内表达"这轮谈完了"请用 `end_if_current`。"""
         self._sessions.pop((adapter, group_id), None)
+
+    def end_if_current(self, session: ActiveSession) -> bool:
+        """只在字典里仍是这个实例时收窗;返回是否真的收了。
+
+        turn 跑期间可能有别人的显式触发调过 `trigger()`,字典里已经换成一个**新**窗口
+        (还带着它自己排在 pending 里的那条 @)。本 turn 的 should_exit_active 说的是
+        "我这轮谈完了",无权把后来那个窗口一起弹掉 —— 按 key 收窗会让那个人的 @ 在
+        refire 入口的 get_if_active 处静默蒸发,用户侧只看到一个 busy 表情。
+        """
+        key = (session.adapter, session.group_id)
+        if self._sessions.get(key) is not session:
+            return False
+        del self._sessions[key]
+        return True
 
     def list(self, adapter: str | None = None) -> builtins.list[ActiveSession]:
         if adapter is None:

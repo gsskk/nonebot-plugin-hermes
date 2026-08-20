@@ -445,3 +445,95 @@ async def test_list_active_sessions_shows_group_held_by_a_long_turn():
     )
 
     assert [s.group_id for s in result.sessions] == ["g1"]
+
+
+# --- should_exit_active 只收自己谈的那个窗口 -------------------------------
+
+
+def test_end_if_current_pops_only_the_instance_it_was_given():
+    mgr = ActiveSessionManager(default_ttl_sec=60)
+    a = mgr.trigger("ob11", "g1", "u1", now_ms=0)
+
+    # 同一实例 → 收掉
+    assert mgr.end_if_current(a) is True
+    assert mgr.get("ob11", "g1") is None
+
+    # 已经被换成新实例 → 拒绝,新窗口活着
+    a2 = mgr.trigger("ob11", "g1", "u1", now_ms=10_000)
+    b = mgr.trigger("ob11", "g1", "u2", now_ms=20_000)
+    assert mgr.end_if_current(a2) is False
+    assert mgr.get("ob11", "g1") is b
+
+
+@pytest.mark.asyncio
+async def test_exit_active_does_not_swallow_a_newer_users_at(monkeypatch):
+    """A 的 turn 决定收窗时,B 在 turn 期间 @bot 建的新窗口不能被一起弹掉。
+
+    线上形状:A 的 turn 在飞 → B @bot(dispatcher 先 trigger 建新窗,再排进 pending)
+    → A 回来带 should_exit_active=true → 按 key 收窗会让 B 的 @ 在 refire 入口蒸发,
+    B 只看到一个 busy 表情。
+    """
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.core.hermes_client import ChatResult
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 0)
+
+    now = int(time.time() * 1000)
+    _mcp.active_sessions.trigger("ob11", "g1", "user-A", now_ms=now)
+
+    chat_args: list[dict] = []
+
+    async def chat(**kwargs):
+        chat_args.append(kwargs)
+        # 第一发(A)决定收窗;refire(B)正常答
+        exit_active = len(chat_args) == 1
+        await asyncio.sleep(0.15)
+        return ChatResult(
+            raw_text="ok",
+            media_urls=[],
+            structured={"should_reply": True, "reply_text": "ok", "should_exit_active": exit_active},
+            parse_failed=False,
+            is_transport_error=False,
+        )
+
+    monkeypatch.setattr(handler_mod.hermes_client, "chat", chat)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", AsyncMock(return_value=True))
+
+    target = _FakeTarget(id="g1")
+    bot = _fake_bot()
+
+    t1 = asyncio.create_task(
+        handler_mod._handle_reactive_path(
+            bot=bot,
+            target=target,
+            adapter_name="ob11",
+            user_id="user-A",
+            group_id="g1",
+            text="聊完了",
+            image_urls=[],
+            is_explicit_trigger=True,
+            now_ms=now,
+            event_msg_id=1001,
+        )
+    )
+    await asyncio.sleep(0.01)
+    # dispatcher 对显式触发的既有语义:先 trigger(换成全新实例),再进 reactive 路径
+    _mcp.active_sessions.trigger("ob11", "g1", "user-B", now_ms=now + 1)
+    await handler_mod._handle_reactive_path(
+        bot=bot,
+        target=target,
+        adapter_name="ob11",
+        user_id="user-B",
+        group_id="g1",
+        text="等下我还有个问题",
+        image_urls=[],
+        is_explicit_trigger=True,
+        now_ms=now + 1,
+        event_msg_id=1002,
+    )
+    await t1
+    await asyncio.sleep(0.4)
+
+    assert len(chat_args) == 2, f"B 的 @ 被 A 的 should_exit_active 吞了,chat 只调用了 {len(chat_args)} 次"
+    assert chat_args[1].get("user_id") == "user-B"

@@ -1351,8 +1351,13 @@ async def _run_reactive_turn(
     decision = result.structured
     if decision.get("topic_hint"):
         _mcp.active_sessions.update_topic(adapter_name, group_id, str(decision["topic_hint"]))
-    if decision.get("should_exit_active"):
-        _mcp.active_sessions.end(adapter_name, group_id)
+    if decision.get("should_exit_active") and not _mcp.active_sessions.end_if_current(session):
+        # 收窗只对本 turn 谈的那个窗口生效:期间若有别人 @bot 建了新窗口,那条 @ 正排在
+        # pending 里等 refire,把它的窗口一起弹掉就等于把它静默吞掉。
+        logger.info(
+            f"[HERMES reactive] should_exit_active not applied: window was re-triggered "
+            f"during this turn (group={group_id})"
+        )
 
     if not decision.get("should_reply"):
         # 显式触发 + LLM 选择沉默是「看起来该回但没回」最常见的来源,
