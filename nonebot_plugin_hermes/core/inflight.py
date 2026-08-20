@@ -26,14 +26,18 @@ class PendingEntry:
     """In-flight 期间排队的消息及触发元数据。
 
     pending 不再裸存 BufferedMessage——单独抽 PendingEntry 是为了跨 turn 边界
-    保留两个 plumbing 决策所需要的事实:
+    保留几个 plumbing 决策所需要的事实:
       - 这条排队消息原本是不是 explicit-trigger
+      - 它是否被平台确认为「冲 bot 说的」(寻址与触发是两个事实,不互相派生:
+        synth 事件可以 explicit 而不寻址,trigger=all 下每条都 explicit 也不寻址)
       - 它的原始 adapter 侧 message_id(用于失败时贴 emoji notice)
     """
 
     msg: BufferedMessage
     is_explicit_trigger: bool
     original_msg_id: str | int | None = None
+    # 默认 False 是安全方向:漏传只会让模型自己判归属,不会错误断言「这条冲你说的」。
+    addressed_to_bot: bool = False
 
 
 @dataclass
@@ -71,6 +75,7 @@ class InflightRegistry:
         is_explicit_trigger: bool,
         original_msg_id: str | int | None,
         now_ms: int,
+        addressed_to_bot: bool = False,
     ) -> Literal["entered", "pending_set", "pending_kept"]:
         """无 slot → 占位 started_at=now_ms,返回 'entered'。
         有 slot 且 pending 是 explicit 而新到 bystander → 'pending_kept'。
@@ -87,6 +92,7 @@ class InflightRegistry:
             msg=current_msg,
             is_explicit_trigger=is_explicit_trigger,
             original_msg_id=original_msg_id,
+            addressed_to_bot=addressed_to_bot,
         )
         return "pending_set"
 

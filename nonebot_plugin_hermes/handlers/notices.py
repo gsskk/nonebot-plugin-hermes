@@ -82,6 +82,7 @@ async def _handle_poke(bot: Bot, event) -> None:
         group_id=group_id,
         nickname=nickname,
         text="[poke] 戳了你一下",
+        addressed_to_bot=True,  # 只在戳 bot 本体时走到这,平台层面就是指向 bot 的事件
         allow_passive=True,
         now_ms=_now_ms(),
     )
@@ -110,6 +111,7 @@ async def _handle_member_join(bot: Bot, event) -> None:
         group_id=group_id,
         nickname=nickname,
         text=f"[event=member_join] {nickname} 加入了群",
+        addressed_to_bot=False,  # 群级事件,不是「冲 bot 说的」;要不要迎新由模型自判
         allow_passive=False,
         now_ms=_now_ms(),
     )

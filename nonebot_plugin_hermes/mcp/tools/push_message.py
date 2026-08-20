@@ -23,7 +23,7 @@ from nonebot import get_bot, logger
 from pydantic import BaseModel, Field
 
 from ...core.message_buffer import BufferedMessage
-from ...core.outbound import send_text_with_media
+from ...core.outbound import get_bot_nickname, send_text_with_media
 from ...core.routing import CallerScope
 from ..auth import PushContextError, validate_push_context
 
@@ -183,7 +183,9 @@ async def push_message_impl(
                 adapter=inp.adapter,
                 group_id=inp.group_id,
                 user_id=entry.bot_self_id,
-                nickname="Bot",
+                # 与 reactive 回写同一约定:用平台账号名,别写字面 "Bot" —— 那行会
+                # 进下一轮 <recent_messages>,角色名不叫 Bot 时读起来像另一个 bot。
+                nickname=await get_bot_nickname(bot),
                 content=inp.text,
                 image_urls=list(deliverable),
                 is_bot=True,

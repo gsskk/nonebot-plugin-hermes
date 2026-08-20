@@ -28,7 +28,7 @@ from ..core.hermes_client import (
     preview_raw,
 )
 from ..core.message_buffer import BufferedMessage
-from ..core.outbound import send_text_with_media
+from ..core.outbound import get_bot_nickname, send_text_with_media
 from ..core.prompt_builder import (
     build_passive_system_prompt,
     build_passive_user_content,
@@ -854,7 +854,12 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
     now = _now_ms()
 
     # --- 触发判断 ---
+    # addressed_to_bot 是与触发正交的寻址事实:平台确认「这条冲 bot 说的」
+    # (真 @ / 引用 bot 的消息 / 唤起词命中)。它随消息进 prompt 的 runtime_state,
+    # 让归属判断不必从回填的裸 `@<id>` 去猜。与 trigger 模式无关:`all` 下泛聊天
+    # explicit 但不寻址,真 @bot 则照样寻址。
     is_explicit_trigger = False
+    addressed_to_bot = False
     if target.private:
         is_explicit_trigger = True
     else:
@@ -867,6 +872,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
         # _msg_at_only_other_users=True 触发 quoted-only 抑制,完全不响应(连 emoji 都没)。
         has_bot_at = _is_bot_at(uni_msg, str(bot.self_id)) or _has_at_bot_in_original(event, str(bot.self_id))
         is_mentioned = has_bot_at or (event.is_tome() and not _msg_at_only_other_users(uni_msg, str(bot.self_id)))
+        addressed_to_bot = is_mentioned
         trigger_mode = plugin_config.hermes_group_trigger
         if trigger_mode == "at":
             is_explicit_trigger = is_mentioned
@@ -877,6 +883,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
                 if msg_text.startswith(kw):
                     msg_text = msg_text[len(kw) :].strip()
                     is_explicit_trigger = True
+                    addressed_to_bot = True  # 唤起词就是点名
                     break
             if not is_explicit_trigger and is_mentioned:
                 is_explicit_trigger = True
@@ -950,6 +957,7 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             text=msg_text,
             image_urls=image_urls,
             is_explicit_trigger=is_explicit_trigger,
+            addressed_to_bot=addressed_to_bot,
             now_ms=now,
             event_msg_id=getattr(event, "message_id", None),
         )
@@ -1176,6 +1184,7 @@ async def _run_reactive_turn(
     text: str,
     image_urls: list[str],
     is_explicit_trigger: bool,
+    addressed_to_bot: bool = False,
     now_ms: int,
     nickname: str | None = None,
 ):
@@ -1219,9 +1228,15 @@ async def _run_reactive_turn(
     )
 
     system_prompt = build_reactive_system_prompt()
+    # 平台账号名 + self_id 一起进 prompt:模型判归属只能靠这两样把消息里回填的
+    # 裸 `@<id>` 和 [bot] 历史行绑回自己。取值走进程内缓存,首轮一次 RPC。
+    self_nickname = await get_bot_nickname(bot)
     user_content = build_reactive_user_content(
         adapter=adapter_name,
         group_id=group_id,
+        self_id=str(bot.self_id),
+        self_nickname=self_nickname,
+        addressed_to_bot=addressed_to_bot,
         triggered_by=session.triggered_by,
         triggered_by_nickname=None,
         topic_hint=session.topic_hint,
@@ -1359,12 +1374,21 @@ async def _run_reactive_turn(
             f"during this turn (group={group_id})"
         )
 
+    # 同一事实两处要用:静默分支判「是不是 push 已答」、send 分支做同 turn 去重。
+    # chat() 返回后到这里没有 await,快照一次即可。
+    mid_turn_push = session.last_bot_reply_at > last_bot_reply_at_at_entry
+
     if not decision.get("should_reply"):
         # 显式触发 + LLM 选择沉默是「看起来该回但没回」最常见的来源,
-        # 提到 info 让群主能扫日志直接看见「不是插件 bug,是 LLM 自己判定的」
-        logger.info(
+        # 提到 info 让群主能扫日志直接看见「不是插件 bug,是 LLM 自己判定的」。
+        # 被点名(addressed_to_you: true 已进 prompt)却静默要更响一档:那是模型否掉了
+        # 插件给的既定事实,属于要排查的形状。例外是本 turn 已经由 MCP push 答过 ——
+        # 那种静默正是防重复该有的样子。
+        emit = logger.warning if addressed_to_bot and not mid_turn_push else logger.info
+        emit(
             f"[HERMES reactive] silent: LLM decided should_reply=false "
             f"(group={group_id} user={user_id} explicit={is_explicit_trigger} "
+            f"addressed={addressed_to_bot} answered_mid_turn={mid_turn_push} "
             f"topic_hint={result.structured.get('topic_hint')!r})"
         )
         return result
@@ -1377,10 +1401,9 @@ async def _run_reactive_turn(
     # B.3: 同 turn 内防重复闸门 — 若 chat() agent loop 期间 last_bot_reply_at
     # 已被推进(即 push_message 在中途答过一次), 抑制本路 submit_decision 的 send。
     # 与入口 cooldown 不同, 这里对显式触发也生效:同 turn 双答属纯重复,与触发性质无关。
-    # 注: 直接读 `session.last_bot_reply_at` 而非重新查 active_sessions ──
+    # 注: mid_turn_push 直接读 `session.last_bot_reply_at` 而非重新查 active_sessions ──
     # mark_bot_replied 是对同一 dataclass 实例原地写, session 变量持有的就是那个实例。
     # 不查 active_sessions 也回避了 TTL 边界判定与 ended-and-retriggered 罕见竞态。
-    mid_turn_push = session.last_bot_reply_at > last_bot_reply_at_at_entry
     if mid_turn_push and not _is_restatement(session.last_bot_reply_text, cleaned_reply_text):
         # 中途 push 过,但这条带的是新内容(典型:push 一句「在查」、decision 给真答案)。
         # 两条都发 —— 抑制它等于把答案吞掉,而 agent 会以为已经发出去了。
@@ -1456,7 +1479,7 @@ async def _run_reactive_turn(
                 adapter=adapter_name,
                 group_id=group_id,
                 user_id=str(bot.self_id),
-                nickname="Bot",
+                nickname=self_nickname,
                 content=buffered_content,
                 image_urls=[],
                 is_bot=True,
@@ -1566,6 +1589,7 @@ async def _handle_passive_path(
                         key=key,
                         trigger_msg=pending_entry.msg,
                         is_explicit_trigger=pending_entry.is_explicit_trigger,
+                        addressed_to_bot=pending_entry.addressed_to_bot,
                         original_msg_id=pending_entry.original_msg_id,
                         depth=1,
                         mode="passive",
@@ -1613,6 +1637,7 @@ async def _handle_reactive_path(
     text: str,
     image_urls: list[str],
     is_explicit_trigger: bool,
+    addressed_to_bot: bool = False,
     now_ms: int,
     nickname: str | None = None,
     event_msg_id: str | int | None = None,
@@ -1678,6 +1703,7 @@ async def _handle_reactive_path(
         is_explicit_trigger=is_explicit_trigger,
         original_msg_id=event_msg_id,
         now_ms=now_ms,
+        addressed_to_bot=addressed_to_bot,
     )
     if inflight_result != "entered":
         # 入队是 coalesce 的正常语义,但必须可观测:这条分支早先对 bystander 完全静默,
@@ -1714,6 +1740,7 @@ async def _handle_reactive_path(
             text=text,
             image_urls=image_urls,
             is_explicit_trigger=is_explicit_trigger,
+            addressed_to_bot=addressed_to_bot,
             now_ms=now_ms,
         )
         should_refire_pending = True
@@ -1755,6 +1782,7 @@ async def _refire(
     original_msg_id: str | int | None,
     depth: int,
     mode: str,
+    addressed_to_bot: bool = False,
     bot: Bot,
     target,
     adapter_name: str,
@@ -1817,6 +1845,7 @@ async def _refire(
                 text=trigger_msg.content,
                 image_urls=list(trigger_msg.image_urls),
                 is_explicit_trigger=is_explicit_trigger,
+                addressed_to_bot=addressed_to_bot,
                 now_ms=refire_now_ms,
             )
         else:
@@ -1857,6 +1886,7 @@ async def _refire(
                     key=key,
                     trigger_msg=pending_entry.msg,
                     is_explicit_trigger=pending_entry.is_explicit_trigger,
+                    addressed_to_bot=pending_entry.addressed_to_bot,
                     original_msg_id=pending_entry.original_msg_id,
                     depth=depth + 1,
                     mode=mode,
@@ -1880,6 +1910,7 @@ async def route_synthesized_input(
     nickname: str | None,
     text: str,
     allow_passive: bool,
+    addressed_to_bot: bool,
     now_ms: int,
 ):
     """合成消息的统一入口,供 notice handler 复用既有 message routing。
@@ -1888,6 +1919,10 @@ async def route_synthesized_input(
       - private (target.private=True) → 仅 allow_passive=True 才走 passive,否则跳过
       - group + active_session 开 → 触发 active session 并走 reactive
         (synth 始终算 is_explicit_trigger=True)
+
+    `addressed_to_bot` 由合成方按事件语义给:平台确认事件指向 bot 本体(如戳 bot)
+    才是 True;群级事件(如入群)虽然 explicit 触发,但不是「冲 bot 说的」,
+    断言了就是对模型撒谎,还会让「被点名却静默」的 WARNING 变成噪音。
       - group + active_session 关 → 仅 allow_passive=True 才走 passive
 
     `allow_passive` 控制无 active session 时的兜底:
@@ -1944,5 +1979,6 @@ async def route_synthesized_input(
         text=text,
         image_urls=[],
         is_explicit_trigger=True,
+        addressed_to_bot=addressed_to_bot,
         now_ms=now_ms,
     )

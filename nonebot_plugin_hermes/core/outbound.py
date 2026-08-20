@@ -65,17 +65,24 @@ _TRUNCATION_SUFFIX = "\n\n…（消息过长,已截断）"
 _bot_nickname_cache: dict[str, str] = {}
 
 
-async def _get_bot_nickname(bot: Bot) -> str:
-    """Return the bot's display nickname, cached per self_id. Fallback 'Bot' on failure."""
+async def get_bot_nickname(bot: Bot) -> str:
+    """Return the bot's display nickname, cached per self_id. Fallback 'Bot' on failure.
+
+    返回值一定是非空 str:除 forward-node 的 "name" 外,它还会进 prompt 的
+    runtime_state.you 和 <recent_messages> 的 bot 行 —— 实现端返回 null / 非字符串
+    时不能把那个对象原样渲染进 prompt。
+    """
     self_id = bot.self_id
     if self_id in _bot_nickname_cache:
         return _bot_nickname_cache[self_id]
+    nickname = "Bot"
     try:
         info = await bot.call_api("get_login_info")
-        nickname = (info or {}).get("nickname") or "Bot"
+        raw = info.get("nickname") if isinstance(info, dict) else None
+        if isinstance(raw, str) and raw.strip():
+            nickname = raw.strip()
     except Exception as exc:
         logger.debug(f"[OUTBOUND] get_login_info failed (self_id={self_id}): {exc}")
-        nickname = "Bot"
     _bot_nickname_cache[self_id] = nickname
     return nickname
 
@@ -200,7 +207,7 @@ async def send_text_with_media(
         and original_len > max_len
     ):
         try:
-            nickname = await _get_bot_nickname(bot)
+            nickname = await get_bot_nickname(bot)
             nodes = _split_into_forward_nodes(
                 text,
                 bot_self_id=bot.self_id,

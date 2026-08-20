@@ -60,6 +60,7 @@ async def test_private_with_allow_passive_routes_passive(monkeypatch):
         group_id=None,
         nickname="Alice",
         text="[poke] 戳了你一下",
+        addressed_to_bot=True,
         allow_passive=True,
         now_ms=now,
     )
@@ -92,6 +93,7 @@ async def test_group_with_active_session_routes_reactive(monkeypatch):
         group_id="g1",
         nickname="Alice",
         text="[poke] 戳了你一下",
+        addressed_to_bot=True,
         allow_passive=True,
         now_ms=now,
     )
@@ -124,6 +126,7 @@ async def test_group_active_off_with_allow_passive_routes_passive(monkeypatch):
         group_id="g1",
         nickname="Alice",
         text="[poke] 戳了你一下",
+        addressed_to_bot=True,
         allow_passive=True,
         now_ms=now,
     )
@@ -152,6 +155,7 @@ async def test_group_active_off_disallow_passive_skips(monkeypatch):
         group_id="g1",
         nickname="Newcomer",
         text="[event=member_join] Newcomer 加入了群",
+        addressed_to_bot=True,
         allow_passive=False,
         now_ms=now,
     )

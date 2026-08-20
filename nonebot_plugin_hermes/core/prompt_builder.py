@@ -55,7 +55,11 @@ _DECISION_PROTOCOL_BLOCK = (
     "  should_exit_active (boolean) — 谨慎使用,见下方退出门槛\n"
     "\n"
     "对象归属(先决定这条是不是冲你说的,再走插话原则;命中一条「归你」就停,不再下挪):\n"
-    "  - 当前消息明确 @ 你(即使同时 @ 了别人,只要 @ 列表里有你就算) → 归你,继续走后面的插话原则\n"
+    "  - runtime_state 里有 `addressed_to_you: true` → 平台层面已经确认这条是冲你说的\n"
+    "    (真 @ 了你 / 私聊 / 用了唤起词),归属到此为止,直接走插话原则。此时不得再以\n"
+    "    「可能在叫别人」「不确定是否针对你」「归属模糊」为理由 should_reply=false\n"
+    "  - 当前消息明确 @ 你(@ 后面跟 runtime_state.you 的 id 就是 @ 你;即使同时 @ 了别人,\n"
+    "    只要 @ 列表里有你就算) → 归你,继续走后面的插话原则\n"
     "  - 当前消息 reply/quote 指向 recent_messages 里 [bot] 你自己的一条 → 归你\n"
     "  - 当前消息**只** @ 了别人(包括另一个 bot)且没同时 @ 你 → 不归你,should_reply=false\n"
     "  - 当前消息 reply/quote 指向别人(普通 user 或另一个 [bot])且没同时 @ 你 → 不归你\n"
@@ -118,6 +122,12 @@ _DECISION_PROTOCOL_BLOCK = (
     "    其它情况一律不要主动调 get_message_images 把字节拉回来,\n"
     "    没人点名的图不属于你这一发的发言对象\n"
     "\n"
+    "你自己的身份:runtime_state.you 是你在本平台的账号(格式同 speaker 标签)。\n"
+    "  - 消息里出现 `@<你的 id>` 就是在 @ 你 —— 那串数字看着陌生也是你,\n"
+    "    不要当成另一个人或另一个 bot。\n"
+    "  - recent_messages 里 `[bot]` 且 `id=` 你那个 id 的行就是你自己说过的话;\n"
+    "    那行的昵称是平台账号名,可能和你的角色名不一样,不代表另一个 bot 在说话。\n"
+    "\n"
     "称呼与身份:speaker 标签格式 `[user=昵称 id=用户ID]`。\n"
     "  - reply_text 里**称呼**用户用「昵称」那一部分,自然口语,不要把 id=... 念出来。\n"
     "  - 但「**判断身份**」(主人/管理员/白名单/角色设定等)请按 `id=` 那个稳定标识符\n"
@@ -157,6 +167,9 @@ def _render_runtime_state(
     *,
     adapter: str,
     group_id: str,
+    self_id: str,
+    self_nickname: str | None,
+    addressed_to_bot: bool,
     triggered_by: str,
     triggered_by_nickname: str | None,
     topic_hint: str | None,
@@ -167,8 +180,17 @@ def _render_runtime_state(
         "mode: reactive",
         f"adapter: {adapter}",
         f"group_id: {group_id}",
-        f"triggered_by: {triggered_by}{nick}",
     ]
+    # `you` 是模型判「这条是不是冲我说的」的唯一锚点:At 段在 plain text 里回填成
+    # 裸 `@<id>`,persona/记忆侧通常只写了主人的 id,不写这行模型就只能把自己的 id
+    # 当陌生账号,把 @ 自己判成 @ 别人。用 speaker 标签同一格式,好和 @、[bot] 行对齐。
+    if self_id:
+        lines.append(f"you: {_format_speaker_tag(self_nickname, self_id)}")
+    # 寻址是插件手里的事实(真 @ / 唤起词 / 私聊),不该让模型从裸 `@<id>` 去猜。
+    # 只在为真时渲染:缺这行 = 「归属未知,自己判」,不是「确定不是冲你说的」。
+    if addressed_to_bot:
+        lines.append("addressed_to_you: true")
+    lines.append(f"triggered_by: {triggered_by}{nick}")
     if topic_hint:
         lines.append(f"topic_hint: {topic_hint}")
     lines.append("</runtime_state>")
@@ -285,6 +307,9 @@ def build_reactive_user_content(
     *,
     adapter: str,
     group_id: str,
+    self_id: str,
+    self_nickname: str | None,
+    addressed_to_bot: bool,
     triggered_by: str,
     triggered_by_nickname: str | None,
     topic_hint: str | None,
@@ -302,6 +327,9 @@ def build_reactive_user_content(
     runtime_block = _render_runtime_state(
         adapter=adapter,
         group_id=group_id,
+        self_id=self_id,
+        self_nickname=self_nickname,
+        addressed_to_bot=addressed_to_bot,
         triggered_by=triggered_by,
         triggered_by_nickname=triggered_by_nickname,
         topic_hint=topic_hint,

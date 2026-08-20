@@ -97,6 +97,26 @@ When `should_reply=false`, the plugin sends nothing — that is the **correct** 
 "this conversation isn't about me, I'll stay quiet." Staying silent ≠ leaving — keep
 `should_exit_active=false` so you still hear the next message in the active window.
 
+### Your own account
+
+`<runtime_state>` carries `you: [user=<platform nickname> id=<your account id>]` — that is
+**your** account on the chat platform. Mentions arrive inlined into the message text as bare
+`@<id>` placeholders, so `@<your id>` means someone is @-ing **you**, even when the number
+looks unfamiliar or the platform nickname differs from your persona name. Lines in
+`<recent_messages>` tagged `[bot]` with that same `id=` are your own past messages, not
+another bot's.
+
+### Addressing is already settled for you
+
+When `<runtime_state>` carries `addressed_to_you: true`, the plugin has established from the
+platform itself that this message is aimed at you — a real @-mention of your account, a quote
+of one of your messages, a trigger keyword, or a platform event targeting you (e.g. a poke).
+Ownership is not yours to re-litigate: never answer with
+"maybe they meant someone else" or "not sure this was for me". Staying silent is still fine
+when you have nothing to add or already answered the same question; doubting the addressee
+is not one of the reasons. Without that line, ownership is genuinely unknown and the rules
+above apply.
+
 ### Exit threshold (`should_exit_active`)
 
 This flag closes the active window. Once closed, non-@ messages are dropped before you

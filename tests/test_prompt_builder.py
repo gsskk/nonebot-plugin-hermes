@@ -77,6 +77,9 @@ def _reactive_user_kwargs(**overrides):
     defaults = {
         "adapter": "ob11",
         "group_id": "g1",
+        "self_id": "bot-self",
+        "self_nickname": "Bot昵称",
+        "addressed_to_bot": False,
         "triggered_by": "u42",
         "triggered_by_nickname": None,
         "topic_hint": None,
@@ -159,6 +162,13 @@ def test_decision_protocol_at_bot_takes_precedence_over_at_others():
     assert "没同时 @ 你" in decision or "且没 @ 你" in decision
 
 
+def test_decision_protocol_binds_at_mention_to_own_account():
+    """归属规则必须指向 runtime_state.you,否则 `@<陌生数字>` 会被判成 @ 别人。"""
+    sp = build_reactive_system_prompt()
+    assert "runtime_state.you" in sp
+    assert "@<你的 id>" in sp
+
+
 def test_decision_protocol_includes_self_attribution_check():
     """decision_protocol 必须包含「自我归因校验」,要求被评价时先核对
     recent_messages 里 [bot] 自己确实说过对应内容,才能认领。"""
@@ -185,6 +195,39 @@ def test_reactive_user_content_includes_runtime_state_block():
     assert "group_id: g1" in content
     assert "triggered_by: u42 (老张)" in content
     assert "topic_hint: Rust async runtime" in content
+
+
+def test_reactive_user_content_declares_own_account():
+    """runtime_state 必须声明 bot 自己的账号 —— 消息里的 `@<self_id>` 只能靠它绑回「我」。"""
+    content = build_reactive_user_content(**_reactive_user_kwargs(self_id="b9", self_nickname="Tenten"))
+    runtime_block = content.split("</runtime_state>")[0]
+    assert "you: [user=Tenten id=b9]" in runtime_block
+
+
+def test_reactive_user_content_declares_addressing_when_known():
+    """平台已确认被点名 → runtime_state 直接断言,不让模型从裸 `@<id>` 去猜归属。"""
+    content = build_reactive_user_content(**_reactive_user_kwargs(addressed_to_bot=True))
+    assert "addressed_to_you: true" in content.split("</runtime_state>")[0]
+
+
+def test_reactive_user_content_omits_addressing_when_unknown():
+    """归属未知时整行不出现 —— 缺行是「自己判」,渲染 false 会被读成「确定不是冲你说的」。"""
+    content = build_reactive_user_content(**_reactive_user_kwargs(addressed_to_bot=False))
+    assert "addressed_to_you" not in content
+
+
+def test_decision_protocol_short_circuits_ownership_when_addressed():
+    """协议必须承认 addressed_to_you,否则插件断言了也没人读。"""
+    sp = build_reactive_system_prompt()
+    assert "addressed_to_you: true" in sp
+    assert "不确定是否针对你" in sp
+
+
+def test_reactive_user_content_omits_you_line_without_self_id():
+    """self_id 缺失(调用方拿不到)时不渲染半截的 you: 行。"""
+    content = build_reactive_user_content(**_reactive_user_kwargs(self_id="", self_nickname=None))
+    runtime_block = content.split("</runtime_state>")[0]
+    assert "you:" not in runtime_block
 
 
 def test_reactive_user_content_omits_topic_when_none():
