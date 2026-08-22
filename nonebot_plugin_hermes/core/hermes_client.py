@@ -144,6 +144,50 @@ def _escape_raw_newlines_in_strings(s: str) -> str:
     return "".join(out)
 
 
+# 中文模型常把 JSON 结构位(字段分隔、键值冒号)吐成全角标点,让 json / json5 双双拒解析。
+# 只归一化**字符串外**的这些 —— reply_text 正文里的全角逗号/冒号是合法中文,动一个字节
+# 都会污染发给用户的文本。用与 _escape_raw_newlines_in_strings 同款状态机圈定 string 边界。
+_FULLWIDTH_JSON_PUNCT = {
+    "，": ",",  # U+FF0C 全角逗号
+    "：": ":",  # U+FF1A 全角冒号
+}
+
+
+def _normalize_fullwidth_json_punct(s: str) -> str:
+    """把字符串**外**的全角结构标点(，/：)换成 ASCII;字符串内部原样保留。
+
+    合法 JSON 里字符串外只可能出现结构 token,所以字符串外的全角 ，/： 必是错吐的
+    分隔符/冒号,归一是安全的;合规输入下本函数是 no-op。
+    """
+    out: list[str] = []
+    in_string = False
+    quote = ""
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if not in_string:
+            if c == '"' or c == "'":
+                in_string = True
+                quote = c
+                out.append(c)
+            else:
+                out.append(_FULLWIDTH_JSON_PUNCT.get(c, c))
+            i += 1
+            continue
+        # 在 string 内:转义对整体透传(不参与 quote 计数),内容一律不动
+        if c == "\\" and i + 1 < n:
+            out.append(s[i : i + 2])
+            i += 2
+            continue
+        if c == quote:
+            in_string = False
+            quote = ""
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _summarize_error_body(body: str) -> tuple[str, int | None]:
     """从 Hermes 错误响应体里抠出可读 reason 与内层 status。
 
@@ -320,8 +364,16 @@ def _load_json_candidate(candidate: str) -> Any:
         return json.loads(candidate)
     except Exception:
         pass
+    # 中文模型常把字段分隔/键值冒号吐成全角 ，/:,让 json / json5 双双拒解析。先把
+    # **字符串外**的全角结构标点归一成 ASCII(正文里的全角标点原样保留),后续阶梯都用它。
+    # 合规输入下归一是 no-op,与旧行为等价。
+    normalized = _normalize_fullwidth_json_punct(candidate)
+    try:
+        return json.loads(normalized)
+    except Exception:
+        pass
     # LLM 常在 reply_text 里嵌真换行(JSON 不允),转义后 stdlib json 仍能吃下
-    escaped = _escape_raw_newlines_in_strings(candidate)
+    escaped = _escape_raw_newlines_in_strings(normalized)
     try:
         return json.loads(escaped)
     except Exception:
@@ -332,7 +384,7 @@ def _load_json_candidate(candidate: str) -> Any:
         )
         return None
     try:
-        return json5.loads(candidate)
+        return json5.loads(normalized)
     except Exception:
         pass
     try:

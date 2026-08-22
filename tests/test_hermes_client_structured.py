@@ -509,3 +509,43 @@ def test_parse_first_json_block_prose_after_json():
     assert parsed is not None
     assert parsed["should_reply"] is False
     assert parsed["topic_hint"] == "demo"
+
+
+# --- 全角结构标点容错(中文模型 emission) ---
+
+
+def test_parse_first_json_block_fullwidth_comma_separator():
+    """中文模型常在字段分隔符处吐全角逗号 ，(U+FF0C):字符串**外**的要归一成 ASCII,
+    而 reply_text 正文里的全角逗号是合法中文,必须原样保留。
+
+    复刻真实事故:整串 JSON 因这一个全角逗号被拒解析,随后作为 raw_text 原样发进群。"""
+    from nonebot_plugin_hermes.core.hermes_client import _try_parse_first_json_block
+
+    raw = '{"should_reply": true, "reply_text": "第一句，第二句"，"should_exit_active": false}'
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed["should_reply"] is True
+    assert parsed["should_exit_active"] is False
+    # 正文里的全角逗号原样保留,一个字节都不能动
+    assert parsed["reply_text"] == "第一句，第二句"
+
+
+def test_parse_first_json_block_fullwidth_colon_separator():
+    """键值冒号处的全角 :(U+FF1A)同样归一;正文里的全角冒号保留。"""
+    from nonebot_plugin_hermes.core.hermes_client import _try_parse_first_json_block
+
+    raw = '{"should_reply"：true, "reply_text": "标题：正文"}'
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed["should_reply"] is True
+    assert parsed["reply_text"] == "标题：正文"
+
+
+def test_parse_first_json_block_fullwidth_inside_string_untouched():
+    """全 ASCII 结构 + 正文含全角标点:归一化是 no-op,字符串内部不得改动(回归护栏)。"""
+    from nonebot_plugin_hermes.core.hermes_client import _try_parse_first_json_block
+
+    raw = '{"should_reply": true, "reply_text": "喵，你好：世界，再见"}'
+    parsed = _try_parse_first_json_block(raw)
+    assert parsed is not None
+    assert parsed["reply_text"] == "喵，你好：世界，再见"
