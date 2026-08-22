@@ -15,7 +15,12 @@ from pathlib import Path
 
 import pytest
 
-_CLI_MODULES = ["hermes_install_skill.py", "hermes_purge_media.py", "hermes_repair_sessions.py"]
+_CLI_MODULES = [
+    "hermes_install_skill.py",
+    "hermes_optimize_state.py",
+    "hermes_purge_media.py",
+    "hermes_repair_sessions.py",
+]
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 

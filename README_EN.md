@@ -670,11 +670,12 @@ If your Hermes backend model is weak and unreliably parses the `[m:<id>]` conven
 |------|---------|------|
 | `hermes-install-skill --force` | **Hermes host** | Installs `SKILL.md` into `~/.hermes/skills/nonebot-bridge/` (`--force` is required to overwrite an existing install) |
 | `hermes-purge-media` | **bot host** | Purges inline base64 image bytes from the plugin's `messages.db`. Reports only by default; `--apply` writes back, `--vacuum` shrinks the file |
+| `hermes-optimize-state` | **Hermes host** | Dedupes the `<recent_messages>` windows re-injected into every historical turn of Hermes' `state.db`, strips the static protocol reminder, then reclaims space. Reports only by default; `--apply` backs up the database first |
 | `hermes-repair-sessions` | **Hermes host** | Unsticks sessions in Hermes' `state.db` deadlocked by ambiguous compression lineage. Reports only by default; `--apply` backs up the database first |
 
 "Runs on" follows the data each tool touches, not where the plugin happens to be installed. On a
-single-host setup all three commands are simply on PATH; on a **split deployment the Hermes host
-usually has no plugin install**, and you do not need to add one — all three are single files at the
+single-host setup all four commands are simply on PATH; on a **split deployment the Hermes host
+usually has no plugin install**, and you do not need to add one — all four are single files at the
 repository root, import nothing but the standard library, and never import the package itself:
 
 ```bash
@@ -685,6 +686,81 @@ python3 hermes_repair_sessions.py            # exactly equivalent to hermes-repa
 
 (Copying just the one file over works too — except for `hermes-install-skill`, which reads
 `nonebot_plugin_hermes/skill/SKILL.md` from the same repo and therefore needs the repo directory.)
+
+#### `hermes-optimize-state`: clear the windows re-injected into the transcript
+
+Both the reactive and passive paths wrap the `<recent_messages>` window into the user message. The
+window is dozens of lines and each turn adds only one or two, so the same group message ends up
+stored dozens of times in `state.db`; Hermes replays the whole transcript every turn, making this
+duplication both disk and bill. This tool folds the historical windows back into an incremental
+shape: each group message is kept only on its first appearance, and the static protocol reminder
+carried by every line is dropped (the `decision_protocol` on the system side already states the same
+thing). `<runtime_state>` and `<current_message>` are the current turn's live state and are left
+byte-for-byte intact.
+
+```bash
+hermes-optimize-state                  # report only: how much would be saved, which rows change
+hermes-optimize-state --sample         # also print 3 before/after comparisons — see whether the result is still readable
+hermes-optimize-state --sample 5       # sample 5
+hermes-optimize-state --apply          # back up, rewrite, merge FTS segments + VACUUM
+```
+
+**Multiple profiles: run it per database.** Each profile is a full `HERMES_HOME`, so there are three
+ways to point at one:
+
+```bash
+hermes-optimize-state --profile team          # ~/.hermes/profiles/team/state.db
+HERMES_HOME=/opt/data hermes-optimize-state   # custom deployment
+hermes-optimize-state --db /path/to/state.db  # give the full path directly, overriding all inference
+```
+
+`--profile default` means the root home (`~/.hermes/state.db`), not `profiles/default` — same rule as
+upstream `get_profile_dir`; profile names are lowercased; `--profile` is always anchored to the
+**root** home, so from inside the team profile `--profile other` resolves to `~/.hermes/profiles/other`,
+not a nested path.
+
+The resolved source is the final answer: **if the specified database does not exist the tool errors
+out, it never falls back to another profile**. A mistyped profile name, or a profile that has not been
+initialised yet, both have this shape — falling back would silently land the rewrite on the default
+profile's database, which afterwards looks perfectly normal.
+
+`--sample` shows the **post-rewrite** lines (what the model will actually read next turn), with the
+dropped duplicate messages folded into a one-line count — a compression ratio cannot answer "is it
+still readable?". Samples are taken from the session with the most rewritten rows, spread evenly by
+position: the dedup effect varies enormously with position (the cold-start turn keeps almost the whole
+window, mid-conversation turns keep only one or two messages), so showing only the biggest savers
+would overstate the effect.
+
+Stop `hermes-gateway` first (the tool exits if it can't take the write lock). A few things worth
+knowing up front:
+
+- **Only touches `sessions.source='api_server'` and `role='user'` rows** — CLI / TUI / cron sessions
+  are not plugin traffic and are left untouched; the assistant side is the model's own output and is
+  also left alone.
+- **The dedup unit is the message, not the physical line.** A history line's body can itself contain
+  newlines (bot-sent lists, multi-paragraph replies); deduping by physical line would strip a line
+  shared by two messages off the later one — the message gets shaved while its first line stays.
+- **Keyed on the `[m:<id>]` primary key, and computed per session.** Each Hermes session is an
+  independent transcript; the new generation after `/clear` should rebuild context, so dedup never
+  crosses sessions.
+- **Self-proving invariant**: before rewriting it records each message's key **and a body digest**,
+  then re-checks each one afterwards — if any is missing, or a surviving body is not one of the
+  versions the original contained, the whole thing rolls back. Keys alone are not enough: a message
+  shaved of a few body lines still has its first line, so the key still resolves.
+- **The FTS indexes are maintained by triggers following the `UPDATE`**, but the triggers hang off a
+  rebuild high-water marker — mid-rebuild a rewrite would bypass them and silently corrupt the search
+  index. If the marker is present the tool refuses to run; finish `hermes sessions optimize-storage`
+  first.
+- Side effect: a given group message afterwards matches full-text search once (rather than once per
+  turn that echoed it) — still findable.
+- Cost: the rewritten session takes one full prompt-cache miss on its next turn, then rebuilds the
+  cache against the new, smaller prefix.
+
+Pure space reclamation (without changing content) is built into upstream: `hermes sessions optimize`
+merges FTS segments + `VACUUM`, `hermes sessions prune --older-than N` deletes sessions by retention,
+`hermes sessions optimize-storage` migrates the old inline-FTS layout to the compact one. What this
+tool adds is the one thing none of them do: **duplicate copies of the same content within a
+transcript**.
 
 `hermes-purge-media` cleans up a legacy artifact: earlier versions stored the whole
 `data:image/…;base64,…` payload that api_server inlines into agent replies straight into the

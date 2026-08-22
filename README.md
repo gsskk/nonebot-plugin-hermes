@@ -630,10 +630,11 @@ T+5s  用户 B:  @bot 评价下上图
 |------|---------|------|
 | `hermes-install-skill --force` | **Hermes 那台** | 把 `SKILL.md` 装到 `~/.hermes/skills/nonebot-bridge/`(覆盖已装版本要带 `--force`) |
 | `hermes-purge-media` | **bot 那台** | 清理插件消息库(`messages.db`)里内联的 base64 图片字节。默认只报告,`--apply` 写回,`--vacuum` 收缩文件 |
+| `hermes-optimize-state` | **Hermes 那台** | 把 Hermes `state.db` 里历史 turn 重复注入的 `<recent_messages>` 窗口去重、摘掉静态协议尾句,再回收空间。默认只报告,`--apply` 备份后改写 |
 | `hermes-repair-sessions` | **Hermes 那台** | 解开 Hermes `state.db` 里被 compression 血缘歧义卡死的会话。默认只报告,`--apply` 备份后修复 |
 
-「在哪台跑」取决于工具动的是谁的数据,不是谁装了插件。bot 与 Hermes 同机时三个命令都能直接敲;
-**分机部署时 Hermes 那台通常并没有装本插件**,此时不需要为了跑工具去装一遍——三个脚本都是仓库
+「在哪台跑」取决于工具动的是谁的数据,不是谁装了插件。bot 与 Hermes 同机时四个命令都能直接敲;
+**分机部署时 Hermes 那台通常并没有装本插件**,此时不需要为了跑工具去装一遍——四个脚本都是仓库
 根目录下的单文件、只用标准库、也不 import 本包:
 
 ```bash
@@ -641,6 +642,61 @@ git clone https://github.com/gsskk/nonebot-plugin-hermes.git
 cd nonebot-plugin-hermes
 python3 hermes_repair_sessions.py            # 与 hermes-repair-sessions 完全等价
 ```
+
+#### `hermes-optimize-state`:清掉 transcript 里重复注入的窗口
+
+reactive 与 passive 两路都把 `<recent_messages>` 窗口裹进 user message。窗口有几十行、每轮只新增
+一两行,于是同一条群发言在 `state.db` 里被存了几十遍;Hermes 每轮回放整条 transcript,这份重复既
+是磁盘也是账单。本工具把历史窗口回溯成增量形状:每条群发言只保留第一次出现,并摘掉每行都带一份
+的静态协议尾句(system 端的 `decision_protocol` 已经写着同一件事)。`<runtime_state>` 与
+`<current_message>` 是本 turn 的实况,原样保留。
+
+```bash
+hermes-optimize-state                  # 只看:能省多少、会动哪些行
+hermes-optimize-state --sample         # 再打印 3 条改写前后的对照,看清改完还能不能读
+hermes-optimize-state --sample 5       # 抽 5 条
+hermes-optimize-state --apply          # 备份后改写 + 合并 FTS 段 + VACUUM
+```
+
+**多 profile:库要逐个跑。** 每个 profile 是一份完整的 `HERMES_HOME`,所以有三种指定方式:
+
+```bash
+hermes-optimize-state --profile team          # ~/.hermes/profiles/team/state.db
+HERMES_HOME=/opt/data hermes-optimize-state   # 自定义部署
+hermes-optimize-state --db /path/to/state.db  # 直接给完整路径,盖过一切推导
+```
+
+`--profile default` 指的是根 home(`~/.hermes/state.db`),不是 `profiles/default` —— 与上游
+`get_profile_dir` 同规则;profile 名按小写归一;`--profile` 始终锚在**根** home 上,所以身处
+team profile 时 `--profile other` 找的是 `~/.hermes/profiles/other`,不是嵌套路径。
+
+命中的来源就是最终答案:**指定的库不存在时直接报错退出,绝不回落到别的 profile**。profile 名打错、
+或 profile 还没初始化,都是这个形状 —— 回落会把改写静默落到默认 profile 那份库上,而那份库事后看
+起来一切正常。
+
+`--sample` 展示的是**改写后**的整行(模型下一轮实际会读到的东西),被删掉的重复消息折成一行计数
+——压缩比回答不了「改完还能不能读」。样本取自改写行最多的那个会话、按位置均匀铺开:去重效果随
+位置差别极大(冷启动那条几乎整扇窗口都留着,中段每轮只留一两条),只挑省得最多的行会把效果说得
+过好。
+
+跑之前先停 `hermes-gateway`(拿不到写锁会直接退出)。几件事值得先知道:
+
+- **只动 `sessions.source='api_server'` 且 `role='user'` 的行** —— CLI / TUI / cron 会话不是插件流量,
+  一行不碰;assistant 侧是模型自己的输出,也不碰。
+- **去重单位是消息,不是物理行**。历史行的正文本身可以带换行(bot 发的列表、多段回复),按物理行
+  去重会把两条消息共有的某一行从后出现的那条身上摘走 —— 消息被削,而首行还在。
+- **键用 `[m:<id>]` 主键、并且按 session 分别算**。每个 Hermes session 是独立 transcript,
+  `/clear` 之后的新世代该重新建立上下文,不能跨会话去重。
+- **自证不变量**:改写前记下每条消息的主键**与正文摘要**,改写后逐一回查 —— 少一条、或留存的正文
+  不是原文里出现过的任一份,就整体回滚。只比对主键不够:正文被削掉几行的消息,首行还在,主键查得到。
+- **FTS 索引由触发器跟随 `UPDATE` 维护**,但触发器挂在 rebuild 水位标记上——rebuild 半途时改写会
+  绕过它、静默毁掉搜索索引。发现标记在场即拒绝执行,先跑完 `hermes sessions optimize-storage`。
+- 副作用:同一条群发言此后在全文检索里只命中一次(而不是每个回显它的 turn 各命中一次),仍然找得到。
+- 代价:被改写的会话下一轮是一次完整的 prompt cache miss,之后按新的、更小的前缀重新建缓存。
+
+纯粹的空间回收(不改内容)上游自带:`hermes sessions optimize` 合并 FTS 段 + `VACUUM`,
+`hermes sessions prune --older-than N` 按保留期删会话,`hermes sessions optimize-storage` 把旧的内联
+FTS 布局迁到紧凑布局。本工具补的是它们都不做的那件事:**同一条内容在 transcript 里的重复副本**。
 
 (只拷单个文件过去跑也行;`hermes-install-skill` 例外——它要读同仓库里的
 `nonebot_plugin_hermes/skill/SKILL.md`,得带上仓库目录。)

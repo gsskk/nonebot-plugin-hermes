@@ -32,6 +32,7 @@ dev = [
 
 [project.scripts]
 hermes-install-skill = "hermes_install_skill:main"
+hermes-optimize-state = "hermes_optimize_state:main"
 hermes-purge-media = "hermes_purge_media:main"
 hermes-repair-sessions = "hermes_repair_sessions:main"
 
@@ -59,7 +60,7 @@ build-backend = "setuptools.build_meta"
 include = ["nonebot_plugin_hermes*"]
 
 [tool.setuptools]
-py-modules = ["hermes_install_skill", "hermes_purge_media", "hermes_repair_sessions"]
+py-modules = ["hermes_install_skill", "hermes_optimize_state", "hermes_purge_media", "hermes_repair_sessions"]
 
 [tool.setuptools.package-data]
 nonebot_plugin_hermes = ["skill/*.md"]
