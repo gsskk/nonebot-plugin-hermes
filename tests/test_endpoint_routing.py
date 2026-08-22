@@ -391,43 +391,60 @@ def test_status_lines_have_no_annotation_when_table_empty(monkeypatch):
     assert "接入点" not in api_line
 
 
-def test_validate_endpoints_flags_multiplex_reverse_channel_limit(monkeypatch):
+def test_multiplex_notice_is_informational_not_a_problem(monkeypatch):
     """多路复用形态(/p/<profile> url)+ 反向通道开着 = scope 无法按接入点收敛,启动时要说。
 
     上游的 MCP 发现是进程级的:gateway 启动时在**没有 profile scope** 的情况下读一次默认
     profile 的 config.yaml,注册表全局共享。所以命名 profile 自己的 mcp_servers 不会被连接,
     所有 profile 的 agent 呈同一把 token。
+
+    但插件**无法从自己这侧核实**对面配对没配对 —— 这条在正确配置上也必然触发,所以它是
+    INFO 级提醒(走 `multiplex_reverse_channel_notices()`),**不进** `validate_endpoints()`
+    那批 WARNING 级的真·配置错误。真失败由 push 时的 `拒绝越权` WARNING 精确报出。
     """
     from nonebot_plugin_hermes.config import plugin_config
-    from nonebot_plugin_hermes.core.routing import validate_endpoints
+    from nonebot_plugin_hermes.core.routing import (
+        multiplex_reverse_channel_notices,
+        validate_endpoints,
+    )
 
     monkeypatch.setattr(plugin_config, "hermes_api_url", "http://127.0.0.1:8642")
     monkeypatch.setattr(plugin_config, "hermes_mcp_enabled", True)
     _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8642/p/team-a", "key": "k-at-least-16-chars"}})
 
-    problems = validate_endpoints()
-    assert any("多路复用" in p and "反向通道" in p for p in problems)
+    notices = multiplex_reverse_channel_notices()
+    assert any("多路复用" in n and "反向通道" in n for n in notices)
+    # 这条无法核实的提醒不得混进 WARNING 级的真错误里。
+    assert not any("多路复用" in p for p in validate_endpoints())
 
 
-def test_validate_endpoints_no_multiplex_warning_for_separate_processes(monkeypatch):
-    """独立进程形态(各自端口)下反向通道能按接入点收敛,不该告警。"""
+def test_no_multiplex_notice_for_separate_processes(monkeypatch):
+    """独立进程形态(各自端口)下反向通道能按接入点收敛,不该提醒。"""
     from nonebot_plugin_hermes.config import plugin_config
-    from nonebot_plugin_hermes.core.routing import validate_endpoints
+    from nonebot_plugin_hermes.core.routing import (
+        multiplex_reverse_channel_notices,
+        validate_endpoints,
+    )
 
     monkeypatch.setattr(plugin_config, "hermes_api_url", "http://127.0.0.1:8642")
     monkeypatch.setattr(plugin_config, "hermes_mcp_enabled", True)
     _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8643", "key": "k-at-least-16-chars"}})
 
+    assert multiplex_reverse_channel_notices() == []
     assert validate_endpoints() == []
 
 
-def test_validate_endpoints_no_multiplex_warning_when_mcp_off(monkeypatch):
+def test_no_multiplex_notice_when_mcp_off(monkeypatch):
     """没开反向通道就没这个问题。"""
     from nonebot_plugin_hermes.config import plugin_config
-    from nonebot_plugin_hermes.core.routing import validate_endpoints
+    from nonebot_plugin_hermes.core.routing import (
+        multiplex_reverse_channel_notices,
+        validate_endpoints,
+    )
 
     monkeypatch.setattr(plugin_config, "hermes_api_url", "http://127.0.0.1:8642")
     monkeypatch.setattr(plugin_config, "hermes_mcp_enabled", False)
     _set_table(monkeypatch, {"ob11:g1": {"url": "http://127.0.0.1:8642/p/team-a", "key": "k-at-least-16-chars"}})
 
+    assert multiplex_reverse_channel_notices() == []
     assert validate_endpoints() == []

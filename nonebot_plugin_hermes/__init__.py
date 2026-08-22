@@ -100,10 +100,13 @@ async def _hermes_m1_startup():
                 logger.info("[HERMES] 长期记忆作用域已启用(X-Hermes-Session-Key)")
 
     if plugin_config.hermes_group_endpoints:
-        from .core.routing import validate_endpoints
+        from .core.routing import multiplex_reverse_channel_notices, validate_endpoints
 
         for problem in validate_endpoints():
             logger.warning(f"[HERMES] 接入点路由表配置问题:{problem}")
+        # 无法自动核实的提醒走 INFO —— 它在正确配置上也必报,配 WARNING 只会制造告警疲劳。
+        for notice in multiplex_reverse_channel_notices():
+            logger.info(f"[HERMES] {notice}")
         logger.info(f"[HERMES] 按群路由已启用,{len(plugin_config.hermes_group_endpoints)} 个接入点")
 
     logger.info(

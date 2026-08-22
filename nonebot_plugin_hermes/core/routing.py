@@ -187,7 +187,12 @@ def _normalize_adapter(raw: str) -> str:
 
 
 def validate_endpoints() -> list[str]:
-    """返回配置问题描述(启动期 WARN 用)。只描述不修正,也不抛。"""
+    """返回**可核实的**配置错误(启动期 WARN 用)。只描述不修正,也不抛。
+
+    这里的每条都是插件能从自己这侧确证的错(路由键匹配不上、url 非 http、命名 profile 没配
+    key、同 URL 多把 key……),报出来必然是真问题,配 WARNING 级。无法核实、在正确配置上也
+    会触发的多路复用反向通道提醒不在此列 —— 见 multiplex_reverse_channel_notices()。
+    """
     problems: list[str] = []
     default_url = plugin_config.hermes_api_url.rstrip("/")
     entries = plugin_config.hermes_group_endpoints
@@ -215,23 +220,6 @@ def validate_endpoints() -> list[str]:
         elif entry.key and len(entry.key) < _MIN_KEY_LEN:
             problems.append(f"{label} 的 key 短于 {_MIN_KEY_LEN} 字符,上游会判为未配置并拒绝请求")
 
-    # 多路复用形态 + 反向通道:上游把 MCP 分成两层 —— **连接**按默认 profile 的 config 在进程启动
-    # 时建一次(注册表全进程共享),**可用性**才按被路由到的 profile 每请求解析。所以命名 profile
-    # 里写的 Bearer 不生效,默认配法下所有 profile 呈同一把 token、被判成同一个 scope。
-    # 解法不是放弃多路复用:MCP 工具名按 server 名 namespace(mcp__<server>__<tool>),所以可以在
-    # 默认 profile 里为每个接入点配一个同 URL、不同名字、不同 Bearer 的 server,各 profile 只声明
-    # 自己那个名字 —— token 就按 profile 分开了。这里只能提醒,插件无法从自己这侧核实对面怎么配。
-    if plugin_config.hermes_mcp_enabled:
-        multiplexed = sorted(label for label, entry in entries.items() if "/p/" in entry.url)
-        if multiplexed:
-            problems.append(
-                f"{multiplexed} 走多路复用前缀(/p/<profile>):上游的 MCP 连接按默认 profile 的配置在"
-                f"进程启动时建立并全局共享,命名 profile 里写的 Bearer 不生效。要让反向通道按接入点收敛,"
-                f"须在默认 profile 里为每个接入点各配一个同 URL、不同 server 名、不同 Bearer 的 MCP "
-                f"server,并让各 profile 只在自己的 mcp_servers 里声明对应的那个名字;否则所有 profile "
-                f"共用一把 token,这些群的 push/读会按共享 token 的范围(通常是补集)判定而被拒"
-            )
-
     # 同一个接入点配了多把不同的 key —— 其中至少一把必然 401。
     keys_by_url: dict[str, set[str]] = {}
     for entry in entries.values():
@@ -242,3 +230,26 @@ def validate_endpoints() -> list[str]:
             problems.append(f"接入点 {url} 在表内配了 {len(keys)} 把不同的 key,其中至少一把会 401")
 
     return problems
+
+
+def multiplex_reverse_channel_notices() -> list[str]:
+    """多路复用 + 反向通道下**无法自动核实**的配置提醒(启动期 INFO 用)。
+
+    上游把 MCP 分成两层 —— **连接**按默认 profile 的 config 在进程启动时建一次(注册表全进程
+    共享),**可用性**才按被路由到的 profile 每请求解析。所以命名 profile 里写的 Bearer 不生效,
+    默认配法下所有 profile 呈同一把 token、被判成同一个 scope。解法不是放弃多路复用:MCP 工具名
+    按 server 名 namespace(mcp__<server>__<tool>),所以可以在默认 profile 里为每个接入点配一个
+    同 URL、不同名字、不同 Bearer 的 server,各 profile 只声明自己那个名字 —— token 就按 profile
+    分开了。
+
+    但插件无法从自己这侧核实对面到底怎么配:这条在**配对了的正确部署上也必然触发**,所以它是
+    INFO 级提醒而非 WARNING —— 一条在每次正确启动都响的告警只会制造告警疲劳。真配错时的失败
+    信号在别处:push 那一刻会有精确的 `拒绝越权` WARNING(fail-closed),那才是要盯的。
+    """
+    if not plugin_config.hermes_mcp_enabled:
+        return []
+    entries = plugin_config.hermes_group_endpoints
+    multiplexed = sorted(label for label, entry in entries.items() if "/p/" in entry.url)
+    if not multiplexed:
+        return []
+    return [f"{multiplexed}:多路复用 + 反向通道,token 需在默认 profile 按 server 名分开,已配好可忽略"]
