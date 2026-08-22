@@ -1324,27 +1324,37 @@ async def _run_reactive_turn(
 
         # raw_text 预览:用来分类失败模式(裸文本 / fenced ```json / 多 JSON 块 /
         # nested object 等)。换行折叠成 \n 字面量,300 字够覆盖单 turn submit_decision。
-        raw_preview = preview_raw(result.raw_text or "")
+        raw = result.raw_text or ""
+        # 纯散文兜底:模型完全没进 submit_decision 信封(连 "should_reply" 键都没出现),
+        # 说明它抛开协议直接自然作答 —— 这段散文本身就是它想说的话,非显式 turn 也照发。
+        # 关键区分:信封在场但破了(截断 / 语法脏)可能正带着「这条不归我」的
+        # should_reply=false 决定,而那信号只以 JSON 形式存在,拿一段可能不该说的话去撞群
+        # 比丢一条更糟,所以那种破法非显式 turn 仍静默。transport / persistence 错误的 raw
+        # 是服务端报文,绝不当散文转发,故排除。
+        is_pure_prose = bool(raw) and not result.is_transport_error and '"should_reply"' not in raw
+        forward_raw = bool(raw) and (is_explicit_trigger or is_pure_prose)
+        raw_preview = preview_raw(raw)
         logger.warning(
             f"[HERMES reactive] structured parse failed (group={group_id}, "
             f"transport_error={result.is_transport_error}); fallback="
-            f"{'raw_text' if is_explicit_trigger and result.raw_text else 'silent'}; "
-            f"raw_len={len(result.raw_text or '')} raw_preview={raw_preview!r}"
+            f"{('raw_text' if is_explicit_trigger else 'prose') if forward_raw else 'silent'}; "
+            f"raw_len={len(raw)} raw_preview={raw_preview!r}"
         )
-        # 静默兜底:显式触发时降级发 raw_text;非显式触发(被动)时静默
-        if is_explicit_trigger and result.raw_text:
-            fallback_text = result.raw_text
+        # 显式触发降级发 raw_text;非显式触发仅在纯散文时发,其余静默
+        if forward_raw:
+            fallback_text = raw
             extracted = maybe_extract_decision_reply_text(fallback_text)
             if extracted is not None:
                 fallback_text = extracted
             cleaned_text, extracted_media_urls = extract_response_media(fallback_text)
             media_urls = list(result.media_urls) + [u for u in extracted_media_urls if u not in result.media_urls]
+            # 群里明确说话给某人 → at;主动插话(散文兜底)→ 不 at,与成功回复路径同口径
             await send_text_with_media(
                 bot=bot,
                 target=target,
                 text=cleaned_text,
                 media_urls=media_urls,
-                at_user_id=user_id,
+                at_user_id=user_id if is_explicit_trigger else None,
                 adapter_name=adapter_name,
             )
         return result
