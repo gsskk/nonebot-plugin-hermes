@@ -46,6 +46,12 @@ _SCHEMA_STATEMENTS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_imgs_message ON message_images (message_id)",
+    """
+    CREATE TABLE IF NOT EXISTS message_forwards (
+        message_id   INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+        content      TEXT    NOT NULL
+    )
+    """,
 ]
 
 
@@ -100,6 +106,11 @@ class MessageStore:
                     "INSERT INTO message_images (message_id, idx, url, sha256, mime_type) VALUES (?, ?, ?, NULL, NULL)",
                     (msg_id, i, url),
                 )
+            if msg.forward_content:
+                self._conn.execute(
+                    "INSERT INTO message_forwards (message_id, content) VALUES (?, ?)",
+                    (msg_id, msg.forward_content),
+                )
             msg.id = msg_id
             return msg_id
         except sqlite3.Error as exc:
@@ -146,6 +157,11 @@ class MessageStore:
         urls_by_msg: dict[int, list[str]] = defaultdict(list)
         for ir in img_rows:
             urls_by_msg[ir["message_id"]].append(ir["url"])
+        fwd_rows = self._conn.execute(
+            f"SELECT message_id, content FROM message_forwards WHERE message_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        fwd_by_msg = {fr["message_id"]: fr["content"] for fr in fwd_rows}
         return [
             BufferedMessage(
                 ts=r["ts"],
@@ -158,6 +174,7 @@ class MessageStore:
                 reply_to_ts=r["reply_to_ts"],
                 is_bot=bool(r["is_bot"]),
                 id=r["id"],
+                forward_content=fwd_by_msg.get(r["id"]),
             )
             for r in rows
         ]

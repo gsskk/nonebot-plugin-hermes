@@ -575,6 +575,11 @@ async def _extract_forward_full(
     return f'<forwarded_messages count="{total_nodes}">\n{content}\n</forwarded_messages>'
 
 
+# 自闭合 forwarded_messages 标签(fetch_failed / preview 两种变体共用此形态)。
+# _summarize_forward 的透传判断与 _forward_full_for_store 的落库过滤共用。
+_FORWARD_SELF_CLOSING_RE = re.compile(r"<forwarded_messages [^>]+/>")
+
+
 def _summarize_forward(full_block: str, *, max_chars: int = 120) -> str:
     """将 _extract_forward_full 返回的多行块压缩为单行自闭合预览标签。
 
@@ -582,7 +587,7 @@ def _summarize_forward(full_block: str, *, max_chars: int = 120) -> str:
     自闭合输入(含 fetch_failed 变体)原样返回。
     """
     # Already self-closing → unchanged
-    if re.match(r"<forwarded_messages [^>]+/>", full_block.strip()):
+    if _FORWARD_SELF_CLOSING_RE.match(full_block.strip()):
         return full_block.strip()
 
     # Extract count attribute
@@ -617,6 +622,15 @@ def _summarize_forward(full_block: str, *, max_chars: int = 120) -> str:
     preview = preview.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "'")
 
     return f'<forwarded_messages count="{count_val}" preview="{preview}"/>'
+
+
+def _forward_full_for_store(forward_full: str | None) -> str | None:
+    """真实展开块才值得持久化;fetch_failed 自闭合变体无内容,不落库。"""
+    if forward_full is None:
+        return None
+    if _FORWARD_SELF_CLOSING_RE.match(forward_full.strip()):
+        return None
+    return forward_full
 
 
 # Telegram `bot.get_file(file_id)` → URL 短期缓存。
@@ -736,6 +750,7 @@ async def handle_perception(bot: Bot, event: Event):
                 content=msg_text,
                 image_urls=image_urls,
                 is_bot=False,
+                forward_content=_forward_full_for_store(forward_full),
             )
         )
 
@@ -792,6 +807,11 @@ async def handle_message(bot: Bot, event: Event, matcher: Matcher):
             if replied_at:
                 suffix = " ".join(replied_at)
                 replied_text = (replied_text + " " + suffix).strip() if replied_text else suffix
+            # 引用折叠消息:被引 UniMessage 里的 forward 段带 id,直接展开内联。
+            # fetch_failed 自闭合变体也拼——「这里有个取不到的折叠」比空白强。
+            replied_forward = await _extract_forward_full(replied_message, bot, adapter_name=adapter_name)
+            if replied_forward is not None:
+                replied_text = f"{replied_text}\n{replied_forward}" if replied_text else replied_forward
             if replied_image_urls and not replied_text:
                 replied_text = "[图片]"
         except Exception as e:

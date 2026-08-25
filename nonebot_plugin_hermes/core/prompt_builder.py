@@ -205,6 +205,12 @@ def _render_runtime_state(
 # 只有 bot 自己的长回复会接近这个数,留 800 字够「自我归因校验」定位到自己说过的话。
 _MAX_HISTORY_LINE_CHARS = 800
 _HISTORY_TRUNCATION_MARK = "…[历史过长已截断]"
+# 展开后的折叠行上限。真实约束是提取上限(hermes_forward_extract_max_chars,默认 800)——
+# 这里只兜行首 [m:X]/speaker 前缀与原行其余文本的富余,不是新的预算口径;
+# 超大首节点(提取端允许单节点越限)仍会被这里截住,渲染端保持最后一道闸的角色。
+_MAX_EXPANDED_FORWARD_LINE_CHARS = 1200
+# preview 自闭合标签(写入端 _summarize_forward 的产物);展开 = 原位替换为全文块。
+_FORWARD_PREVIEW_TAG_RE = re.compile(r"<forwarded_messages [^>]+/>")
 # 优先匹配 markdown 包壳的形态(api_server 内联就是这个形状),连 `![alt](...)` 一起换掉,
 # 免得留下 `![image]([图片])` 这种壳;闭合 `)` 可缺,截断的回复就没有它。
 # 第二条兜裸 data URL(例如 MEDIA:data:… 形态)。
@@ -223,7 +229,7 @@ def _placeholder_keeping_trailing_space(m: re.Match) -> str:
     return _HISTORY_IMAGE_PLACEHOLDER + matched[len(matched.rstrip()) :]
 
 
-def _sanitize_history_content(content: str) -> str:
+def _sanitize_history_content(content: str, max_chars: int = _MAX_HISTORY_LINE_CHARS) -> str:
     """把单条历史内容压到可安全放进 prompt 的形态。
 
     先摘掉 data URL(base64 字节对模型毫无信息量,只会挤掉真实上下文),再按
@@ -231,9 +237,20 @@ def _sanitize_history_content(content: str) -> str:
     """
     cleaned = _MD_DATA_IMAGE_IN_HISTORY_RE.sub(_placeholder_keeping_trailing_space, content)
     cleaned = _BARE_DATA_URL_IN_HISTORY_RE.sub(_placeholder_keeping_trailing_space, cleaned)
-    if len(cleaned) > _MAX_HISTORY_LINE_CHARS:
-        cleaned = cleaned[:_MAX_HISTORY_LINE_CHARS] + _HISTORY_TRUNCATION_MARK
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars] + _HISTORY_TRUNCATION_MARK
     return cleaned
+
+
+def _expand_forward_preview(content: str, forward_content: str) -> str:
+    """把历史行里的 preview 自闭合标签原位替换为完整块。
+
+    找不到标签时(防御分支;写入端存 forward_content 的消息 content 必带 preview)
+    换行追加。lambda 替换绕开 re.sub 对替换串的转义解析——内容里的反斜杠是数据不是语法。
+    """
+    if _FORWARD_PREVIEW_TAG_RE.search(content):
+        return _FORWARD_PREVIEW_TAG_RE.sub(lambda _m: forward_content, content, count=1)
+    return f"{content}\n{forward_content}"
 
 
 def _render_recent_messages_block(recent_messages: Sequence[BufferedMessage]) -> str:
@@ -245,13 +262,25 @@ def _render_recent_messages_block(recent_messages: Sequence[BufferedMessage]) ->
 
     每行内容都过 _sanitize_history_content:渲染端是最后一道闸,DB 里存了什么
     都不能让单行无上限地进 prompt。
+
+    折叠消息展开:窗口内最新一条带 forward_content 的行,preview 标签原位替换为
+    全文块(截断上限放宽到 _MAX_EXPANDED_FORWARD_LINE_CHARS);更旧的保持 preview。
     """
+    msgs = list(recent_messages)
+    # 新→旧序里第一条带全文的折叠 = 窗口内最新一条;只展开它,更旧的保持 preview——
+    # 展开成本按 turn 支付,预算只给最可能被追问的那条。
+    expand_target = next((m for m in msgs if m.forward_content), None)
     lines = ["<recent_messages>"]
-    for m in reversed(list(recent_messages)):
+    for m in reversed(msgs):
         bot_prefix = "[bot] " if m.is_bot else ""
         speaker_tag = _format_speaker_tag(m.nickname, m.user_id)
         id_prefix = f"[m:{m.id}] " if m.id is not None else ""
-        lines.append(f"{id_prefix}{bot_prefix}{speaker_tag}: {_sanitize_history_content(m.content)}")
+        if m is expand_target:
+            content = _expand_forward_preview(m.content, m.forward_content or "")
+            rendered = _sanitize_history_content(content, max_chars=_MAX_EXPANDED_FORWARD_LINE_CHARS)
+        else:
+            rendered = _sanitize_history_content(m.content)
+        lines.append(f"{id_prefix}{bot_prefix}{speaker_tag}: {rendered}")
     lines.append("</recent_messages>")
     return "\n".join(lines)
 

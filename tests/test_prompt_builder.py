@@ -629,3 +629,80 @@ def test_history_sanitize_drops_markdown_shell_and_keeps_spacing():
             **_reactive_user_kwargs(recent_messages=[_msg_with_id(100, "bot", raw, 7, is_bot=True)])
         )
         assert f"[m:7] [bot] [user=bot]: {want}" in content, f"{raw[:30]}… 渲染成了别的形状"
+
+
+# ---------------------------------------------------------------------------
+# 折叠消息全文渲染展开(_render_recent_messages_block)
+# ---------------------------------------------------------------------------
+
+
+def _fbm(ts, content, forward_content=None, msg_id=None):
+    return BufferedMessage(
+        ts=ts,
+        adapter="ob11",
+        group_id="g1",
+        user_id="u1",
+        nickname="u1",
+        content=content,
+        forward_content=forward_content,
+        id=msg_id,
+    )
+
+
+def test_render_expands_only_newest_forward():
+    from nonebot_plugin_hermes.core.prompt_builder import _render_recent_messages_block
+
+    full_old = '<forwarded_messages count="2">\nA: 第一条正文\nB: 第二条正文\n</forwarded_messages>'
+    full_new = '<forwarded_messages count="1">\nC: 第三条正文\n</forwarded_messages>'
+    msgs = [  # 新→旧
+        _fbm(200, 'x <forwarded_messages count="1" preview="C: 第三…"/>', forward_content=full_new, msg_id=2),
+        _fbm(100, 'y <forwarded_messages count="2" preview="A: 第一…"/>', forward_content=full_old, msg_id=1),
+    ]
+    out = _render_recent_messages_block(msgs)
+    assert "C: 第三条正文" in out
+    assert 'preview="C' not in out
+    assert "A: 第一条正文" not in out
+    assert 'preview="A' in out
+
+
+def test_render_expanded_line_exempt_from_default_cap():
+    from nonebot_plugin_hermes.core.prompt_builder import (
+        _HISTORY_TRUNCATION_MARK,
+        _render_recent_messages_block,
+    )
+
+    body = "\n".join(f"U{i}: {'甲' * 70}" for i in range(10))
+    full = f'<forwarded_messages count="10">\n{body}\n</forwarded_messages>'
+    assert len(full) > 800
+    msgs = [_fbm(100, '<forwarded_messages count="10" preview="U0…"/>', forward_content=full, msg_id=1)]
+    out = _render_recent_messages_block(msgs)
+    assert _HISTORY_TRUNCATION_MARK not in out
+    assert "</forwarded_messages>" in out
+
+
+def test_render_expanded_line_still_scrubs_data_urls():
+    from nonebot_plugin_hermes.core.prompt_builder import _render_recent_messages_block
+
+    full = '<forwarded_messages count="1">\nA: ![img](data:image/png;base64,AAAA)\n</forwarded_messages>'
+    msgs = [_fbm(100, '<forwarded_messages count="1" preview="A…"/>', forward_content=full, msg_id=1)]
+    out = _render_recent_messages_block(msgs)
+    assert "base64" not in out
+    assert "[图片]" in out
+
+
+def test_render_expansion_appends_when_no_preview_tag():
+    from nonebot_plugin_hermes.core.prompt_builder import _render_recent_messages_block
+
+    full = '<forwarded_messages count="1">\nA: hi\n</forwarded_messages>'
+    msgs = [_fbm(100, "plain text only", forward_content=full, msg_id=1)]
+    out = _render_recent_messages_block(msgs)
+    assert "plain text only\n" in out
+    assert "A: hi" in out
+
+
+def test_render_without_forward_content_keeps_preview():
+    from nonebot_plugin_hermes.core.prompt_builder import _render_recent_messages_block
+
+    msgs = [_fbm(100, 'x <forwarded_messages count="2" preview="A / B"/>', msg_id=1)]
+    out = _render_recent_messages_block(msgs)
+    assert 'preview="A / B"' in out

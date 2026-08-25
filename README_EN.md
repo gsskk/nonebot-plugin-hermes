@@ -42,7 +42,7 @@ User Message → NoneBot Adapter → nonebot-plugin-hermes
 - 🧪 **Historical image recall (0.3+, experimental)**: SQLite-backed message log + filesystem image-byte cache + `get_message_images` MCP tool. Lets Hermes precisely fetch a past image by message id when the user says things like "上图" / "the image just now"
 - 🧪 **OneBot v11 Notice triggers (0.3.3+, experimental)**: Poke (戳一戳) as a second @-equivalent trigger; on group-join Hermes self-decides whether to greet (noop is valid — no template welcomes)
 - 🧪 **Message segment perception (0.3.4+, experimental)**: Voice/Video/QQ face/sticker placeholders surface to LLM context; stickers automatically skip the vision API. OneBot v11 NapCat ack-emoji on explicit @ (`HERMES_ACK_FEEDBACK_ENABLED=true`)
-- ✅ **Merge-forward handling (0.4.0+)**: incoming merge-forward (合并转发) messages are expanded into a length-capped summary; the bot's own long replies are sent as a merge-forward in OneBot v11 groups instead of being truncated
+- ✅ **Merge-forward handling (0.4.0+)**: incoming merge-forward (合并转发) messages are expanded into a length-capped summary; since 0.5.3 the full expansion is persisted with the message — the newest forward inside the active window is rendered in full in subsequent turns' history, and quoting a forward inlines its full content into the current message; the bot's own long replies are sent as a merge-forward in OneBot v11 groups instead of being truncated
 
 ## Quick Start
 

@@ -609,3 +609,48 @@ async def test_extract_handles_content_key_shape(monkeypatch):
     for i in range(3):
         assert f"User{i}: Hello {i}" in result
     assert "fetch_failed" not in result
+
+
+# ---------------------------------------------------------------------------
+# _forward_full_for_store(perception 落库过滤)
+# ---------------------------------------------------------------------------
+
+
+def test_forward_full_for_store_none_passthrough():
+    from nonebot_plugin_hermes.handlers.message import _forward_full_for_store
+
+    assert _forward_full_for_store(None) is None
+
+
+def test_forward_full_for_store_rejects_fetch_failed():
+    from nonebot_plugin_hermes.handlers.message import _forward_full_for_store
+
+    assert _forward_full_for_store('<forwarded_messages count="?" status="fetch_failed"/>') is None
+
+
+def test_forward_full_for_store_accepts_real_block():
+    from nonebot_plugin_hermes.handlers.message import _forward_full_for_store
+
+    block = '<forwarded_messages count="1">\nA: hi\n</forwarded_messages>'
+    assert _forward_full_for_store(block) == block
+
+
+def test_wiring_handle_perception_stores_forward_content():
+    """Perception 必须把全文经 _forward_full_for_store 传入 BufferedMessage.forward_content。"""
+    import inspect
+
+    from nonebot_plugin_hermes.handlers.message import handle_perception
+
+    active = _active_lines(inspect.getsource(handle_perception))
+    assert "_forward_full_for_store(" in active
+    assert "forward_content=" in active
+
+
+def test_wiring_handle_message_inlines_replied_forward():
+    """引用折叠消息:reply 提取必须对 replied_message 也跑 _extract_forward_full。"""
+    import inspect
+
+    from nonebot_plugin_hermes.handlers.message import handle_message
+
+    active = _active_lines(inspect.getsource(handle_message))
+    assert "_extract_forward_full(replied_message" in active

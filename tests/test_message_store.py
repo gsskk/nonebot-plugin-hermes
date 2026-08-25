@@ -203,3 +203,37 @@ def test_counts_by_scope_groups_private_and_group_scopes(store):
 
 def test_counts_by_scope_empty_store(store):
     assert store.counts_by_scope() == {}
+
+
+# ---------------------------------------------------------------------------
+# message_forwards 附表(折叠消息全文)
+# ---------------------------------------------------------------------------
+
+
+def test_append_stores_forward_content(store):
+    msg = _msg(ts=100, content='x <forwarded_messages count="2" preview="A / B"/>')
+    msg.forward_content = '<forwarded_messages count="2">\nA: hi\nB: yo\n</forwarded_messages>'
+    store.append(msg)
+    got = store.get_recent(adapter="ob11", group_id="g1", limit=5)
+    assert got[0].forward_content == msg.forward_content
+
+
+def test_append_without_forward_content_writes_no_row(store):
+    store.append(_msg(ts=100))
+    n = store._conn.execute("SELECT COUNT(*) AS c FROM message_forwards").fetchone()["c"]
+    assert n == 0
+
+
+def test_get_recent_forward_content_none_for_plain_messages(store):
+    store.append(_msg(ts=100))
+    got = store.get_recent(adapter="ob11", group_id="g1", limit=5)
+    assert got[0].forward_content is None
+
+
+def test_vacuum_cascades_to_message_forwards(store):
+    msg = _msg(ts=100)
+    msg.forward_content = '<forwarded_messages count="1">\nA: x\n</forwarded_messages>'
+    store.append(msg)
+    store.vacuum(min_ts=200, max_rows=100)
+    n = store._conn.execute("SELECT COUNT(*) AS c FROM message_forwards").fetchone()["c"]
+    assert n == 0

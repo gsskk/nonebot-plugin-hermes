@@ -31,6 +31,10 @@ class BufferedMessage:
     id: int | None = None
     """DB 主键。perception 构造时为 None,MessageStore.append 写入后回填。
     handlers 不应直接读写;由 MessageStore.append 管控。"""
+    forward_content: str | None = None
+    """合并转发的完整展开块(<forwarded_messages>…</forwarded_messages>)。
+    content 里只存单行 preview;全文走 message_forwards 附表,由
+    MessageStore.append 写入、get_recent 水合。无折叠消息时恒为 None。"""
 
 
 _PRIVATE_KEY_PREFIX = "@private:"
