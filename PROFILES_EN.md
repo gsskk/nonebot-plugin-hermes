@@ -1,350 +1,349 @@
-# Per-group endpoint routing (profiles / multiplexing)
+# Per-Group Endpoint Routing (Profiles / Multiplexing)
 
-> 0.5.1+, off by default. Extracted from the [README](README_EN.md) into its own page.
+> **Applies to**: `0.5.1+` (disabled by default). Extracted from [README_EN.md](README_EN.md) into a standalone guide.
 
-Route specific groups to their own Hermes **profile**, so each of those groups gets its own toolset,
-model and file workspace.
-
-**First check this is what you want:** if you only need the bot to stop mentioning group A's business
-in group B, `HERMES_HONCHO_ENABLED` (the "Long-term Memory Scope" section in the README) is enough —
-single process, no deployment change, no per-group profile to maintain. This section solves a
-different problem: **group A can only look things up, group B may run code**. It happens to isolate
-memory too (each profile has its own state.db), at the price of one more `HERMES_HOME` to maintain
-per endpoint.
-
-The reverse channel (`push_message`, etc.) derives its permission scope from this same routing table
-and narrows per endpoint — see "The reverse channel narrows automatically" below.
+Route specific groups to their own Hermes **profiles**, allowing different groups to have **dedicated toolsets, LLM models, system prompts, and file workspaces**.
 
 ---
 
-## Plugin-side configuration
+## 1. Overview & When to Use
 
-```dotenv
-# Keys are {adapter}:{group_id}; unlisted groups and all private chats use HERMES_API_URL
-HERMES_GROUP_ENDPOINTS='{"onebotv11:12345": {"url": "http://127.0.0.1:8642/p/team-a", "key": "<team-a API_SERVER_KEY>"}}'
+### Confirm Whether This Fits Your Needs
+
+| Scenario | Recommended Approach | Operational Cost |
+|---|---|---|
+| **Only prevent memory cross-talk**<br>(e.g., Bot shouldn't mention Group A's discussions in Group B) | Enable **Honcho Long-Term Memory Scope**<br>(Set `HERMES_HONCHO_ENABLED=true`, see README) | Minimal (single process, no deployment changes, no extra profiles to maintain) |
+| **Isolate capabilities, models, or permissions per group**<br>(e.g., Group A has search-only tools, Group B has code execution; or different model backends) | Enable **Profile Routing** (this guide) | Moderate (manage a dedicated profile per endpoint: `HERMES_HOME`, provider keys, configs) |
+
+> [!NOTE]
+> Profile routing not only isolates tools and models, but also isolates memory naturally (each profile maintains its own `state.db`). Concurrently, reverse channel permissions (such as `push_message`) automatically narrow to the groups routed to that profile.
+
+---
+
+### Core Architecture & Workflow
+
+```mermaid
+flowchart TD
+    subgraph NoneBot ["NoneBot Plugin (nonebot-plugin-hermes)"]
+        G1["Group A (10001)"] -->|"Route match: /p/team-a"| R1["Forward Call (with team-a Key)"]
+        G2["Default Groups / DMs"] -->|"Not in routing table"| R2["Default Call (with Global Key)"]
+        MCP["MCP Reverse Channel Auth<br/>(Verifies Bearer Key against allowed groups)"]
+    end
+
+    subgraph Hermes ["Hermes Gateway (Multiplexing Mode, default port 8642)"]
+        GW["Multiplexing Gateway<br/>(gateway.multiplex_profiles: true)"]
+        PA["Profile: team-a<br/>(Dedicated: Code Execution / Advanced Model)"]
+        PD["Default Profile (default)<br/>(Basic: Read-only Search / General Model)"]
+    end
+
+    R1 -->|"http://...:8642/p/team-a"| GW
+    R2 -->|"http://...:8642"| GW
+    GW -->|"Dispatch to team-a"| PA
+    GW -->|"Dispatch to default"| PD
+
+    PA -.->|"Reverse Push (Bearer: team-a Key)"| MCP
+    MCP -.->|"Strictly Scoped: Only allowed to push to Group A"| G1
 ```
 
-Both deployment shapes share the same `url` field:
+---
 
-| Shape | On the Hermes side | `url` |
-|-------|--------------------|-------|
-| Multiplexed (recommended) | `hermes config set gateway.multiplex_profiles true`, then restart the gateway | `http://host:8642/p/<profile>` |
-| Separate processes | one api server per profile | `http://host:8643` (its own port) |
+## 2. The Three Keys Demystified
 
-An empty `key` falls back to the global `HERMES_API_KEY`; an empty `timeout` falls back to
-`HERMES_API_TIMEOUT`.
+When setting up per-group routing, credentials are the most common source of confusion. Understand the purpose of each key:
 
-> [!WARNING]
-> **Profile names must be lowercase** (`[a-z0-9][a-z0-9_-]{0,63}`). `hermes profile create TeamA`
-> normalizes the name before writing it to disk (`profiles/teama/`), but the URL prefix is **not**
-> normalized — upstream only `strip()`s it and compares against the on-disk directory names, so
-> `/p/TeamA/` against `profiles/teama/` is a hard **404**. Use `-` or `_` to separate words.
+| Key Name | Validated By | Stored In | Description |
+|---|---|---|---|
+| **LLM Provider Key**<br>(e.g., `ANTHROPIC_API_KEY`) | Model Provider | `profiles/<name>/.env` | Used by the Hermes Agent for LLM inference (under multiplexing, sub-profiles **do not** inherit host environment variables; mandatory). |
+| **Hermes Inbound Key**<br>(`API_SERVER_KEY`) | Hermes Gateway | `profiles/<name>/.env` | Protects the `/p/<name>` endpoint; Hermes validates incoming requests against this key. |
+| **Plugin Route & Reverse Key** | NoneBot Plugin | NoneBot's `.env` | Presented to Hermes on forward requests; presented back to NoneBot as a Bearer token during reverse MCP calls to identify permitted group scopes. |
 
 > [!IMPORTANT]
-> **When the url points at a named profile, `key` is mandatory** — different from the default
-> profile's and at least 16 characters. Three reasons: upstream validates that profile's own
-> `API_SERVER_KEY` (the global key always 401s); it doubles as the reverse channel's identity (below);
-> and it is **the only alarm for "I forgot to enable `gateway.multiplex_profiles`"** — with
-> multiplexing off, upstream **silently ignores** the `/p/<profile>/` prefix and serves the request as
-> the default profile, so only a key mismatch turns that into a visible 401 instead of "everything
-> looks fine" with zero isolation.
+> **The only value that must match on both sides is `API_SERVER_KEY`:**
+> 1. Set on the NoneBot side in `HERMES_GROUP_ENDPOINTS[...].key`;
+> 2. Set on the Hermes side in the profile's `.env` as `API_SERVER_KEY`;
+> 3. Used as the Bearer token when the profile connects to the NoneBot MCP reverse channel.
+>
+> Must be **at least 16 characters long** and distinct from the default profile's key.
 
 ---
 
-## Worked example: several groups, some sharing one profile
+## 3. Step-by-Step Setup Guide
 
-This is the most common — and most often misconfigured — shape: **a few groups share one profile**,
-while some others each use a different profile. The one sentence to internalize first:
+### Step 1: Enable Multiplexing on Hermes (One-Time Setup)
 
-> **The number of named MCP servers the reverse channel needs is decided by the number of distinct
-> profiles / distinct keys, not the number of groups.** Groups that share a key fall into the same
-> scope automatically, and one server covers all of them.
+Multiplexing allows a **single gateway process** to serve the default profile and all sub-profiles simultaneously. Sub-profiles are accessed via the `/p/<profile>/` URL path prefix.
 
-Suppose 6 groups are in the routing table. Four of them (`10001`–`10004`) share profile **team-a**
-(the same `API_SERVER_KEY`); the other two (`10005`, `10006`) use profile **lab** (a different key).
-Every other group and all private chats use the default endpoint. → **2 named profiles**, so the
-reverse channel needs **2 named servers** (`nonebot-team-a`, `nonebot-lab`) plus one `nonebot-default`
-for the complement — **not 6**.
-
-**① Plugin-side `.env`** (`HERMES_GROUP_ENDPOINTS` must be a **single line** in `.env`; wrapped here
-for readability):
-
-```jsonc
-{
-  "onebotv11:10001": { "url": "http://10.0.0.2:8642/p/team-a", "key": "<team-a API_SERVER_KEY>" },
-  "onebotv11:10002": { "url": "http://10.0.0.2:8642/p/team-a", "key": "<team-a API_SERVER_KEY>" },
-  "onebotv11:10003": { "url": "http://10.0.0.2:8642/p/team-a", "key": "<team-a API_SERVER_KEY>" },
-  "onebotv11:10004": { "url": "http://10.0.0.2:8642/p/team-a", "key": "<team-a API_SERVER_KEY>" },
-  "onebotv11:10005": { "url": "http://10.0.0.2:8642/p/lab",    "key": "<lab API_SERVER_KEY>" },
-  "onebotv11:10006": { "url": "http://10.0.0.2:8642/p/lab",    "key": "<lab API_SERVER_KEY>" }
-}
-```
-
-For groups on the same profile, fill in the **exact same** `url` and `key`. Giving them different keys
-triggers a startup WARNING ("one endpoint configured with several different keys, at least one will
-401") and splits them into two reverse-channel scopes.
-
-**② The Hermes default profile** (`~/.hermes/config.yaml`) — every MCP connection and token is
-established here:
-
-```yaml
-mcp_servers:
-  nonebot-default: { url: http://<bot>:8643/mcp, headers: { Authorization: "Bearer <global HERMES_API_KEY>" } }
-  nonebot-team-a:  { url: http://<bot>:8643/mcp, headers: { Authorization: "Bearer <team-a API_SERVER_KEY>" } }
-  nonebot-lab:     { url: http://<bot>:8643/mcp, headers: { Authorization: "Bearer <lab API_SERVER_KEY>" } }
-
-platform_toolsets:
-  api_server: [<default's existing toolsets>, nonebot-default]   # the default profile lists only its own name
-```
-
-**③ team-a** (`~/.hermes/profiles/team-a/config.yaml`) — only **references** its own name:
-
-```yaml
-platforms:
-  api_server: { enabled: false }                    # port-binding platforms stay on the default profile
-platform_toolsets:
-  api_server: [<team-a's toolsets>, nonebot-team-a]
-mcp_servers:
-  nonebot-team-a: { url: http://<bot>:8643/mcp }    # the name is what enables it; url/headers are inert here
-```
-
-**④ lab** (`~/.hermes/profiles/lab/config.yaml`) is analogous — swap `team-a` for `lab`, reference
-`nonebot-lab`.
-
-The result: the agents of team-a's four groups only see `mcp__nonebot_team_a__*`, and their requests
-carry team-a's token → the plugin resolves the scope to "groups owned by team-a" = exactly those four;
-lab likewise. Why this is sufficient is explained below.
-
----
-
-## The original default endpoint does not go away
-
-With multiplexing on, the listener is still owned by the **default profile**: the old prefix-less URL
-and the old key keep working, and `API_SERVER_KEY` supplied through systemd `Environment=` / docker
-`environment:` still resolves (upstream keeps an `os.environ` fallback for the default profile's
-credential read). Only **newly added named profiles** need their key in their own profile `.env`.
-
----
-
-## What to do on the Hermes side
-
-Once, on the **default profile** (it is the multiplexer):
+Run once on the host under the **default profile**:
 
 ```bash
 hermes config set gateway.multiplex_profiles true
 hermes gateway restart
 ```
 
-With multiplexing on, do **not** run `hermes gateway start` for a secondary profile. A secondary
-profile's own config.yaml should look like this:
+> [!TIP]
+> With multiplexing enabled, **do not** run `hermes gateway start` for secondary profiles. All requests are routed and handled by the default gateway multiplexer.
+
+> [!NOTE]
+> The `config set` above prints `⚠ 'gateway.multiplex_profiles' is not a recognized config key — it was saved anyway`. **This warning is spurious**: the value is written and the runtime does read it; the key simply is not in the validator's table of known `gateway` sub-keys. Current versions offer no "Did you mean" suggestion — do not rename the key because of it.
+
+---
+
+### Step 2: Create and Configure the Secondary Profile
+
+Taking a profile named `team-a` as an example:
+
+```bash
+# 1. Create the secondary profile (name must be strictly lowercase)
+hermes profile create team-a
+
+# 2. Configure model vendor keys for this profile
+team-a setup
+
+# 3. Generate and set the API_SERVER_KEY (used for authentication between NoneBot and Hermes)
+TEAM_HOME=~/.hermes/profiles/team-a
+echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env
+
+# 4. (Optional) Install skills specific to this profile
+HERMES_HOME=$TEAM_HOME hermes-install-skill
+```
+
+Next, edit `$TEAM_HOME/config.yaml` to restrict toolsets for this group:
 
 ```yaml
-# ~/.hermes/profiles/team-a/config.yaml — the SECONDARY profile's, not the default's
-platforms:
+# ~/.hermes/profiles/team-a/config.yaml
+platform_toolsets:
   api_server:
-    enabled: false                     # port-binding platforms stay on the default profile
-
-mcp_servers:
-  nonebot-team-a:                      # the name is what enables it; url/headers are inert here
-    url: http://<bot>:8643/mcp
-
-platform_toolsets:
-  api_server: [<this profile's existing toolsets>, nonebot-team-a]   # omit it and the profile
-                                                                     # gets no reverse channel
+    - terminal
+    - file
+    - code_execution
 ```
 
-And the matching default profile — every MCP connection and token is established there:
+---
+
+### Step 3: Configure Group Routing in NoneBot
+
+In your NoneBot project's `.env`, configure `HERMES_GROUP_ENDPOINTS`:
+
+- Keys follow the format `{adapter}:{group_id}` (e.g. `onebotv11:10001`);
+- Values are objects with `url` and `key`;
+- **Any group not listed (and all private chats)** seamlessly fallback to the global `HERMES_API_URL` and `HERMES_API_KEY`.
+
+```dotenv
+# Note: Must be formatted as a single-line JSON string in .env (wrapped here for readability)
+HERMES_GROUP_ENDPOINTS='{
+  "onebotv11:10001": {
+    "url": "http://127.0.0.1:8642/p/team-a",
+    "key": "<team-a API_SERVER_KEY>"
+  }
+}'
+```
+
+---
+
+### Step 4 (Optional): Configure MCP Reverse Channel Scoping
+
+If agents need to push messages proactively (`push_message`) or fetch history (`get_recent_messages`), configure the reverse channel.
+
+#### Automatic Scope Narrowing
+NoneBot's reverse channel has **no secondary token table**; it directly inspects the `API_SERVER_KEY`:
+- **Presenter holds `team-a`'s Key**: NoneBot strictly restricts calls to **groups routed to `team-a`**;
+- **Presenter holds global `HERMES_API_KEY`**: Restricts calls to the **complement** (groups not in the routing table, or whose entry has no key of its own);
+- **Any unrecognized token**: Rejected with HTTP 401.
+
+#### MCP Configuration Rules (Self-Contained & Globally Unique Names)
+Under multiplexing, MCP configuration is split as follows:
+
+1. **Secondary Profile Config** (`~/.hermes/profiles/team-a/config.yaml`):
+   ```yaml
+   # 1. Define its own reverse connection (server name must be unique across the process)
+   mcp_servers:
+     nonebot-team-a:
+       url: http://<nonebot-host>:8643/mcp
+       headers:
+         Authorization: "Bearer ${API_SERVER_KEY}"  # Reads from this profile's .env
+
+   # 2. Explicitly grant this profile access to its own reverse channel
+   platform_toolsets:
+     api_server:
+       - terminal
+       - nonebot-team-a   # listing it narrows to an allowlist; list none and every enabled server applies
+   ```
+
+2. **Default Profile Config** (`~/.hermes/config.yaml`):
+   ```yaml
+   # The default profile only defines its own nonebot-default server; do not declare secondary servers here!
+   mcp_servers:
+     nonebot-default:
+       url: http://<nonebot-host>:8643/mcp
+       headers:
+         Authorization: "Bearer <global HERMES_API_KEY>"
+
+   platform_toolsets:
+     api_server:
+       - <existing toolsets>
+       - nonebot-default
+   ```
+
+> [!TIP]
+> **MCP Server Naming Principle**: Each profile's MCP connection must be **self-contained**, and server names must be unique across the entire Hermes process (e.g. `nonebot-team-a`, `nonebot-lab`). The default profile must not define servers on behalf of secondary profiles, or the secondary profile's discovery will be skipped.
+
+> [!TIP]
+> If a profile needs no reverse channel at all, put the special `no_mcp` sentinel in its `platform_toolsets.api_server`: every MCP tool is then off for that profile. This is more explicit than omitting the name — listing no server name at all actually enables every server enabled in that profile's own config.
+
+> [!NOTE]
+> Once configured, the plugin logs an **INFO**-level notice on every startup (triggered whenever `HERMES_MCP_ENABLED=true` and the routing table contains a `/p/` url). It fires **even on a completely correct setup** — the plugin cannot verify from its own side how the Hermes end is configured, so it is INFO rather than WARNING (an alarm on every correct boot only breeds fatigue). Ignore it once you have configured things; the real failure signal is the `拒绝越权操作` WARNING at push time (see section 5).
+
+---
+
+## 4. Complete Worked Example
+
+### Scenario
+- Groups `10001`, `10002`, `10003`, `10004`: Dev team, sharing profile `team-a` (with code execution enabled).
+- Groups `10005`, `10006`: Lab/trial team, sharing profile `lab` (with web search only).
+- All other groups and private chats: Routed to the default profile.
+
+> [!IMPORTANT]
+> Although 6 groups are routed, there are only 2 distinct named profiles. Therefore, the reverse channel only needs **2 named servers** (`nonebot-team-a`, `nonebot-lab`) plus 1 complement server (`nonebot-default`) — **not 6 servers**.
+
+---
+
+### ① NoneBot Side: `.env`
+
+```dotenv
+# .env (must be on a single line in production)
+HERMES_GROUP_ENDPOINTS='{
+  "onebotv11:10001": { "url": "http://10.0.0.2:8642/p/team-a", "key": "sk-team-a-secret-key-16chars-min" },
+  "onebotv11:10002": { "url": "http://10.0.0.2:8642/p/team-a", "key": "sk-team-a-secret-key-16chars-min" },
+  "onebotv11:10003": { "url": "http://10.0.0.2:8642/p/team-a", "key": "sk-team-a-secret-key-16chars-min" },
+  "onebotv11:10004": { "url": "http://10.0.0.2:8642/p/team-a", "key": "sk-team-a-secret-key-16chars-min" },
+  "onebotv11:10005": { "url": "http://10.0.0.2:8642/p/lab",    "key": "sk-lab-secret-key-16chars-min" },
+  "onebotv11:10006": { "url": "http://10.0.0.2:8642/p/lab",    "key": "sk-lab-secret-key-16chars-min" }
+}'
+```
+
+---
+
+### ② Hermes Default Profile (`~/.hermes/config.yaml`)
 
 ```yaml
-# ~/.hermes/config.yaml — the DEFAULT profile
 mcp_servers:
-  nonebot-default:                     # the complement: groups not in the routing table
-    url: http://<bot>:8643/mcp
-    headers: { Authorization: "Bearer <global HERMES_API_KEY>" }
-  nonebot-team-a:                      # groups owned by team-a
-    url: http://<bot>:8643/mcp
-    headers: { Authorization: "Bearer <team-a's API_SERVER_KEY>" }
+  nonebot-default:
+    url: http://10.0.0.1:8643/mcp
+    headers:
+      Authorization: "Bearer <global HERMES_API_KEY>"
 
 platform_toolsets:
-  api_server: [<your existing toolsets>, nonebot-default]   # the default profile lists only its own
+  api_server:
+    - web
+    - nonebot-default
 ```
 
-Besides `api_server`, the same disable rule covers `webhook`, `msgraph_webhook`, `wecom_callback`,
-`bluebubbles`, `sms`, `whatsapp_cloud`, `line`, and `feishu` when `connection_mode: webhook`.
-`hermes profile create --clone` copies the default profile's config.yaml wholesale, so always check
-this entry. Leave it on and the gateway startup log repeats `Skipping secondary profile '<name>' due
-to port-binding config error` and **every** adapter of that profile stays down — while `/p/<name>/`
-keeps working, which is why the warning is easy to dismiss as noise.
+---
 
-The `mcp_servers` / `platform_toolsets` blocks are only needed if you use the reverse channel; the
-trade-offs are under "The reverse channel narrows automatically" below. Conversely, if you picked the
-"separate processes" shape, leave multiplexing **off**.
+### ③ Hermes `team-a` (`~/.hermes/profiles/team-a/config.yaml`)
 
-The `Next steps` block printed by `hermes profile create` ends with `<name> gateway start`, which is
-written for the default one-process-per-profile shape — **do not run it under multiplexing** (do run
-`<name> setup`; `<name> chat` is a cheap way to confirm its key works). Upstream does guard against it
-and points you at the default profile's `hermes gateway restart`, but that guard is not insurance: it
-only fires while the **default gateway is running** (with it stopped, the command happily starts a
-separate process and you double-bind once the multiplexer comes back — two pollers on one bot token,
-port conflicts), and only when the profile is inside `multiplex_profile_allowlist`; an excluded profile
-is waved through.
+```yaml
+mcp_servers:
+  nonebot-team-a:
+    url: http://10.0.0.1:8643/mcp
+    headers:
+      Authorization: "Bearer ${API_SERVER_KEY}"  # Reads from this profile's .env
 
-`hermes config set gateway.multiplex_profiles true` may print `not a recognized config key` and
-suggest `gateway.multiplex_profile_allowlist` — **do not follow that suggestion**. The key *is* read at
-runtime (`gateway/config.py` has a branch specifically for it, whose comment names this exact
-command); the warning is only the upstream CLI's key table missing the nested form. To silence it, use
-the equivalent top-level form `hermes config set multiplex_profiles true`, or pass `--force`.
-`multiplex_profile_allowlist` is a different setting — which named profiles the multiplexer serves.
-**Leaving it unset serves all of them**; setting it to `[]` (or to a malformed value, which fails safe
-to `[]`) serves only the default profile and your `/p/team-a/` will 404.
+platform_toolsets:
+  api_server:
+    - terminal
+    - file
+    - code_execution
+    - nonebot-team-a
+```
+Corresponding `~/.hermes/profiles/team-a/.env`:
+```dotenv
+ANTHROPIC_API_KEY=sk-ant-api03-...
+API_SERVER_KEY=sk-team-a-secret-key-16chars-min
+```
 
-After restarting, confirm the prefix really took effect (the only ground truth):
+---
+
+### ④ Hermes `lab` (`~/.hermes/profiles/lab/config.yaml`)
+
+```yaml
+mcp_servers:
+  nonebot-lab:
+    url: http://10.0.0.1:8643/mcp
+    headers:
+      Authorization: "Bearer ${API_SERVER_KEY}"
+
+platform_toolsets:
+  api_server:
+    - web
+    - nonebot-lab
+```
+Corresponding `~/.hermes/profiles/lab/.env`:
+```dotenv
+OPENAI_API_KEY=sk-proj-...
+API_SERVER_KEY=sk-lab-secret-key-16chars-min
+```
+
+---
+
+## 5. Verification & Health Checks
+
+### 1. Verify Profile Endpoint & Auth (Ground Truth)
+
+Test the Hermes models endpoint with `curl`:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' \
-  -H "Authorization: Bearer <team-a's own API_SERVER_KEY>" \
+  -H "Authorization: Bearer <team-a API_SERVER_KEY>" \
   http://<hermes-host>:8642/p/team-a/v1/models
-# 200 = live; 401 = prefix silently ignored (served as the default profile, i.e. not enabled);
-# 404 = prefix rejected (profile missing, or excluded by the allowlist)
 ```
 
-Per new endpoint:
-
-```bash
-export TEAM_HOME=~/.hermes/profiles/team-a
-
-hermes profile create team-a                       # own state.db / memory / skills / config.yaml
-team-a setup                                       # its own LLM provider key — see the WARNING below
-echo "API_SERVER_KEY=$(openssl rand -hex 32)" >> $TEAM_HOME/.env   # must differ from the default profile
-
-# what this group is allowed to do — the one thing this feature cannot be replaced for.
-# Edit platform_toolsets.api_server in $TEAM_HOME/config.yaml; see the toolset table under
-# "Security Best Practice: Restricting API Server Toolsets" in the README.
-
-HERMES_HOME=$TEAM_HOME hermes-install-skill       # skills are installed per profile
-
-# Reverse channel: only for profiles that need it. **The two deployment shapes differ here** —
-# under multiplexing the Bearer must be configured on the DEFAULT profile and the header written
-# here has no effect (see "The reverse channel narrows automatically" below). The line below is the
-# separate-processes shape:
-HERMES_HOME=$TEAM_HOME hermes mcp add nonebot --url http://<bot>:8643/mcp
-#   use the API_SERVER_KEY above as the Bearer token
-```
-
-**The only value that must match on both sides is that `API_SERVER_KEY`**: on the plugin side it goes
-into `HERMES_GROUP_ENDPOINTS[...].key`; on the Hermes side it is both the profile's `API_SERVER_KEY`
-and its MCP token. Rotating it means editing two places and covers both directions.
-
-`hermes profile create` also drops a wrapper at `~/.local/bin/<name>` containing
-`exec hermes -p <name> "$@"`, which means:
-
-- **the profile name becomes a shell command.** Only `hermes` / `test` / `tmp` / `root` / `sudo` are
-  reserved, so names like `web`, `top` or `docker` are accepted and will shadow the real command if
-  `~/.local/bin` comes first on PATH — run `command -v <name>` before picking a name.
-- hermes subcommands for that profile can then be written as `team-a config set …` /
-  `team-a mcp add …` instead of `HERMES_HOME=… hermes …`. But `hermes-install-skill` is **this
-  plugin's** own CLI, not a hermes subcommand, so it still needs `HERMES_HOME=`.
-
-> [!WARNING]
-> **Under multiplexing a named profile needs its own LLM provider key** — the model vendor's API key
-> (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `NOUS_API_KEY` /
-> `GEMINI_API_KEY`, …). Without it the agent cannot issue a single inference call. Note that this is
-> a different key from the other two in this section:
->
-> | Key | Who validates it | Where it lives |
-> |---|---|---|
-> | LLM provider key (e.g. `ANTHROPIC_API_KEY`) | the model vendor | `profiles/<name>/.env` |
-> | `API_SERVER_KEY` | Hermes' own api_server inbound auth | `profiles/<name>/.env` |
-> | the plugin's `HERMES_API_KEY` / entry `key` | same as above — it is what the plugin presents | the bot's `.env` |
->
-> `hermes profile create` ends with a hint saying it will otherwise "inherit keys from your shell
-> environment" — that only holds for single-profile deployments. With multiplexing on, credential
-> reads are authoritative to the profile's secret scope and do **not** fall back to `os.environ` (the
-> global exemption list only covers deployment-ish vars like PATH / HOME /
-> `API_SERVER_HOST|PORT|ENABLED` — no API keys at all). A profile with an empty `.env` cannot run a
-> single turn. Run `<name> setup`, or write the key straight into `profiles/<name>/.env`. **The same
-> rule covers every credential that profile uses**, not just the LLM one — search
-> (`EXA_API_KEY`, …), image generation and memory-provider keys all have to be in its own `.env`.
+| HTTP Status | Diagnosis |
+|---|---|
+| **`200`** | **Working properly**: Multiplexing is active and the key is valid. |
+| **`401`** | **Multiplexing is off** (the gateway silently ignored `/p/team-a` and checked default credentials) or **key mismatch**. |
+| **`404`** | **Profile not found** or excluded by `multiplex_profile_allowlist`. |
 
 ---
 
-## The reverse channel narrows automatically
+### 2. Check Plugin Status on NoneBot
 
-The reverse channel (`push_message` / `get_recent_messages` / `get_message_images` /
-`list_active_sessions`) has **no second token table**: whichever endpoint's key a caller presents, it
-may only act on that endpoint's groups; the global `HERMES_API_KEY` may only act on the
-**complement** (groups not in the routing table, or whose entry has no key of its own); anything else
-is a 401. With no routing table the complement is every group, i.e. exactly 0.5.0 behaviour.
-
-In other words: **a group you want protected must be in the routing table and point at a named
-profile**. Groups left in the complement are still readable and pushable by the holder of the
-complement key (the default profile).
-
-> [!IMPORTANT]
-> **Under multiplexing you can control *which* profile has the reverse channel, but not *which token*
-> it presents.** Upstream splits this into two layers:
->
-> | Layer | Whose config | When |
-> |---|---|---|
-> | **Connection** (does the process hold this MCP client) | the **default** profile's `config.yaml` | once at gateway startup, process-global registry |
-> | **Availability** (does the agent get those tools) | the **routed** profile's `config.yaml` | every request |
->
-> So, under multiplexing:
->
-> - **the Bearer must be configured on the default profile.** A `url` / `headers` written by
->   `hermes mcp add` inside a named profile never takes effect — a same-named server reuses the one
->   connection the default profile established.
-> - conversely, **whether a profile gets the reverse channel is its own call**: listing the server name
->   in its `platform_toolsets.api_server` turns it on; the special `no_mcp` sentinel turns off all MCP
->   tools for that profile; writing neither leaves its MCP name set empty, which also yields nothing.
->   This layer is read per request — no restart needed.
-> - with the most obvious setup (one `nonebot` server on the default profile) **the scope does not vary
->   per profile**: the plugin only ever sees that one shared token, usually the global
->   `HERMES_API_KEY` (scope = the complement), so no agent can push into a routed group — refused and
->   logged (fail-closed, but those groups effectively have no reverse channel).
->
-> **You can still get per-endpoint tokens under multiplexing.** MCP tool names are namespaced by server
-> name (`mcp__<server>__<tool>`), so the same URL may be connected more than once under different names
-> — exactly the `nonebot-default` / `nonebot-team-a` / `nonebot-lab` setup from the "Worked example"
-> above: one **same-URL, distinct-name, distinct-Bearer** server per endpoint on the default profile,
-> and each named profile declaring only its own name.
->
-> **The default profile must allowlist itself too**
-> (`platform_toolsets.api_server: [<existing toolsets>, nonebot-default]`), or it gets every server
-> name — and with it the ability to act on everyone else's groups.
->
-> Three costs: **the default profile's `config.yaml` holds every endpoint's token** (it owns all
-> connections — so the default profile must be trusted and toolset-restricted; an agent there that can
-> read files can read every token), one live connection per server name, and the name must match in both
-> files (a typo means that profile silently gets no tools). If the Bearer is written as a
-> `${MCP_*_API_KEY}` reference, the variable has to live in the **default profile's `.env`** —
-> interpolation happens when the connection is made at startup, in the default scope.
->
-> At startup `multiplex_reverse_channel_notices()` emits an **INFO**-level note whenever the routing
-> table contains a `/p/<profile>` url while `HERMES_MCP_ENABLED=true`, pointing at the setup above. It
-> is INFO rather than WARNING because the plugin cannot verify from its own side whether the Hermes end
-> is configured correctly — this note fires even on a correct setup, and a WARNING that fires on every
-> correct deployment only breeds alarm fatigue. **If you've configured it correctly, just ignore it.**
-> The real failure signal comes at push time: a precise `拒绝越权` (permission-denied) WARNING
-> (fail-closed) — that is the one to watch.
-
-Every refusal logs a WARNING on the bot side naming the caller's endpoint, its scope and the refused
-target — check that first when "the reverse channel stopped working for one group".
+- **User Command `/ping`**: Probes the endpoint mapped to the current chat session.
+- **Admin Command `/hermes-status`**: Conducts a health check across all endpoints in the routing table.
+- **Startup Diagnostics**: The plugin validates the routing table at boot. Any invalid URLs, keys under 16 characters, or conflicting keys on the same URL will be logged as clear `WARNING`s.
 
 ---
 
-## Operational cost and known limits
+### 3. Verify Reverse Channel Permission Scope
 
-- Each profile is a full `HERMES_HOME`: `hermes-repair-sessions` must be run per profile, and skill
-  upgrades installed per profile.
-- **After changing a group's routing entry, run `/clear` in that group**: session lineage carries no
-  endpoint dimension, so the old session id does not exist in the new profile — upstream silently
-  starts a fresh one and the same session name ends up in two state.db files.
-- `/ping` probes only the caller's own endpoint (it is open to regular users, so it must not list
-  other groups' routing keys); the per-endpoint roll-call lives in the admin-only `/hermes-status`.
-- The startup capability probe (`/v1/capabilities`) only covers the default endpoint, so an outdated
-  Hermes behind a named profile will not be flagged.
-- Startup logs WARN per entry for: keys that can never match, non-http(s) urls, a missing key, a key
-  shorter than 16 chars, and one endpoint configured with several different keys.
-- `session_search` is still a separate cross-group channel: profiles separate it naturally; without
-  profiles, remove that tool from `platform_toolsets.api_server`.
+If a profile attempts to push messages to a group outside its allowed scope, NoneBot denies the request and logs a warning:
+```
+[WARNING] [HERMES MCP] 拒绝越权操作 (onebotv11, 10005) —— caller: endpoint=http://10.0.0.2:8642/p/team-a groups=['onebotv11:10001', 'onebotv11:10002', ...]
+```
+The log line itself is emitted in Chinese — grep for `拒绝越权操作` when an agent's proactive
+messages are not arriving.
+
+---
+
+## 6. Key Rules & Common Pitfalls
+
+### 1. Profile Names Must Be Lowercase
+- **Requirement**: Use only lowercase alphanumeric characters, underscores, and dashes (`[a-z0-9_-]`).
+- **Reason**: Hermes creates on-disk directories in lowercase, and URL prefixes are compared **without case normalization**. Accessing `/p/TeamA/` against `profiles/teama/` will return **404**.
+- **Avoid Shadowing Commands**: `hermes profile create <name>` generates a CLI wrapper script at `~/.local/bin/<name>`. Run `command -v <name>` before naming to prevent shadowing common system utilities (such as `docker`, `top`, `web`).
+
+### 2. Credential Isolation Under Multiplexing
+- Under multiplexing, secondary profiles **do not inherit** `os.environ` from the host shell.
+- **All credentials required by a profile (LLM provider keys, search API keys, etc.) must be defined in its own `.env` file.**
+
+### 3. Port-Binding Platforms
+- Under multiplexing, inbound HTTP listeners are hosted exclusively by the default profile via shared listeners.
+- When cloning configurations (`--clone`), ensure that port-binding adapters in secondary profiles (e.g. `platforms.api_server`) are set to `enabled: false` to avoid startup warnings.
+
+### 4. Clear Sessions After Route Changes
+- If you change a group's profile in `HERMES_GROUP_ENDPOINTS`, run `/clear` in that group.
+- Otherwise, the old session ID will not be found in the new profile's `state.db`, resulting in a new session being silently spawned with identical names across distinct databases.
+
+### 5. `session_search` Cross-Group Security
+- Hermes provides a `session_search` tool for querying conversation history.
+- Profiles isolate `state.db` files by default. If multiple groups share a single profile and you do not want them searching each other's sessions, remove `session_search` from that profile's `platform_toolsets.api_server`.
