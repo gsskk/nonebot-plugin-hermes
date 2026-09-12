@@ -114,6 +114,26 @@ def _app(monkeypatch, tmp_path):
     store.close()
 
 
+def _reset_sse_shutdown_latch() -> None:
+    """清掉 sse_starlette 的进程级「已关停」闩锁。
+
+    它有个轮询 watcher 盯着 uvicorn Server 的 should_exit,一旦观察到为真就把
+    `AppStatus.should_exit` 置成 True 且**不再复位**;此后同进程内每个新建的 SSE
+    响应都会在开头自判「正在关停」而立即结束,表现成客户端的
+    "SSE stream ended without a response"。
+
+    我们靠 `should_exit = True` 停 server,于是第一个 server 一停就把后续所有用例
+    毒化了。是否踩中取决于 watcher 的轮询时机,所以现象是跨 Python 版本随机挂。
+    每次停完就把闩锁清掉,用例之间才互不影响。
+    """
+    try:
+        from sse_starlette.sse import AppStatus
+
+        AppStatus.should_exit = False
+    except Exception:  # pragma: no cover - 版本里没有这个闩锁就无需清
+        pass
+
+
 @contextlib.asynccontextmanager
 async def _serving(app):
     import uvicorn
@@ -134,6 +154,7 @@ async def _serving(app):
         server.should_exit = True
         with contextlib.suppress(Exception):
             await asyncio.wait_for(task, timeout=10)
+        _reset_sse_shutdown_latch()
 
 
 def _groups_from_tool_result(payload: str) -> set[str]:
