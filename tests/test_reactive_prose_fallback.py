@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -131,3 +132,108 @@ async def test_bystander_transport_error_never_forwarded_as_prose(monkeypatch):
     send_mock = await _run_bystander_turn(monkeypatch, result)
 
     assert send_mock.await_count == 0, "transport 错误的 raw 是报文,不能当散文发到群里"
+
+
+# 上游把 provider 的失败包成 200 + 报错正文当助手回复返回,于是这段报文没有 transport
+# 标记、也不含 "should_reply",恰好落进"纯散文"那一档被发进群 —— 连带报文里那条带
+# 时效凭据的媒体 URL。URL 用合成值,形状与真实报文一致即可。
+_PROVIDER_ERROR = (
+    "HTTP 400: Error from provider (Console Go): Upstream request failed: "
+    "[invalid_request_error] .messages[9].image[0]: Failed to download image from "
+    "https://media.example.invalid/download?appid=1407&fileid=SYNTHETIC-CREDENTIAL&sp"
+)
+
+
+class _ErrorBodyResponse:
+    """上游 200,但 content 是 provider 的报错正文。"""
+
+    status_code = 200
+    headers: ClassVar[dict] = {}
+
+    @staticmethod
+    def json():
+        return {"choices": [{"message": {"content": _PROVIDER_ERROR}}]}
+
+
+class _ErrorBodyClient:
+    def __init__(self, timeout=None):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None, headers=None):
+        return _ErrorBodyResponse()
+
+
+def test_provider_error_text_detection():
+    """前缀与特征词必须同时命中,否则会误伤正经聊到状态码或报错的回复。"""
+    from nonebot_plugin_hermes.core.hermes_client import is_provider_error_text
+
+    assert is_provider_error_text(_PROVIDER_ERROR)
+    assert not is_provider_error_text("")
+    # 只有前缀:用户问 HTTP 状态码含义,模型正经作答
+    assert not is_provider_error_text("HTTP 400: 这个状态码表示请求本身有问题喵")
+    # 只有特征词:群里在讨论报错,不是报错本身
+    assert not is_provider_error_text("刚才那条 invalid_request_error 是因为图拉不到喵")
+
+
+@pytest.mark.asyncio
+async def test_provider_error_returned_as_200_is_marked_transport(monkeypatch):
+    """200 外壳 + 错误正文 → 按传输失败处理,而不是当成模型的回答。"""
+    import httpx
+
+    from nonebot_plugin_hermes.core import hermes_client as client_mod
+
+    monkeypatch.setattr(httpx, "AsyncClient", _ErrorBodyClient)
+
+    result = await client_mod.hermes_client.chat(
+        text="在吗",
+        session_key="s-1",
+        user_id="u1",
+        group_id="g1",
+        adapter_name="ob11",
+        is_private=False,
+        expect_structured=True,
+        structured_tool_name="submit_decision",
+    )
+    assert result.is_transport_error is True
+    assert result.parse_failed is True
+    # 不标成持久化失败:那条路会拿同一个 key 重试,而这里重试必然同样失败
+    assert result.is_persistence_error is False
+
+
+@pytest.mark.asyncio
+async def test_bystander_provider_error_is_not_forwarded(monkeypatch):
+    """整条链路:200 错误正文 → 不发进群,凭据 URL 也不外泄。"""
+    import httpx
+
+    from nonebot_plugin_hermes.config import plugin_config
+    from nonebot_plugin_hermes.handlers import message as handler_mod
+
+    monkeypatch.setattr(httpx, "AsyncClient", _ErrorBodyClient)
+    monkeypatch.setattr(plugin_config, "hermes_reactive_post_reply_cooldown_sec", 0)
+
+    now = int(time.time() * 1000)
+    _mcp.active_sessions.trigger("ob11", "g1", "seed", now_ms=now)
+    send_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(handler_mod, "send_text_with_media", send_mock)
+
+    await handler_mod._handle_reactive_path(
+        bot=_fake_bot(),
+        target=_FakeTarget(id="g1", private=False),
+        adapter_name="ob11",
+        user_id="user-A",
+        group_id="g1",
+        text="这图是什么鸟",
+        image_urls=[],
+        is_explicit_trigger=False,
+        addressed_to_bot=False,
+        now_ms=now,
+    )
+
+    assert send_mock.await_count == 0, "provider 报错正文绝不能当散文发进群"
+    assert "SYNTHETIC-CREDENTIAL" not in str(send_mock.await_args_list)

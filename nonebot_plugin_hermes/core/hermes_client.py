@@ -486,6 +486,32 @@ _PERSISTENCE_LOCKED_PATTERNS = ("session storage was busy", "another hermes proc
 _PERSISTENCE_DISK_PATTERNS = ("free some space", "full disk", "disk full")
 
 
+# 上游会把 provider 的失败包成 200 + 报错正文当助手回复返回,而不是一个 HTTP 错误码。
+# 这段报文于是走到「模型确实说了点什么」的分支,被当成散文发进群 —— 既把内部报错摊给
+# 用户,也把报文里那条带时效凭据的媒体 URL 一起泄出去。与持久化中断同属一类:200 的
+# 外壳,错误的内容。
+_PROVIDER_ERROR_PREFIX_RE = re.compile(r"^\s*HTTP\s+\d{3}\s*:", re.IGNORECASE)
+_PROVIDER_ERROR_MARKERS = (
+    "error from provider",
+    "upstream request failed",
+    "invalid_request_error",
+)
+
+
+def is_provider_error_text(text: str) -> bool:
+    """检测回复内容是否为上游透传的 provider 报错(200 外壳 + 错误正文)。
+
+    前缀与特征词必须同时命中:只认前缀会把正经聊到状态码的回复误伤,只认特征词会把
+    讨论报错本身的对话误伤 —— 而误伤的代价是把用户想要的回答换成一句兜底。
+    """
+    if not text:
+        return False
+    if not _PROVIDER_ERROR_PREFIX_RE.match(text):
+        return False
+    lower = text.lower()
+    return any(marker in lower for marker in _PROVIDER_ERROR_MARKERS)
+
+
 def rotated_session_key(header_value: str | None, sent_key: str) -> str | None:
     """响应头里的有效 session id;缺失或与请求发出的 key 相同时返回 None(未轮换)。"""
     value = (header_value or "").strip()
@@ -754,6 +780,13 @@ class HermesClient:
                     persistence_cause=cause,
                 )
             )
+
+        if is_provider_error_text(raw_text):
+            preview = preview_raw(raw_text, head=200, tail=0)
+            logger.warning(
+                f"[HERMES] 上游以 200 返回了 provider 报错,按传输失败处理 (raw_len={len(raw_text)} preview={preview!r})"
+            )
+            return _out(ChatResult(raw_text=raw_text, parse_failed=True, is_transport_error=True))
 
         # 路径 B:从 raw_text 提取首个 {...} JSON5 块
         if expect_structured and structured_tool_name == "submit_decision":
