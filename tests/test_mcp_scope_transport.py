@@ -17,8 +17,49 @@ import contextlib
 import json
 import socket
 import time
+from contextlib import asynccontextmanager
 
 import pytest
+
+
+@asynccontextmanager
+async def _streamable_http(url: str, headers: dict[str, str]):
+    """打开一条 streamable-http 连接,统一 yield `(read, write, get_session_id)`。
+
+    MCP SDK 两代的客户端差三处:
+    - 1.x 的工厂叫 streamablehttp_client 且直接收 headers;2.x 删了这个名字,改成
+      streamable_http_client,headers 要挂到 httpx client 上。
+    - 2.x 依赖 httpx2,client 类型与 1.x 不同 —— 用两代都带的 create_mcp_http_client
+      建,就不必自己判 httpx 版本。
+    - 1.x yield 三元组(含 get_session_id),2.x 只 yield 读写两条流。session id 是
+      本测试的命门(要用同一个 id 换 token 再发一次),所以 2.x 下改从响应头
+      `mcp-session-id` 自己抓,对调用方保持同一个三元组形状。
+
+    部署侧装哪一代不由本仓库决定(插件常以源码目录部署,pyproject 的约束不生效),
+    所以这条传输层测试必须两边都能跑。
+    """
+    import mcp.client.streamable_http as mod
+
+    legacy = getattr(mod, "streamablehttp_client", None)
+    if legacy is not None:
+        async with legacy(url, headers=headers) as (read, write, get_session_id):
+            yield read, write, get_session_id
+        return
+
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    seen: dict[str, str] = {}
+
+    async def _capture(response) -> None:
+        sid = response.headers.get("mcp-session-id")
+        if sid:
+            seen["sid"] = sid
+
+    client = create_mcp_http_client(headers=headers)
+    client.event_hooks["response"].append(_capture)
+    async with client, mod.streamable_http_client(url, http_client=client) as streams:
+        yield streams[0], streams[1], lambda: seen.get("sid")
+
 
 _TEAM_A = "key-team-a-at-least-16"
 _TEAM_B = "key-team-b-at-least-16"
@@ -117,11 +158,10 @@ async def test_scope_follows_the_current_request_not_the_session_owner(_app):
     """
     import httpx
     from mcp.client.session import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
 
     async with (
         _serving(_app) as url,
-        streamablehttp_client(url, headers={"Authorization": f"Bearer {_TEAM_A}"}) as (
+        _streamable_http(url, {"Authorization": f"Bearer {_TEAM_A}"}) as (
             read,
             write,
             get_session_id,
@@ -130,6 +170,9 @@ async def test_scope_follows_the_current_request_not_the_session_owner(_app):
     ):
         await session.initialize()
         session_id = get_session_id()
+        # 没拿到 session id 这条测试就会空转通过(服务端会为原始 POST 另开一个
+        # session,断言照样成立却什么都没验到)。
+        assert session_id, "未取到 mcp-session-id,复用 session 换 token 这一步失去意义"
 
         first = await session.call_tool("list_active_sessions", {})
         assert {s["group_id"] for s in json.loads(first.content[0].text)["sessions"]} == {"g1"}
@@ -204,7 +247,6 @@ async def test_out_of_scope_read_is_a_normal_result_not_a_traceback(_app, caplog
     import logging
 
     from mcp.client.session import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
     from nonebot import logger as nb_logger
 
     caplog.set_level(logging.INFO)
@@ -216,7 +258,7 @@ async def test_out_of_scope_read_is_a_normal_result_not_a_traceback(_app, caplog
         async with (
             _serving(_app) as url,
             # 全局 key = 补集 scope;g1 被路由到 team-a,所以补集不含它。
-            streamablehttp_client(url, headers={"Authorization": f"Bearer {_GLOBAL}"}) as (read, write, _sid),
+            _streamable_http(url, {"Authorization": f"Bearer {_GLOBAL}"}) as (read, write, _sid),
             ClientSession(read, write) as session,
         ):
             await session.initialize()

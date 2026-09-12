@@ -10,6 +10,7 @@ from typing import Any
 
 import mcp.types as mcp_types
 from fastmcp import FastMCP
+from nonebot import logger
 from starlette.responses import JSONResponse
 
 from ..core.active_session import ActiveSessionManager
@@ -39,6 +40,90 @@ from .tools.push_message import (
     push_message_impl,
 )
 
+# capability 协商里要摘掉的 JSON-RPC 入口。FastMCP 的 _setup_handlers 无条件注册
+# list_resources / list_prompts / read_resource / get_prompt /
+# list_resource_templates,而 SDK 的 get_capabilities 按 handler 表里有没有这些 key
+# 决定声明哪些能力 —— 于是即使我们零个 resource/prompt,这两块能力照样被声明,
+# Hermes 等代理端会把每个方法包成 tool 暴露给 LLM(白占 tool/list 描述,且 LLM
+# 可能误调)。摘掉后协商结果才准确反映成「我只有 tools」。
+# FastMCP 顶层 mcp.list_resources() 等 Python API 不受影响 —— 那是 provider 层的
+# 方法,摘的是协议入口。
+_SUPPRESSED_REQUEST_TYPES = (
+    "ListResourcesRequest",
+    "ListResourceTemplatesRequest",
+    "ReadResourceRequest",
+    "ListPromptsRequest",
+    "GetPromptRequest",
+)
+
+
+def _method_literal(req_type: Any) -> str | None:
+    """取 request 类型自带的 JSON-RPC 方法名字面量(如 `resources/list`)。
+
+    比硬编码一份方法名表好:字面量由 SDK 自己声明,键的形态换了也不用跟着改。
+    """
+    try:
+        field = req_type.model_fields.get("method")
+    except Exception:
+        return None
+    default = getattr(field, "default", None)
+    return default if isinstance(default, str) else None
+
+
+def _suppress_unused_protocol_handlers(mcp: FastMCP) -> None:
+    """摘掉未实现的 resource/prompt 协议入口,让能力协商只声明 tools。
+
+    这是纯粹的 token 优化,**绝不允许拦住启动**:摘不掉的后果只是代理端多看到
+    几个空能力,而抛异常的后果是整个 bot 起不来。所以整段兜住异常并告警放行。
+
+    SDK 没有提供公开的移除入口,只能按名字探,而且**两个维度都变过**:
+    handler 表本身在 1.x 是公有 `request_handlers`、2.x 改成私有
+    `_request_handlers`;表的键在 1.x 是 request 类型、2.x 换成方法名字符串。
+    两种键都试着删,并统计实际删掉几个 —— 只按一种形态删会在另一形态下
+    静默失效(不抛错、也没关掉任何能力),那比直接报错更难发现。
+    """
+    try:
+        server = getattr(mcp, "_mcp_server", None)
+        handlers = None
+        for attr in ("request_handlers", "_request_handlers"):
+            candidate = getattr(server, attr, None)
+            if isinstance(candidate, dict):
+                handlers = candidate
+                break
+        if handlers is None:
+            logger.warning(
+                "[HERMES MCP] 未能定位 MCP SDK 的 request handler 表,"
+                "resource/prompt 能力将照常声明(只多占 tool/list 描述,不影响功能)"
+            )
+            return
+
+        removed = 0
+        missing: list[str] = []
+        for name in _SUPPRESSED_REQUEST_TYPES:
+            req_type = getattr(mcp_types, name, None)
+            if req_type is None:
+                missing.append(name)
+                continue
+            keys: list[Any] = [req_type]
+            method = _method_literal(req_type)
+            if method is not None:
+                keys.append(method)
+            for key in keys:
+                if handlers.pop(key, None) is not None:
+                    removed += 1
+
+        if missing:
+            logger.warning(f"[HERMES MCP] MCP SDK 无以下 request 类型,跳过摘除: {missing}")
+        if removed == 0:
+            logger.warning(
+                "[HERMES MCP] 未摘除任何 resource/prompt 协议入口,能力协商可能仍声明这两块"
+                "(只多占 tool/list 描述,不影响功能);handler 表的键形态可能又变了"
+            )
+        else:
+            logger.debug(f"[HERMES MCP] 已摘除 {removed} 个未用协议入口,能力协商只声明 tools")
+    except Exception as exc:
+        logger.warning(f"[HERMES MCP] 摘除未用协议入口失败,继续启动 ({type(exc).__name__}: {exc})")
+
 
 def build_mcp_app(
     *,
@@ -56,24 +141,7 @@ def build_mcp_app(
 
     mcp = FastMCP("nonebot-bridge")
 
-    # FastMCP 的 _setup_handlers 无条件注册 list_resources / list_prompts /
-    # read_resource / get_prompt / list_resource_templates 等 5 个 RequestType
-    # handler。MCP SDK 的 get_capabilities 据 request_handlers 是否含这些 key
-    # 决定声明哪些能力——所以即使我们零个 resource/prompt,这两块能力照样被
-    # 声明,Hermes 等代理端就把每个方法包装成 tool 暴露给 LLM(浪费 ~300 token
-    # 的 tool/list 描述,且 LLM 可能误调)。
-    # 把这些 RequestType 从字典 pop 出去,capability 协商就会准确反映成
-    # "我只有 tools",Hermes 重启后只注册我们真正实现的 3 个工具。
-    # FastMCP 顶层 mcp.list_resources() 等 Python API 不受影响——那是 provider
-    # 层的方法,删的是 JSON-RPC 协议入口。
-    for _req_type in (
-        mcp_types.ListResourcesRequest,
-        mcp_types.ListResourceTemplatesRequest,
-        mcp_types.ReadResourceRequest,
-        mcp_types.ListPromptsRequest,
-        mcp_types.GetPromptRequest,
-    ):
-        mcp._mcp_server.request_handlers.pop(_req_type, None)
+    _suppress_unused_protocol_handlers(mcp)
 
     # 注:三个工具的签名都是扁平参数(非 Pydantic model 包装)。FastMCP 单 model 入参
     # 会把 schema 暴露成 {properties: {input: {...}}},逼客户端 wrap 一层 input,
