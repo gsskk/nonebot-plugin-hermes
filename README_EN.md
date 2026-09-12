@@ -121,19 +121,30 @@ Copy the example config:
 cp .env.example .env
 ```
 
-Edit `.env`, main configurations:
+Edit `.env`. The following are the **minimum required configurations** to run this plugin (settings without which it cannot function):
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `HERMES_API_URL` | `http://127.0.0.1:8642` | Hermes API Server URL. Must be set if Hermes runs on another host or port |
+| `HERMES_API_KEY` | (Empty) | **Required** (must match `API_SERVER_KEY` in `~/.hermes/.env` on the Hermes host). Without it, session continuation will be rejected and context cannot be maintained across conversations |
+
+> [!NOTE]
+> In addition, at least one chat platform adapter must be configured (such as `ONEBOT_WS_URLS` for OneBot v11) to connect to chat platforms.
+
+Minimal `.env` example (using OneBot v11 forward WebSocket as an example):
 
 ```env
-# OneBot Forward WebSocket
+# Platform adapter connection (OneBot forward WS example)
 ONEBOT_WS_URLS=["ws://127.0.0.1:3001"]
 
-# Hermes API
+# Hermes API connection & auth
 HERMES_API_URL=http://127.0.0.1:8642
-HERMES_API_KEY=
-
-# Group chat trigger
-HERMES_GROUP_TRIGGER=at
+HERMES_API_KEY=your-api-server-key
 ```
+
+For all optional configuration parameters (triggers, allowlists, active sessions, reverse FastMCP channel, image inlining, storage, long-term memory, etc., covering 50+ parameters), see the dedicated configuration document:
+
+**→ [Full Configuration Documentation (All Optional Parameters)](CONFIG_EN.md)**
 
 ### 5. Run
 
@@ -542,69 +553,6 @@ gateway and run the repair — otherwise the next compression closes the parent 
 within a few turns. If a child looks like a genuinely continued session (its messages span far more
 than a single batch write), the script skips that session and reports it for a human to judge.
 
-## Configuration Options
-
-All configuration options are set via the `.env` file, see detailed comments in [.env.example](.env.example).
-
-| Option | Default | Description |
-|--------|--------|------|
-| `HERMES_API_URL` | `http://127.0.0.1:8642` | Hermes API Server URL |
-| `HERMES_API_KEY` | (Empty) | API Key (Recommended for session persistence) |
-| `HERMES_API_TIMEOUT` | `300` | API request timeout (seconds) |
-| `HERMES_GROUP_ENDPOINTS` | `{}` | Per-group endpoint table, keyed `{adapter}:{group_id}`, value `{"url": …, "key": …, "timeout": …}`. Empty = everything goes to `HERMES_API_URL`. Also the single source of the reverse channel's scope — see [PROFILES_EN.md](PROFILES_EN.md) |
-| `HERMES_GROUP_TRIGGER` | `at` | Group trigger mode: `at` / `all` / `keyword` |
-| `HERMES_KEYWORDS` | `["/ai"]` | Trigger keywords for `keyword` mode |
-| `HERMES_PRIVATE_TRIGGER` | `all` | Private trigger mode: `all` / `allowlist` |
-| `HERMES_ALLOW_USERS` | `[]` | Allowed user IDs for `allowlist` mode |
-| `HERMES_ALLOW_GROUPS` | `[]` | Allowed group IDs (empty for all) |
-| `HERMES_ADMIN_USERS` | `[]` | Admin allowlist as `["telegram:<user_id>", "onebotv11:<user_id>"]`. **Empty = deny by default**; sensitive commands like `/hermes-status` only run if the caller's `adapter:user_id` is in this list |
-| `HERMES_SESSION_SHARE_GROUP` | `false` | Share session within group |
-| `HERMES_HONCHO_ENABLED` | `false` | **Not recommended yet** (limited benefit today, adds extra token cost — see "Long-term Memory Scope" above). Send `X-Hermes-Session-Key` so long-term memory is scoped per group/DM and survives compression rotation. Requires a memory provider upstream and `HERMES_API_KEY` here |
-| `HERMES_GROUP_SESSIONS_PER_USER` | `false` | Group memory granularity. `false` = one memory per group (shared by members); `true` = one per member |
-| `HERMES_GROUP_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:group:{group_id}` | Template for group-shared memory keys |
-| `HERMES_GROUP_PER_USER_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:group:{group_id}:{user_id}` | Template for per-member group memory keys |
-| `HERMES_PRIVATE_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:dm:{user_id}` | Template for DM memory keys |
-| `HERMES_MAX_LENGTH` | `4000` | Max reply length (truncated if exceeded) |
-| `HERMES_IGNORE_PREFIX` | `["."]` | Ignore messages starting with these chars |
-| `HERMES_PERCEPTION_ENABLED` | `false` | In groups with active_session=false, inject bystander history into the LLM on @-mention. **Auto-implied when `HERMES_ACTIVE_SESSION_ENABLED=true`; this flag is then a no-op**. Never injected in private chats (Hermes session already covers it) |
-| `HERMES_PERCEPTION_BUFFER` | `10` | Number of messages to buffer for perception |
-| `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | Max text length per historical message |
-| `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | ⚠️ **Deprecated since 0.3** — historical image recall moved to the `get_message_images` MCP tool. This knob now only controls whether a `[图片]` placeholder appears in history text (`none` = no placeholder; anything else = add placeholder). `inline_labeled` is superseded; setting it is equivalent to `placeholder` |
-| `HERMES_ACTIVE_SESSION_ENABLED` | `false` | Enable active group sessions (M1). When `false` the plugin behaves as in v0.1.6 |
-| `HERMES_ACTIVE_SESSION_TTL_SEC` | `300` | Active-window TTL in seconds; sliding renewal on each reply. A chat turn that outruns the TTL does not let the window expire mid-turn (lease); at turn end the remaining window is topped up to a 10s floor — enough for queued messages to run, not a fresh full TTL |
-| `HERMES_ACTIVE_SWEEP_INTERVAL_SEC` | `30` | Cron sweep interval for expired active sessions |
-| `HERMES_REACTIVE_FOLLOWUP_WINDOW` | `4` | Reactive follow-up turns send only the newest N lines of `<recent_messages>` (plus the bot's own latest line); explicit-trigger turns always get the full window. Set `0` to disable trimming |
-| `HERMES_POKE_TRIGGER_ENABLED` | `false` | OneBot v11: being poked triggers a turn (private & group, equivalent to being @-mentioned). Other adapters silently no-op |
-| `HERMES_GREET_ON_JOIN` | `false` | OneBot v11: when someone joins a group and `HERMES_ACTIVE_SESSION_ENABLED=true`, fire one reactive turn so Hermes can self-decide whether to welcome via decision_protocol (`noop` is valid). When active is off, nothing fires |
-| `HERMES_ACK_FEEDBACK_ENABLED` | `false` | Show an ack receipt on the user's message (B-0 ships OneBot v11 NapCat emoji). B-0.5 will extend to Telegram/Discord typing in private chats |
-| `HERMES_ACK_EMOJI_ID` | `341` | B-0 OneBot v11 face id to attach (default 341 = /打招呼 hi-wave; `373` /忙 = animal typing; `129` /挥手 = classic wave) |
-| `HERMES_BUFFER_PER_GROUP_CAP` | `200` | ⚠️ **No-op since 0.3** — MessageBuffer is now SQLite-backed; message eviction is governed by `HERMES_STORAGE_MESSAGE_*` instead. Will be removed in the next major version |
-| `HERMES_BUFFER_TOTAL_GROUPS_CAP` | `50` | ⚠️ **No-op since 0.3** — see above |
-| `HERMES_MCP_ENABLED` | `false` | Start the embedded FastMCP server (M1 reverse channel) |
-| `HERMES_MCP_HOST` | `127.0.0.1` | MCP server bind address. Read the security note in "Active Sessions + Reverse Channel" before exposing publicly |
-| `HERMES_MCP_PORT` | `8643` | MCP server bind port |
-| `HERMES_MCP_RECENT_LIMIT_MAX` | `50` | Max items the `get_recent_messages` tool returns per call |
-| `HERMES_STORAGE_DB_PATH` | (empty) | SQLite message log path. Empty falls back to `nonebot-plugin-localstore`'s plugin_data_dir (typically `~/.local/share/nonebot2/nonebot_plugin_hermes/messages.db`); can also be redirected by `LOCALSTORE_*` env vars |
-| `HERMES_STORAGE_MESSAGE_RETENTION_DAYS` | `30` | Message log retention days; vacuum cron deletes anything older |
-| `HERMES_STORAGE_MESSAGE_MAX_ROWS` | `100000` | Hard row cap; vacuum cron deletes oldest by ts when exceeded |
-| `HERMES_IMAGE_CACHE_DIR` | (empty) | Image byte cache directory. Empty falls back to localstore's plugin_cache_dir (typically `~/.cache/nonebot2/nonebot_plugin_hermes/images/`) |
-| `HERMES_IMAGE_CACHE_QUOTA_MB` | `200` | Image cache total size cap (MB); LRU-by-atime eviction during vacuum |
-| `HERMES_IMAGE_FETCH_TIMEOUT_S` | `10` | Per-image HTTP fetch timeout, seconds |
-| `HERMES_IMAGE_FETCH_MAX_ATTEMPTS` | `2` | Total HTTP attempts per image (1=no retry, 2=one retry, …) |
-
-### Busy notice (a visible signal when an explicit mention is dropped by plumbing)
-
-When the `_refire` chain hits `MAX_REFIRE_DEPTH=3` (≥ 4 explicit mentions queued in the same group within a short window while upstream Hermes can't keep up), the newest explicit mention gets dropped by the plumbing. The plugin then attaches `HERMES_BUSY_EMOJI_ID` (default 97 = the classic QQ face /擦汗, wiping sweat) to that original message and **does not clear it**, as a visual "I saw you, but I really can't keep up" signal.
-
-Different semantics from the ack-feedback emoji (`HERMES_ACK_EMOJI_ID`, default 341 /打招呼):
-- ack-feedback: stays for the duration of `chat()`, cleared on completion — "working on it"
-- busy notice: attached when the depth cap is hit, **never cleared** — "can't get to it"
-
-The two defaults are deliberately picked to look clearly distinct; verify the emoji_id table of your OneBot implementation before changing them.
-
-Only the OneBot v11 group path is covered; other adapters (Telegram / Discord) or a missing msg_id degrade to a WARN log with no text fallback, to avoid adding noise in a burst context.
-
-One related failure path does have a user-visible fallback: when upstream Hermes returns 5xx or the network drops, an explicit mention on the refire path replies with `HERMES_TRANSPORT_ERROR_FALLBACK_TEXT` (default "嗯…我这边遇到点状况,稍后再问一次"). Set it to an empty string to disable the text fallback.
 
 ## Limitations
 

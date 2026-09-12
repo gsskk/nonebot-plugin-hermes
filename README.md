@@ -121,19 +121,30 @@ nb plugin install nonebot-plugin-hermes   # 安装 Hermes 插件
 cp .env.example .env
 ```
 
-编辑 `.env`，主要配置：
+编辑 `.env`。以下为运行本插件的**最低限度配置项**（即不配置就无法使用的设置）：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `HERMES_API_URL` | `http://127.0.0.1:8642` | Hermes API Server 接入点地址。若 Hermes 部署在其他机器或端口则必须配置 |
+| `HERMES_API_KEY` | (空) | **必须配置**（需与 Hermes 宿主机 `~/.hermes/.env` 中的 `API_SERVER_KEY` 一致）。不配置会导致会话续接被拒绝，每次对话无法保持上下文 |
+
+> [!NOTE]
+> 此外，机器人还需至少配置一个平台适配器（如 OneBot v11 的 `ONEBOT_WS_URLS`）以建立与聊天平台的连接。
+
+`.env` 最小配置示例（以 OneBot v11 正向 WebSocket 为例）：
 
 ```env
-# OneBot 正向 WebSocket
+# 平台适配器连接（此处以 OneBot 正向 WS 为例）
 ONEBOT_WS_URLS=["ws://127.0.0.1:3001"]
 
-# Hermes API
+# Hermes API 接入与鉴权
 HERMES_API_URL=http://127.0.0.1:8642
-HERMES_API_KEY=
-
-# 群聊触发
-HERMES_GROUP_TRIGGER=at
+HERMES_API_KEY=your-api-server-key
 ```
+
+完整的可选配置项（触发方式、白名单、群活跃态、反向 FastMCP 通道、图片内联、持久化存储、长期记忆等 50+ 项参数）详见独立配置文档：
+
+**→ [完整配置文档（全部可选配置参数详解）](CONFIG.md)**
 
 ### 5. 运行
 
@@ -498,69 +509,6 @@ systemctl start hermes-gateway
 会把父会话再次关闭,几轮之内又卡回去。某个子会话若是被真正续写过的 continuation
 (消息跨度远超一次批量写入),脚本会跳过该会话并报告,交给人判断。
 
-## 配置项
-
-所有配置项通过 `.env` 文件设置，参见 [.env.example](.env.example) 中的详细注释。
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `HERMES_API_URL` | `http://127.0.0.1:8642` | Hermes API Server 地址 |
-| `HERMES_API_KEY` | (空) | API 密钥（建议设置以启用会话持久化） |
-| `HERMES_API_TIMEOUT` | `300` | API 请求超时时间（秒） |
-| `HERMES_GROUP_ENDPOINTS` | `{}` | 按群路由的接入点表,键 `{adapter}:{group_id}`,值 `{"url": …, "key": …, "timeout": …}`。空表 = 全部走 `HERMES_API_URL`。也是反向通道 scope 的唯一来源,详见 [PROFILES.md](PROFILES.md) |
-| `HERMES_GROUP_TRIGGER` | `at` | 群聊触发方式: `at` / `all` / `keyword` |
-| `HERMES_KEYWORDS` | `["/ai"]` | `keyword` 模式下的触发关键词 |
-| `HERMES_PRIVATE_TRIGGER` | `all` | 私聊触发方式: `all` / `allowlist` |
-| `HERMES_ALLOW_USERS` | `[]` | 允许私聊的用户 ID 列表 (`allowlist` 模式) |
-| `HERMES_ALLOW_GROUPS` | `[]` | 允许响应的群组 ID 列表（空为全部允许） |
-| `HERMES_ADMIN_USERS` | `[]` | 管理员白名单,格式 `["telegram:<user_id>", "onebotv11:<user_id>"]`。**默认空集 = deny by default**;`/hermes-status` 等敏感命令必须命中此列表才执行 |
-| `HERMES_SESSION_SHARE_GROUP` | `false` | 群内是否共享同一个 session |
-| `HERMES_HONCHO_ENABLED` | `false` | **暂不推荐开启**(收益有限且附带额外 token 成本,见上文「长期记忆作用域」)。发送 `X-Hermes-Session-Key`,按群/私聊隔离 Hermes 侧长期记忆并让记忆不随压缩轮换重置。需要上游配了 memory provider + 本插件配了 `HERMES_API_KEY` |
-| `HERMES_GROUP_SESSIONS_PER_USER` | `false` | 群记忆按群还是按人。`false` = 一个群一份(成员共享);`true` = 群内每人一份 |
-| `HERMES_GROUP_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:group:{group_id}` | 群共享记忆 key 模板 |
-| `HERMES_GROUP_PER_USER_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:group:{group_id}:{user_id}` | 群按人记忆 key 模板 |
-| `HERMES_PRIVATE_SESSION_KEY_FORMAT` | `agent:main:nonebot-{adapter}:dm:{user_id}` | 私聊记忆 key 模板 |
-| `HERMES_MAX_LENGTH` | `4000` | 单条回复最大长度（超出后截断） |
-| `HERMES_IGNORE_PREFIX` | `["."]` | 以这些字符开头的消息不触发回复 |
-| `HERMES_PERCEPTION_ENABLED` | `false` | 群聊 + active_session=false 下,是否在 @bot 时给 LLM 注入旁观历史。**`HERMES_ACTIVE_SESSION_ENABLED=true` 时自动隐含为 on,本开关无效**。私聊永远不注入(Hermes session 已覆盖) |
-| `HERMES_PERCEPTION_BUFFER` | `10` | 被动感知缓存的历史消息数量 |
-| `HERMES_PERCEPTION_TEXT_LENGTH` | `200` | 被动感知单条历史消息最大长度 |
-| `HERMES_PERCEPTION_IMAGE_MODE` | `placeholder` | ⚠️ **0.3 起弃用**——历史图召回改走 `get_message_images` MCP 工具。本配置当前仅控制 `[图片]` 文本占位是否出现(`none`=不加占位;其他值=加占位)。`inline_labeled` 行为已被 MCP 工具流取代,设为该值与 `placeholder` 等效 |
-| `HERMES_ACTIVE_SESSION_ENABLED` | `false` | 启用群活跃态（M1）。`false` 时退化为 v0.1.6 等价行为 |
-| `HERMES_ACTIVE_SESSION_TTL_SEC` | `300` | 活跃窗口 TTL（秒），每次插话滑动续期。一发 chat 跑得比 TTL 长时窗口不会中途过期（租约），turn 结束后按剩余量补到 10s 下限——让排队消息跑完接力，不额外续满窗 |
-| `HERMES_ACTIVE_SWEEP_INTERVAL_SEC` | `30` | 活跃态过期清扫 cron 频率（秒） |
-| `HERMES_REACTIVE_FOLLOWUP_WINDOW` | `4` | reactive 续发轮只发送 `<recent_messages>` 尾部 N 条(另加 bot 自己最近一条);explicit 触发轮始终全量。设 `0` 关闭裁剪,恢复旧版全量行为 |
-| `HERMES_POKE_TRIGGER_ENABLED` | `false` | OneBot v11:被戳一戳时触发对话（私聊 / 群都生效,等价于被 @）。其他适配器静默忽略 |
-| `HERMES_GREET_ON_JOIN` | `false` | OneBot v11:有人加入群且 `HERMES_ACTIVE_SESSION_ENABLED=true` 时,触发一次 reactive turn 让 Hermes 自决是否欢迎(`noop` 是合法返回)。active 关时不触发 |
-| `HERMES_ACK_FEEDBACK_ENABLED` | `false` | 用户消息上显示 ack 回执(B-0 实装 OneBot v11 NapCat emoji)。B-0.5 规划扩 TG/Discord 私聊 typing |
-| `HERMES_ACK_EMOJI_ID` | `341` | B-0 OneBot v11 路径下贴的 QQ 表情 id(默认 341 = /打招呼;`373` /忙 = 打字动物;`129` /挥手 = 经典挥手) |
-| `HERMES_BUFFER_PER_GROUP_CAP` | `200` | ⚠️ **0.3 起空转**——MessageBuffer 改为 SQLite 后端,无内存 per-group 上限;消息淘汰由 `HERMES_STORAGE_MESSAGE_*` 控制。下一个 major 版本会移除 |
-| `HERMES_BUFFER_TOTAL_GROUPS_CAP` | `50` | ⚠️ **0.3 起空转**——同上,SQLite 后端无 LRU,改为 retention + 行数上限 |
-| `HERMES_MCP_ENABLED` | `false` | 启动内嵌 FastMCP server（M1 反向通道） |
-| `HERMES_MCP_HOST` | `127.0.0.1` | MCP server 绑定地址。改成公开地址前请阅读上文「群活跃态 + 反向通道」节的安全注意 |
-| `HERMES_MCP_PORT` | `8643` | MCP server 绑定端口 |
-| `HERMES_MCP_RECENT_LIMIT_MAX` | `50` | `get_recent_messages` 工具单次最大返回条数 |
-| `HERMES_STORAGE_DB_PATH` | (空) | SQLite 消息日志路径。空值走 `nonebot-plugin-localstore` 的 plugin_data_dir(通常 `~/.local/share/nonebot2/nonebot_plugin_hermes/messages.db`),也可被 `LOCALSTORE_*` env vars 重定向 |
-| `HERMES_STORAGE_MESSAGE_RETENTION_DAYS` | `30` | 消息日志保留天数,vacuum cron 删超龄行 |
-| `HERMES_STORAGE_MESSAGE_MAX_ROWS` | `100000` | 消息日志总行数硬上限,超出按 ts 老到新删 |
-| `HERMES_IMAGE_CACHE_DIR` | (空) | 图字节缓存目录。空值走 localstore 的 plugin_cache_dir(通常 `~/.cache/nonebot2/nonebot_plugin_hermes/images/`) |
-| `HERMES_IMAGE_CACHE_QUOTA_MB` | `200` | 图缓存总体积上限(MB),vacuum 时按 atime 老到新淘汰 |
-| `HERMES_IMAGE_FETCH_TIMEOUT_S` | `10` | 单图 HTTP 抓取超时秒数 |
-| `HERMES_IMAGE_FETCH_MAX_ATTEMPTS` | `2` | 单图总尝试次数(1=不重试,2=一次重试,以此类推) |
-
-### Busy notice(显式 @ 被 plumbing 丢单时的可见信号)
-
-当 `_refire` 链触顶 `MAX_REFIRE_DEPTH=3`(同群短时间内塞了 ≥ 4 条 explicit @ 而上游 Hermes 跟不上)时,最新一条 explicit @ 会被 plumbing 丢掉。此时插件会在那条原消息上贴 `HERMES_BUSY_EMOJI_ID`(默认 97 = QQ 经典表情 /擦汗),**不撤销**,作为"我看见了但确实忙不过来"的视觉信号。
-
-与 ack-feedback emoji(`HERMES_ACK_EMOJI_ID`,默认 341 /打招呼)是不同语义:
-- ack-feedback:chat() 期间常驻,完成后撤销,表示"工作中"
-- busy notice:depth-cap 触顶时常驻,**不撤销**,表示"工作不下去"
-
-默认值刻意取互相区分明显的表情;改默认值前请验证 OneBot 实现端的 emoji_id 映射表。
-
-仅 OneBot v11 群聊路径生效;其它 adapter(Telegram / Discord)或 msg_id 缺失时降级为 WARN 日志,不会文本兜底,避免在 burst 上下文里加噪声。
-
-同样有一类失败路径有 user-visible 兜底:上游 Hermes 5xx / 网络断时,refire 路径上的 explicit @ 会发 `HERMES_TRANSPORT_ERROR_FALLBACK_TEXT`(默认"嗯…我这边遇到点状况,稍后再问一次")。设为空串可关闭文本兜底。
 
 ## 限制
 
