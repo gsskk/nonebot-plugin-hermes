@@ -27,6 +27,7 @@ from ..core.hermes_client import (
     maybe_extract_decision_reply_text,
     preview_raw,
 )
+from ..core.image_inline import inline_image_urls
 from ..core.message_buffer import BufferedMessage
 from ..core.outbound import get_bot_nickname, send_text_with_media
 from ..core.prompt_builder import (
@@ -1122,10 +1123,13 @@ async def _run_passive_turn(
         user_id=user_id,
         group_id=group_id,
     )
+    # 图片内联成 data: URL 再出站:上游对 http(s) URL 是纯透传,交出去就把可达性
+    # 赌在 provider 出网与 URL 时效上,且部分 provider 形态会静默丢图。
+    inlined = await inline_image_urls(image_urls)
     user_content = build_passive_user_content(
         recent_messages=recent,
         current_text=text or " ",
-        current_image_urls=image_urls,
+        current_image_urls=inlined,
     )
 
     result = await _chat_with_persistence_retry(
@@ -1251,6 +1255,8 @@ async def _run_reactive_turn(
     # 平台账号名 + self_id 一起进 prompt:模型判归属只能靠这两样把消息里回填的
     # 裸 `@<id>` 和 [bot] 历史行绑回自己。取值走进程内缓存,首轮一次 RPC。
     self_nickname = await get_bot_nickname(bot)
+    # 见 _run_passive_turn 同名调用注释:出站一律内联,不发平台 URL。
+    inlined = await inline_image_urls(image_urls)
     user_content = build_reactive_user_content(
         adapter=adapter_name,
         group_id=group_id,
@@ -1264,7 +1270,7 @@ async def _run_reactive_turn(
         current_user_id=user_id,
         current_nickname=nickname or user_id,
         current_text=text or "[图片]",
-        current_image_urls=image_urls,
+        current_image_urls=inlined,
     )
 
     # 出站 prompt 体量:模型在 explicit @ 下静默时,第一件要排除的就是「上下文被
@@ -1276,7 +1282,7 @@ async def _run_reactive_turn(
     logger.debug(
         f"[HERMES reactive] prompt built group={group_id} user_content_chars={prompt_chars} "
         f"window={len(recent)}/{len(recent_full)} explicit={is_explicit_trigger} "
-        f"imgs={len(image_urls)}"
+        f"imgs={len(inlined)}/{len(image_urls)}"
     )
     if oversized:
         logger.warning(

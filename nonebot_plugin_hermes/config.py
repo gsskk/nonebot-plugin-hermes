@@ -291,6 +291,30 @@ class Config(BaseModel):
     hermes_image_fetch_max_attempts: int = 2
     """单图总尝试次数(1=不重试,2=一次重试,以此类推)"""
 
+    hermes_image_inline_enabled: bool = True
+    """当前轮图片是否内联成 data: URL 后再发给 Hermes。
+
+    关掉会退回直发平台图片 URL —— 上游对 URL 是纯透传,由 provider 自行抓取,
+    因而受制于 URL 时效与对端出网能力,且部分 provider 形态会静默丢图。
+    仅在需要与旧行为对照时临时关闭。
+    """
+
+    hermes_image_inline_max_edge: int = 1280
+    """内联前下采样的最长边像素。超过才缩,小图不放大"""
+
+    hermes_image_inline_quality: int = 82
+    """内联重编码的 JPEG 质量"""
+
+    hermes_image_inline_max_bytes: int = 2_000_000
+    """单图重编码后的字节上限。降质阶梯走完仍超出则丢弃该图"""
+
+    hermes_image_inline_total_max_bytes: int = 4_000_000
+    """单轮内联图片的总字节预算。
+
+    上游请求体有硬上限且要与文本历史共享,这里留出余量;超出预算的图片被丢弃
+    而非撑爆整个请求 —— 少一张图仍能答话,请求被拒则整轮失败。
+    """
+
     # --- Phase B-1: 合并转发处理 ---
     hermes_forward_extract_max_nodes: int = 10
     """合并转发消息最多展开的节点数。超出标注 '...另有 N 条已省略'。
