@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import mcp.types as mcp_types
@@ -125,6 +126,43 @@ def _suppress_unused_protocol_handlers(mcp: FastMCP) -> None:
         logger.warning(f"[HERMES MCP] 摘除未用协议入口失败,继续启动 ({type(exc).__name__}: {exc})")
 
 
+def _log_tool_call(name: str, args: str, outcome: str) -> None:
+    """反向通道每次被调用留一行痕迹。
+
+    「模型说它拿不到图」与「工具压根没被调用」是两种完全不同的故障,此前 bot 日志
+    对二者都是静默的,无从区分。参数只记形状(id / 计数 / 长度),不记消息正文。
+
+    只在调用返回后记一行:参数校验失败由 fastmcp 日志重定向单独报,工具体抛异常由
+    FastMCP 自己的 "Error calling tool" 覆盖,两处合起来不留空白。
+    """
+    logger.info(f"[HERMES MCP] tool={name} {args} -> {outcome}")
+
+
+def _clip(text: str | None, limit: int = 80) -> str:
+    """错误文案可能很长(越权那段是给调用方看的完整说明),日志里只留开头。"""
+    if not text:
+        return ""
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _summarize_image_result(blocks: list) -> str:
+    """图片工具的诊断价值全在 `available` / `reason` 上。
+
+    「没拿到图」有四种成因(未入库 / 字节缺失 / 单图超限 / 总量超限),它们的处置
+    完全不同 —— 只报一个总数等于没报。
+    """
+    images = sum(1 for b in blocks if type(b).__name__ == "ImageContent")
+    try:
+        header = json.loads(blocks[0].text)
+        results = header["results"]
+    except Exception:
+        return f"blocks={len(blocks)} images={images}"
+    missing = [
+        f"m:{r.get('message_id')}#{r.get('image_idx')}={r.get('reason')}" for r in results if not r.get("available")
+    ]
+    return f"images={images}" + (f" unavailable=[{', '.join(missing)}]" if missing else "")
+
+
 def build_mcp_app(
     *,
     message_buffer: MessageBuffer,
@@ -168,13 +206,21 @@ def build_mcp_app(
             reply_to_msg_id=reply_to_msg_id,
             task_id=task_id,
         )
-        return await push_message_impl(
+        result = await push_message_impl(
             inp,
             active_sessions=active_sessions,
             bot_registry=bot_registry,
             message_buffer=message_buffer,
             scope=caller_scope_from_request(),
         )
+        _log_tool_call(
+            "push_message",
+            f"adapter={adapter} group={group_id} text_len={len(text)} imgs={len(image_urls or [])}",
+            f"ok={result.ok}"
+            + (f" error={_clip(result.error)!r}" if result.error else "")
+            + (f" skipped_imgs={len(result.skipped_images)}" if result.skipped_images else ""),
+        )
+        return result
 
     @mcp.tool()
     async def list_active_sessions(
@@ -182,7 +228,11 @@ def build_mcp_app(
     ) -> ListActiveSessionsResult:
         """List active reactive sessions."""
         inp = ListActiveSessionsInput(adapter=adapter)
-        return await list_active_sessions_impl(inp, active_sessions=active_sessions, scope=caller_scope_from_request())
+        result = await list_active_sessions_impl(
+            inp, active_sessions=active_sessions, scope=caller_scope_from_request()
+        )
+        _log_tool_call("list_active_sessions", f"adapter={adapter}", f"sessions={len(result.sessions)}")
+        return result
 
     @mcp.tool()
     async def get_recent_messages(
@@ -198,7 +248,13 @@ def build_mcp_app(
             limit=limit,
             before_ts=before_ts,
         )
-        return await get_recent_messages_impl(inp, message_buffer=message_buffer, scope=caller_scope_from_request())
+        result = await get_recent_messages_impl(inp, message_buffer=message_buffer, scope=caller_scope_from_request())
+        _log_tool_call(
+            "get_recent_messages",
+            f"adapter={adapter} group={group_id} limit={limit}",
+            f"messages={len(result.messages)}" + (f" error={_clip(result.error)!r}" if result.error else ""),
+        )
+        return result
 
     @mcp.tool()
     async def get_message_images(
@@ -218,9 +274,15 @@ def build_mcp_app(
             adapter=adapter,
             group_id=group_id,
         )
-        return await get_message_images_impl(
+        blocks = await get_message_images_impl(
             inp, store=message_store, cache=image_cache, scope=caller_scope_from_request()
         )
+        _log_tool_call(
+            "get_message_images",
+            f"ids={message_ids} adapter={adapter} group={group_id}",
+            _summarize_image_result(blocks),
+        )
+        return blocks
 
     http_app = mcp.http_app()
 
