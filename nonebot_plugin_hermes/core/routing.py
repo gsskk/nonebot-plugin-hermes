@@ -235,12 +235,10 @@ def validate_endpoints() -> list[str]:
 def multiplex_reverse_channel_notices() -> list[str]:
     """多路复用 + 反向通道下**无法自动核实**的配置提醒(启动期 INFO 用)。
 
-    上游把 MCP 分成两层 —— **连接**按默认 profile 的 config 在进程启动时建一次(注册表全进程
-    共享),**可用性**才按被路由到的 profile 每请求解析。所以命名 profile 里写的 Bearer 不生效,
-    默认配法下所有 profile 呈同一把 token、被判成同一个 scope。解法不是放弃多路复用:MCP 工具名
-    按 server 名 namespace(mcp__<server>__<tool>),所以可以在默认 profile 里为每个接入点配一个
-    同 URL、不同名字、不同 Bearer 的 server,各 profile 只声明自己那个名字 —— token 就按 profile
-    分开了。
+    上游按 profile 隔离 MCP:连接与凭证各读各自的 config.yaml,工具注册进各自的 registry
+    overlay,而连接去重是**进程级按 server 名字**。所以每个 profile 要在自己的 config.yaml 里
+    声明一条独占名字的 server(Bearer 用它自己那把 key),默认 profile 不能代持 —— 代持会先占住
+    名字,被代持的 profile 一个 MCP 工具都拿不到。
 
     但插件无法从自己这侧核实对面到底怎么配:这条在**配对了的正确部署上也必然触发**,所以它是
     INFO 级提醒而非 WARNING —— 一条在每次正确启动都响的告警只会制造告警疲劳。真配错时的失败
@@ -252,4 +250,6 @@ def multiplex_reverse_channel_notices() -> list[str]:
     multiplexed = sorted(label for label, entry in entries.items() if "/p/" in entry.url)
     if not multiplexed:
         return []
-    return [f"{multiplexed}:多路复用 + 反向通道,token 需在默认 profile 按 server 名分开,已配好可忽略"]
+    return [
+        f"{multiplexed}:多路复用 + 反向通道,每个 profile 需在自己的 config.yaml 里声明 MCP server(名字全进程唯一),已配好可忽略"
+    ]
